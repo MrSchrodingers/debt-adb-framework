@@ -1,0 +1,23 @@
+{
+  "name": "debt-adb-framework",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:core": "turbo run dev --filter=@dispatch/core",
+    "dev:ui": "turbo run dev --filter=@dispatch/ui",
+    "dev:electron": "turbo run dev --filter=@dispatch/electron",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.20.0",
+  "pnpm": {
+    "onlyBuiltDependencies": ["better-sqlite3", "electron", "esbuild"]
+  }
+}

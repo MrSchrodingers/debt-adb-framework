@@ -85,8 +85,8 @@ Hardening:      3 + 6 → 8
 ### Execution Bullets — Fase 1: Tracer Bullet
 > **Deps**: nenhuma | **Issue**: #1 | **Estimativa**: G
 
-- [ ] **Scaffold** Turborepo: `packages/core`, `packages/ui`, `packages/electron`
-- [ ] **Grill** design da fila + locking SQLite (`/grill-me`)
+- [x] **Scaffold** Turborepo: `packages/core`, `packages/ui`, `packages/electron`
+- [x] **Grill** design da fila + locking SQLite (`/grill-me`)
 - [ ] **TDD Red** — testes de idempotency, lock exclusivity, dequeue atomico (`/tdd`)
 - [ ] **Implement** ADB Bridge: `adbkit` wrapper, `discover()`, `health()`, `shell()`
 - [ ] **Implement** Message Queue: SQLite WAL, `BEGIN IMMEDIATE` + CAS, stale lock cleanup
