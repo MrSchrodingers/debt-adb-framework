@@ -28,20 +28,15 @@ export class SendEngine {
       this.queue.updateStatus(message.id, 'sending')
       this.emitter.emit('message:sending', { id: message.id, deviceSerial })
 
-      // Step 0: Ensure clean state — dismiss any overlays, go home
       await this.ensureCleanState(deviceSerial)
-
-      // Step 1: Register contact if not already known
       await this.ensureContact(deviceSerial, message.to)
 
-      // Step 2: Open WhatsApp Messenger chat (explicit -p com.whatsapp)
       await this.adb.shell(
         deviceSerial,
         `am start -a android.intent.action.VIEW -d "https://wa.me/${message.to}" -p com.whatsapp`,
       )
       await this.delay(4000)
 
-      // Step 3: Type message char by char with Gaussian delays
       for (const char of message.body) {
         if (char === ' ') {
           await this.adb.shell(deviceSerial, 'input keyevent 62')
@@ -52,11 +47,9 @@ export class SendEngine {
         await this.delay(this.gaussianDelay(80, 30))
       }
 
-      // Step 4: Find and tap send button via UI hierarchy
       await this.delay(500)
       await this.tapSendButton(deviceSerial)
 
-      // Step 5: Wait for send + take screenshot
       await this.delay(2000)
       const screenshot = await this.adb.screenshot(deviceSerial)
 
@@ -70,23 +63,13 @@ export class SendEngine {
 
       return { screenshot, durationMs }
     } catch (err) {
-      // On any failure: mark as failed, cleanup device state
-      try {
-        this.queue.updateStatus(message.id, 'failed')
-      } catch {
-        // Status update itself may fail if DB is closed — ignore
-      }
+      try { this.queue.updateStatus(message.id, 'failed') } catch { /* DB may be closed */ }
       this.emitter.emit('message:failed', {
         id: message.id,
         error: err instanceof Error ? err.message : String(err),
       })
 
-      // Best-effort cleanup: go home to leave device in clean state
-      try {
-        await this.ensureCleanState(deviceSerial)
-      } catch {
-        // Cleanup failed too — device may be disconnected
-      }
+      try { await this.ensureCleanState(deviceSerial) } catch { /* device may be disconnected */ }
 
       throw err
     } finally {
@@ -102,10 +85,7 @@ export class SendEngine {
   }
 
   private async ensureContact(deviceSerial: string, phone: string): Promise<void> {
-    // Check SQLite contacts table first — skip if already registered
-    if (this.queue.hasContact(phone)) {
-      return
-    }
+    if (this.queue.hasContact(phone)) return
 
     const name = `Contato ${phone.slice(-4)}`
     await this.adb.shell(
@@ -114,13 +94,12 @@ export class SendEngine {
     )
     await this.delay(2000)
 
-    // Dismiss contact editor
-    await this.adb.shell(deviceSerial, 'input keyevent 4')
-    await this.delay(500)
-    await this.adb.shell(deviceSerial, 'input keyevent 4')
-    await this.delay(500)
+    // Two BACKs to dismiss contact editor (save prompt + editor)
+    for (let i = 0; i < 2; i++) {
+      await this.adb.shell(deviceSerial, 'input keyevent 4')
+      await this.delay(500)
+    }
 
-    // Save to SQLite so we don't register again
     this.queue.saveContact(phone, name)
   }
 
@@ -128,13 +107,14 @@ export class SendEngine {
     await this.adb.shell(deviceSerial, 'uiautomator dump /sdcard/dispatch-ui.xml')
     const xml = await this.adb.shell(deviceSerial, 'cat /sdcard/dispatch-ui.xml')
 
-    const sendMatch = xml.match(
+    const match = xml.match(
       /resource-id="com\.whatsapp:id\/send"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/,
     )
 
-    if (sendMatch) {
-      const cx = Math.round((parseInt(sendMatch[1]) + parseInt(sendMatch[3])) / 2)
-      const cy = Math.round((parseInt(sendMatch[2]) + parseInt(sendMatch[4])) / 2)
+    if (match) {
+      const [, x1, y1, x2, y2] = match.map(Number)
+      const cx = Math.round((x1 + x2) / 2)
+      const cy = Math.round((y1 + y2) / 2)
       await this.adb.shell(deviceSerial, `input tap ${cx} ${cy}`)
     } else {
       await this.adb.shell(deviceSerial, 'input keyevent 66')

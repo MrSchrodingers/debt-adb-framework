@@ -19,7 +19,6 @@ export interface DispatchCore {
 }
 
 export async function createServer(port = Number(process.env.PORT) || 7890): Promise<DispatchCore> {
-  // Fastify
   const server = Fastify({
     logger: {
       transport: {
@@ -30,11 +29,9 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   })
   await server.register(cors)
 
-  // SQLite
   const db = new Database(process.env.DB_PATH || 'dispatch.db')
   db.pragma('journal_mode = WAL')
 
-  // Core modules
   const queue = new MessageQueue(db)
   queue.initialize()
 
@@ -42,7 +39,6 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const emitter = new DispatchEmitter()
   const engine = new SendEngine(adb, queue, emitter)
 
-  // Routes
   server.get('/api/v1/health', async () => ({
     status: 'ok',
     timestamp: new Date().toISOString(),
@@ -50,7 +46,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   registerMessageRoutes(server, queue, emitter)
   registerDeviceRoutes(server, adb)
 
-  // Manual send endpoint: POST /api/v1/messages/:id/send
+  let workerRunning = false
+
   server.post('/api/v1/messages/:id/send', async (request, reply) => {
     const { id } = request.params as { id: string }
     const message = queue.getById(id)
@@ -61,6 +58,9 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     if (message.status !== 'queued' && message.status !== 'failed') {
       return reply.status(409).send({ error: `Cannot send message in status: ${message.status}` })
     }
+    if (workerRunning) {
+      return reply.status(409).send({ error: 'Worker is currently sending. Try again shortly.' })
+    }
 
     const devices = await adb.discover()
     const online = devices.find(d => d.type === 'device')
@@ -68,16 +68,17 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       return reply.status(503).send({ error: 'No device available' })
     }
 
-    // Re-queue if failed, then dequeue for this device
+    // Re-queue failed messages, then lock via dequeue to prevent auto-worker collision
     if (message.status === 'failed') {
       queue.updateStatus(id, 'queued')
     }
+    const locked = queue.dequeue(online.serial)
+    if (!locked || locked.id !== id) {
+      return reply.status(409).send({ error: 'Message was claimed by another process' })
+    }
 
     try {
-      const result = await engine.send(
-        message.status === 'failed' ? { ...message, status: 'queued' } : message,
-        online.serial,
-      )
+      const result = await engine.send(locked, online.serial)
       return { status: 'sent', durationMs: result.durationMs }
     } catch (err) {
       return reply.status(500).send({
@@ -87,7 +88,6 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     }
   })
 
-  // Stale lock cleanup — every 30s
   const cleanupInterval = setInterval(() => {
     const cleaned = queue.cleanStaleLocks()
     if (cleaned > 0) {
@@ -95,9 +95,9 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     }
   }, 30_000)
 
-  // Auto-worker loop — polls queue every 5s, sends to first available device
   const workerInterval = setInterval(async () => {
-    if (engine.isProcessing) return // one at a time
+    if (workerRunning) return
+    workerRunning = true
 
     try {
       const devices = await adb.discover()
@@ -111,31 +111,27 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       await engine.send(message, online.serial)
     } catch (err) {
       server.log.error({ err }, 'Worker: send failed')
+    } finally {
+      workerRunning = false
     }
   }, 5_000)
 
-  // Cleanup hook — must be registered BEFORE listen()
   server.addHook('onClose', () => {
     clearInterval(cleanupInterval)
     clearInterval(workerInterval)
     db.close()
   })
 
-  // Start HTTP
   await server.listen({ port, host: '0.0.0.0' })
 
-  // Socket.IO — attach to Fastify's underlying HTTP server
   const io = new SocketIOServer(server.server, { cors: { origin: '*' } })
 
-  // Forward all DispatchEmitter events to Socket.IO
   const events: DispatchEventName[] = [
     'message:queued', 'message:sending', 'message:sent', 'message:failed',
     'device:connected', 'device:disconnected',
   ]
   for (const event of events) {
-    emitter.on(event, (data) => {
-      io.emit(event, data)
-    })
+    emitter.on(event, (data) => io.emit(event, data))
   }
 
   return { server, io, queue, adb, engine, emitter }

@@ -97,9 +97,9 @@ Hardening:      3 + 6 → 8
 - [x] **Implement** Electron shell: main process carrega core + BrowserWindow carrega UI
 - [x] **TDD Green** — todos os testes passando
 - [x] **E2E** — enviar msg real para `5543991938235` via ADB no POCO Serenity
-- [ ] **Simplify** — `/simplify` review do codigo escrito
-- [ ] **Code Review** — `superpowers:requesting-code-review`
-- [ ] **Verify** — `superpowers:verification-before-completion`
+- [x] **Simplify** — `/simplify` review do codigo escrito
+- [x] **Code Review** — `superpowers:requesting-code-review`
+- [x] **Verify** — `superpowers:verification-before-completion`
 - [ ] **Phase Gate** — atualizar `.dev-state/progress.md` → APPROVED ou FAILED_REVIEW
 
 ### Execution Bullets — Fase 2: Multi-Device + Health

@@ -97,13 +97,11 @@ export class MessageQueue {
   }
 
   list(status?: MessageStatus, limit = 50): Message[] {
-    const rows = status
-      ? this.db.prepare(
-          'SELECT * FROM messages WHERE status = ? ORDER BY created_at DESC LIMIT ?',
-        ).all(status, limit) as Record<string, unknown>[]
-      : this.db.prepare(
-          'SELECT * FROM messages ORDER BY created_at DESC LIMIT ?',
-        ).all(limit) as Record<string, unknown>[]
+    const query = status
+      ? 'SELECT * FROM messages WHERE status = ? ORDER BY created_at DESC LIMIT ?'
+      : 'SELECT * FROM messages ORDER BY created_at DESC LIMIT ?'
+    const params = status ? [status, limit] : [limit]
+    const rows = this.db.prepare(query).all(...params) as Record<string, unknown>[]
     return rows.map(row => this.rowToMessage(row))
   }
 

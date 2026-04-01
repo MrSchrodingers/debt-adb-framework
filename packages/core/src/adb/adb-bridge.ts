@@ -1,8 +1,9 @@
 import adbkit, { type Adb as AdbType } from '@devicefarmer/adbkit'
 import type { DeviceInfo } from './types.js'
 
-// CJS interop: Adb class is double-wrapped when imported as ESM
-const Adb: typeof AdbType = (adbkit as Record<string, unknown>).default as typeof AdbType ?? adbkit as unknown as typeof AdbType
+const Adb: typeof AdbType =
+  ((adbkit as Record<string, unknown>).default as typeof AdbType) ??
+  (adbkit as unknown as typeof AdbType)
 
 export class AdbBridge {
   private client: ReturnType<typeof Adb.createClient>
