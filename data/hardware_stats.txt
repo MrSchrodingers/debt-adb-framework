@@ -1,0 +1,90 @@
+=== HARDWARE STATS ===
+Captured: 2026-04-01T12:28:31-03:00
+
+--- Memory ---
+MemTotal:        2855412 kB
+MemFree:          148252 kB
+MemAvailable:    1238500 kB
+Buffers:            1532 kB
+Cached:          1063692 kB
+SwapCached:       111568 kB
+Active:           560744 kB
+Inactive:        1171168 kB
+Active(anon):     157680 kB
+Inactive(anon):   535864 kB
+Active(file):     403064 kB
+Inactive(file):   635304 kB
+Unevictable:       18120 kB
+Mlocked:           18120 kB
+SwapTotal:       3145724 kB
+
+--- Storage ---
+Filesystem       Size Used Avail Use% Mounted on
+/dev/block/dm-50  50G  12G   38G  24% /data/user/0
+/dev/fuse         50G  12G   38G  24% /storage/emulated
+
+--- Battery ---
+Current Battery Service state:
+  AC powered: false
+  USB powered: true
+  Wireless powered: false
+  Dock powered: false
+  Max charging current: 500000
+  Max charging voltage: 5000000
+  Charge counter: 5058518
+  status: 2
+  health: 2
+  present: true
+  level: 98
+  scale: 100
+  voltage: 4414
+  temperature: 264
+  technology: Li-poly
+  Charging state: 0
+  Charging policy: 0
+
+--- CPU ---
+processor	: 0
+BogoMIPS	: 52.00
+Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp
+CPU implementer	: 0x41
+CPU architecture: 8
+CPU variant	: 0x2
+CPU part	: 0xd05
+CPU revision	: 0
+
+processor	: 1
+BogoMIPS	: 52.00
+Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp
+CPU implementer	: 0x41
+CPU architecture: 8
+CPU variant	: 0x2
+CPU part	: 0xd05
+CPU revision	: 0
+
+processor	: 2
+BogoMIPS	: 52.00
+Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp
+CPU implementer	: 0x41
+CPU architecture: 8
+CPU variant	: 0x2
+CPU part	: 0xd05
+CPU revision	: 0
+
+processor	: 3
+BogoMIPS	: 52.00
+Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp
+CPU implementer	: 0x41
+CPU architecture: 8
+CPU variant	: 0x2
+CPU part	: 0xd05
+CPU revision	: 0
+
+processor	: 4
+BogoMIPS	: 52.00
+Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp
+CPU implementer	: 0x41
+
+--- Screen ---
+Size: Physical size: 720x1640
+Density: Physical density: 320

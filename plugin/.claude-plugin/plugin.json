@@ -1,0 +1,12 @@
+{
+  "name": "adb-tools",
+  "description": "Android Debug Bridge toolkit for deep smartphone exploration, bloatware removal, security auditing, WhatsApp management, performance tuning, spam cleanup, and automation via ADB",
+  "author": {
+    "name": "ti"
+  },
+  "keywords": [
+    "adb", "android", "smartphone", "bloatware", "security", "whatsapp",
+    "automation", "performance", "spam", "debloat", "xiaomi", "poco",
+    "mobile", "device", "phone"
+  ]
+}

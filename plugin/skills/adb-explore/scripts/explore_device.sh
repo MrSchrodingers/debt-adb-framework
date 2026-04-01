@@ -1,0 +1,1 @@
+/var/www/adb_tools/scripts/explore_device.sh
