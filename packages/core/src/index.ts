@@ -1,1 +1,5 @@
 export { createServer } from './server.js'
+export { AdbBridge } from './adb/index.js'
+export { MessageQueue } from './queue/index.js'
+export type { DeviceInfo } from './adb/index.js'
+export type { EnqueueParams, Message, MessageStatus } from './queue/index.js'
