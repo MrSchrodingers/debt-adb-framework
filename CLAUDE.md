@@ -63,20 +63,158 @@ Every piece of work follows this pipeline. No exceptions. No shortcuts.
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-## Phase Dependency Graph
+## Phase Dependency Graph & Execution Plan
 
 ```
-Phase 1 (Tracer Bullet) ──────────────────────────────────┐
-  ├── Phase 2 (Multi-Device) ─────────────────────┐       │
-  │     ├── Phase 3 (Send Engine) ──────────┐     │       │
-  │     │     ├── Phase 7 (Plugins) ◄───────┼─ Phase 5   │
-  │     │     └── Phase 8 (Hardening) ◄─────┤             │
-  │     └── Phase 6 (Dashboard) ◄───────────┘             │
-  └── Phase 4 (WAHA Listener) ────────────────────────────┘
-        └── Phase 5 (Chatwoot Bridge)
+Phase 1 (Tracer Bullet)
+  ├──► Phase 2 (Multi-Device)
+  │      ├──► Phase 3 (Send Engine) ─────────┐
+  │      │                                     ├──► Phase 7 (Plugins + Oralsin)
+  │      └──► Phase 6 (Dashboard) ◄── Phase 4 │
+  │                    │                       │
+  └──► Phase 4 (WAHA) ├──► Phase 5 (Chatwoot) ┘
+                       │
+                       └──► Phase 8 (Hardening) ◄── Phase 3 + Phase 6
 
-Critical Path: 1 → 2 → 3 → 7
+Critical Path:  1 → 2 → 3 → 7
 Parallel Track: 1 → 4 → 5 (merges at 7)
+Dashboard:      2 + 4 → 6
+Hardening:      3 + 6 → 8
+```
+
+### Execution Bullets — Fase 1: Tracer Bullet
+> **Deps**: nenhuma | **Issue**: #1 | **Estimativa**: G
+
+- [ ] **Scaffold** Turborepo: `packages/core`, `packages/ui`, `packages/electron`
+- [ ] **Grill** design da fila + locking SQLite (`/grill-me`)
+- [ ] **TDD Red** — testes de idempotency, lock exclusivity, dequeue atomico (`/tdd`)
+- [ ] **Implement** ADB Bridge: `adbkit` wrapper, `discover()`, `health()`, `shell()`
+- [ ] **Implement** Message Queue: SQLite WAL, `BEGIN IMMEDIATE` + CAS, stale lock cleanup
+- [ ] **Implement** Send Engine (minimal): `wa.me` intent → typing char-by-char → screenshot
+- [ ] **Implement** REST API: `POST /messages` (201/409), `GET /devices`
+- [ ] **Implement** Socket.IO: events `message:queued`, `message:sending`, `message:sent`
+- [ ] **Implement** UI minimal: 1 device card + fila + status
+- [ ] **Implement** Electron shell: main process carrega core + BrowserWindow carrega UI
+- [ ] **TDD Green** — todos os testes passando
+- [ ] **E2E** — enviar msg real para `5543991938235` via ADB no POCO Serenity
+- [ ] **Simplify** — `/simplify` review do codigo escrito
+- [ ] **Code Review** — `superpowers:requesting-code-review`
+- [ ] **Verify** — `superpowers:verification-before-completion`
+- [ ] **Phase Gate** — atualizar `.dev-state/progress.md` → APPROVED ou FAILED_REVIEW
+
+### Execution Bullets — Fase 2: Multi-Device + Health
+> **Deps**: Fase 1 APPROVED | **Issue**: #2 | **Estimativa**: M
+
+- [ ] **Grill** device discovery, health polling, alert thresholds (`/grill-me`)
+- [ ] **TDD Red** — testes de discovery mock, alert thresholds, health persistence
+- [ ] **Implement** Device Manager: auto-discovery via `adb devices` polling (5s)
+- [ ] **Implement** Health Collector: RAM, bateria, temp, storage, WiFi (30s poll)
+- [ ] **Implement** WA Account Mapper: device → profile → WA/WAB → numero
+- [ ] **Implement** Alert System: thresholds configuraveis + EventEmitter + SQLite
+- [ ] **Implement** UI: device grid, health cards, spark charts, alert panel
+- [ ] **Implement** Actions: screenshot sob demanda, reboot, restart WhatsApp
+- [ ] **TDD Green** + **E2E** conectar 2+ devices, verificar health
+- [ ] **Review** + **Verify** + **Phase Gate**
+
+### Execution Bullets — Fase 3: Send Engine Robusto + Anti-Ban
+> **Deps**: Fase 2 APPROVED | **Issue**: #3 | **Estimativa**: G
+
+- [ ] **Grill** rate limiting, distribution algorithm, ban detection (`/grill-me`)
+- [ ] **TDD Red** — testes: rate limiter timing, distribution fairness, ban detection (fixtures), retry
+- [ ] **Implement** Rate Limiter: port exato do WAHA client Oralsin (volume scaling exponencial)
+- [ ] **Implement** Distribuicao: round-robin ponderado (health score × inverse send count)
+- [ ] **Implement** Ban Detection: screenshot + Tesseract.js OCR (crop centro, strings, confidence >= 60%)
+- [ ] **Implement** Retry: mensagem volta para fila, re-roteada, `attempts++`
+- [ ] **Implement** Auto-recovery: WA crash → force-stop + intent restart + retry
+- [ ] **Implement** Contact Registration: intent ACTION_INSERT, fallback wa.me
+- [ ] **Implement** Jitter: distribuicao exponencial 30s-5min entre msgs
+- [ ] **TDD Green** + **E2E** enviar batch de 5 msgs para `5543991938235` com rate limit
+- [ ] **Review** + **Verify** + **Phase Gate**
+
+### Execution Bullets — Fase 4: WAHA Listener Passivo
+> **Deps**: Fase 1 APPROVED | **Issue**: #4 | **Estimativa**: M
+> **PARALELO** com Fases 2/3
+
+- [ ] **Grill** WAHA session lifecycle, multi-device sync, independence (`/grill-me`)
+- [ ] **TDD Red** — testes: webhook processing, session health, independence
+- [ ] **Implement** Session Manager: parear WAHA por numero, exponential backoff (5s→80s, 5x)
+- [ ] **Implement** Webhook Receiver: `POST /api/v1/webhooks/waha` (message.received, message.sent)
+- [ ] **Implement** Message History: persistir in+out em `message_history`
+- [ ] **Implement** Health Check: verificar sessoes, re-parear se caiu
+- [ ] **Implement** Independence: ban WAHA gera alerta, NAO pausa ADB
+- [ ] **TDD Green** + **E2E** capturar msg outgoing enviada via ADB
+- [ ] **Review** + **Verify** + **Phase Gate**
+
+### Execution Bullets — Fase 5: Chatwoot Bridge Bidirecional
+> **Deps**: Fase 4 APPROVED | **Issue**: #5 | **Estimativa**: M
+
+- [ ] **Grill** routing de operator reply, device offline, TTL (`/grill-me`)
+- [ ] **TDD Red** — testes: Chatwoot API mock, webhook processing, bidirectional flow
+- [ ] **Implement** Inbox Manager: criar inbox Chatwoot por numero
+- [ ] **Implement** Contact Sync: criar/atualizar contato Chatwoot
+- [ ] **Implement** Incoming Bridge: WAHA webhook → Chatwoot message
+- [ ] **Implement** Outgoing Bridge: ADB send confirmado → Chatwoot outgoing
+- [ ] **Implement** Operator Reply: Chatwoot webhook → fila Dispatch → ADB
+- [ ] **Implement** Offline handling: re-route, `waiting_device`, TTL 4h
+- [ ] **TDD Green** + **E2E** conversa bidirecional visivel no Chatwoot
+- [ ] **Review** + **Verify** + **Phase Gate**
+
+### Execution Bullets — Fase 6: Dashboard Operacional
+> **Deps**: Fase 2 + Fase 4 APPROVED | **Issue**: #6 | **Estimativa**: M
+
+- [ ] **Grill** Socket.IO rooms strategy, pagination, real-time update frequency
+- [ ] **TDD Red** — component tests (RTL), Socket.IO event handling
+- [ ] **Implement** Device Grid: cards com RAM, bateria, temp, storage, WA accounts
+- [ ] **Implement** Queue Panel: pendentes/enviando/enviadas/falhadas + filtros
+- [ ] **Implement** Audit Log: historico completo in+out, busca por numero/data/status
+- [ ] **Implement** Alert Panel: ativos/resolvidos, severity, acao "resolver"
+- [ ] **Implement** Metrics: taxa sucesso, latencia, volume hora/dia (Recharts)
+- [ ] **Implement** Responsivo: Electron + browser
+- [ ] **TDD Green** + **E2E** dashboard reflete envio real em < 2s
+- [ ] **Review** + **Verify** + **Phase Gate**
+
+### Execution Bullets — Fase 7: Plugin System + Plugin Oralsin
+> **Deps**: Fase 3 + Fase 5 APPROVED | **Issue**: #7 | **Estimativa**: G
+> **PRIMEIRO TESTE REAL COM PRODUCAO**
+
+- [ ] **Grill** plugin lifecycle, event bus isolation, callback guarantee (`/grill-me`)
+- [ ] **TDD Red** — testes: plugin lifecycle, Oralsin adapter, fallback chain, event bus
+- [ ] **Implement** Plugin Interface: `{ name, version, init(core), destroy() }`
+- [ ] **Implement** Plugin Registry: load/unload/configure via SQLite + REST
+- [ ] **Implement** Event Bus: typed events, async handlers, try/catch isolado, 5s timeout
+- [ ] **Implement** Route Injection: plugins registram rotas no Fastify
+- [ ] **Implement** `DispatchNotifier(BaseNotifier)` na Oralsin
+- [ ] **Implement** Callback webhook: at-least-once, 3 retries, `failed_callbacks` table
+- [ ] **Implement** Fallback chain: ADB → WAHA API → SMS
+- [ ] **Implement** FlowStepConfig channel="adb" no registry Oralsin
+- [ ] **TDD Green** + **E2E** Oralsin enfileira notificacao → ADB envia para `5543991938235`
+- [ ] **INTEGRATION TEST** fluxo completo: Oralsin schedule → Dispatch → ADB → WAHA capture → Chatwoot
+- [ ] **Review** + **Verify** + **Phase Gate**
+
+### Execution Bullets — Fase 8: Multi-Profile + Hardening + Docker
+> **Deps**: Fase 3 + Fase 6 APPROVED | **Issue**: #8 | **Estimativa**: G
+
+- [ ] **Grill** multi-profile locking, graceful shutdown, Docker USB passthrough
+- [ ] **TDD Red** — testes: multi-profile lock, graceful shutdown, headless mode
+- [ ] **Implement** Multi-profile: `am start --user N`, routing por profile, lock por device
+- [ ] **Implement** Headless validation: core standalone em Linux server
+- [ ] **Implement** Docker: Dockerfile, USB passthrough `--privileged`, ADB tools
+- [ ] **Implement** Graceful shutdown: drain queue, finish sends, persist state
+- [ ] **Implement** Config: `.env` + `dispatch.config.json` hot-reload
+- [ ] **Implement** Log rotation: pino-roll (50MB, 5 backups)
+- [ ] **Implement** Encryption: credenciais SQLite encriptadas (PBKDF2 de machine-id)
+- [ ] **TDD Green** + **E2E** 4 profiles enviando, headless mode, Docker build
+- [ ] **Review** + **Verify** + **Phase Gate**
+
+### Sprint Allocation (Sugestao)
+
+```
+Semana 1-2:  Fase 1 (Tracer Bullet)
+Semana 2-3:  Fase 2 (Multi-Device) + Fase 4 (WAHA) em paralelo
+Semana 3-4:  Fase 3 (Send Engine) + Fase 5 (Chatwoot) em paralelo
+Semana 4-5:  Fase 6 (Dashboard) — aproveita Fase 2+4 prontas
+Semana 5-7:  Fase 7 (Plugins + Oralsin) — PRIMEIRO TESTE REAL
+Semana 7-8:  Fase 8 (Hardening + Docker)
 ```
 
 ## Slash Commands — Development Operations
