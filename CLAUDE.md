@@ -90,9 +90,9 @@ Hardening:      3 + 6 → 8
 - [x] **TDD Red** — testes de idempotency, lock exclusivity, dequeue atomico (`/tdd`)
 - [x] **Implement** ADB Bridge: `adbkit` wrapper, `discover()`, `health()`, `shell()`
 - [x] **Implement** Message Queue: SQLite WAL, `BEGIN IMMEDIATE` + CAS, stale lock cleanup
-- [ ] **Implement** Send Engine (minimal): `wa.me` intent → typing char-by-char → screenshot
-- [ ] **Implement** REST API: `POST /messages` (201/409), `GET /devices`
-- [ ] **Implement** Socket.IO: events `message:queued`, `message:sending`, `message:sent`
+- [x] **Implement** Send Engine (minimal): `wa.me` intent → typing char-by-char → screenshot
+- [x] **Implement** REST API: `POST /messages` (201/409), `GET /devices`
+- [x] **Implement** Socket.IO: events `message:queued`, `message:sending`, `message:sent`
 - [ ] **Implement** UI minimal: 1 device card + fila + status
 - [ ] **Implement** Electron shell: main process carrega core + BrowserWindow carrega UI
 - [ ] **TDD Green** — todos os testes passando
