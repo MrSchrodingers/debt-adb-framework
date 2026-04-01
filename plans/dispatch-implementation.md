@@ -55,6 +55,60 @@ Tabelas: `messages`, `message_history`, `devices`, `whatsapp_accounts`, `alerts`
 WAL mode habilitado. Idempotency via UNIQUE constraint em `idempotency_key`.
 Locking via `UPDATE ... WHERE status='queued' LIMIT 1 RETURNING *` (SKIP LOCKED pattern).
 
+### Locking Strategy (SQLite)
+
+SQLite nao suporta SKIP LOCKED. Estrategia: `BEGIN IMMEDIATE` + CAS.
+
+Dequeue atomico:
+```sql
+BEGIN IMMEDIATE;
+UPDATE messages
+  SET status = 'locked', locked_by = :device_serial, locked_at = datetime('now')
+  WHERE id = (
+    SELECT id FROM messages
+    WHERE status = 'queued'
+    ORDER BY priority ASC, created_at ASC
+    LIMIT 1
+  )
+  RETURNING *;
+COMMIT;
+```
+
+Stale lock cleanup (cron 30s):
+```sql
+UPDATE messages
+  SET status = 'queued', locked_by = NULL, locked_at = NULL
+  WHERE status = 'locked'
+    AND locked_at < datetime('now', '-120 seconds');
+```
+
+### Rede e Endpoints
+
+- Dispatch e Oralsin rodam em infra separada (internet)
+- Dispatch exposto via reverse proxy + dominio + SSL (ex: dispatch.debt.com.br)
+- Config: `DISPATCH_PUBLIC_URL` no .env — todos os webhook URLs derivam disso
+- Callback delivery: at-least-once, 3 retries (5s, 15s, 45s), `failed_callbacks` table
+
+### Trust Model
+
+- Dispatch confia na Oralsin (executor burro)
+- Valida schema (Zod) e aplica rate limit anti-ban
+- Zero logica de negocio (weekly limit, template, paciente = Oralsin)
+
+### Rate Limit — Valores Exatos (Port do WAHA Client Oralsin)
+
+```
+BASE_MIN_DELAY_S = 20.0
+BASE_MAX_DELAY_S = 35.0
+VOLUME_WINDOW_MINUTES = 60
+VOLUME_SCALE_THRESHOLD = 10
+VOLUME_SCALE_FACTOR = 1.5
+VOLUME_MAX_DELAY_S = 120.0
+PAIR_RATE_LIMIT_S = 6.0
+
+Formula: scaled_delay = min(random(20, 35) * 1.5^(volume // 10), 120)
+```
+
 ### Socket.IO Events (core → ui)
 
 ```
@@ -112,6 +166,9 @@ Ponta-a-ponta:
 - [ ] UI mostra device online + mensagem na fila + status sent
 - [ ] Socket.IO emite eventos em cada transicao
 - [ ] Testes: queue idempotency, lock exclusivity, send flow (mock ADB)
+- [ ] Stale lock cleanup: mensagens locked > 120s voltam para queued
+- [ ] Device `unauthorized` detectado na UI com instrucao para autorizar
+- [ ] UI descobre core URL via injection (Electron) ou env var (web)
 
 ### Notas de implementacao
 
@@ -195,6 +252,12 @@ Evoluir o send engine da Fase 1 para producao: rate limiting com volume scaling,
 - Portar logica de `_apply_rate_limit` e `_get_volume_scale_factor` do WAHA client Oralsin para TypeScript
 - OCR: Tesseract.js com modelo `eng` pre-carregado, crop da regiao central da tela
 - Distribution: scoring function per-account, recalculado a cada dequeue
+- OCR ban detection: crop centro da tela (25-75% width, 30-70% height)
+- Strings de ban: ["banned", "suspended", "verify your phone", "unusual activity", "captcha"]
+- Confidence threshold: >= 60% Tesseract
+- Se OCR falha: nao pausar, logar warning, continuar
+- Contact registration: intent ACTION_INSERT com EXTRA_PHONE + EXTRA_NAME
+  Se contato ja existe: KEYCODE_BACK. Se falha: prosseguir via wa.me intent
 
 ---
 
@@ -222,6 +285,9 @@ Parear cada numero WhatsApp com uma sessao WAHA vinculada (linked device) em mod
 - [ ] Todas mensagens persistidas em `message_history` com metadata completo
 - [ ] Sessao WAHA que cai eh re-pareada automaticamente
 - [ ] Ban da sessao WAHA gera alerta mas NAO pausa envio ADB
+- [ ] WAHA pairing retry: exponential backoff (5s, 10s, 20s, 40s, 80s) max 5x
+- [ ] Outgoing capturada via multi-device sync em < 30s
+- [ ] Queue NAO bloqueia esperando pairing (envia sem audit trail se necessario)
 - [ ] Testes: webhook processing, session health check, independence from ADB
 
 ### Notas de implementacao
@@ -256,6 +322,9 @@ Sincronizacao bidirecional com Chatwoot: incoming → Chatwoot conversation, out
 - [ ] Operador responde no Chatwoot → mensagem enviada via ADB no device correto
 - [ ] Conversa completa (in+out) visivel no Chatwoot
 - [ ] Busca por numero destino funcional no audit log da UI
+- [ ] Device offline no reply: re-roteado para outro device com mesmo sender_number
+- [ ] Se nenhum device disponivel: status `waiting_device`, despacha no reconnect
+- [ ] TTL de reply: 4 horas, apos isso `expired` + alerta
 - [ ] Testes: Chatwoot API mock, webhook processing, bidirectional flow
 
 ### Notas de implementacao
@@ -342,6 +411,10 @@ Sistema de plugins extensivel + primeiro plugin: Oralsin NotificationBilling.
 - DispatchNotifier na Oralsin: nova classe em `adapters/notifiers/dispatch/dispatch_notifier.py`
 - Registry Oralsin: `get_notifier("adb") → DispatchNotifier`
 - Callback: novo endpoint Django `POST /api/webhooks/dispatch/`
+- Plugin event bus: DispatchEvent { type, timestamp, correlationId, data }
+- Handlers async em try/catch isolado — erro no plugin NAO afeta core
+- Timeout por handler: 5s
+- Callback delivery: at-least-once, 3 retries, failed_callbacks table
 
 ---
 
@@ -380,6 +453,8 @@ Suporte completo a multi-profile (4 profiles por device = 8 WA por device), hard
 - Profile switching: `adb shell am switch-user N` + wait + verify
 - Docker: base `node:22-slim`, install `android-tools`, mount `/dev/bus/usb`
 - Graceful: `process.on('SIGINT')` → stop accepting, drain queue, close SQLite
+- Encryption key: derivada de machine-id via PBKDF2 (nunca salva em disco)
+- Se trocar maquina: re-configurar credenciais
 
 ---
 

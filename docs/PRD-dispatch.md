@@ -369,6 +369,11 @@ packages/
 ### Contratos de API (REST Local)
 
 **Enqueue Message** (chamado pelos plugins):
+
+> **Validacao**: Todo payload eh validado com Zod schema antes de enfileirar.
+> Campos obrigatorios: `idempotency_key`, `to`, `text`. Formato do numero: `55DDNNNNNNNNN` (13 digitos).
+> Payload invalido retorna `400` com detalhes dos erros Zod.
+
 ```
 POST /api/v1/messages
 {
@@ -588,6 +593,18 @@ CREATE TABLE alerts (
   resolved_at TEXT
 );
 
+-- Callbacks falhos (retry manual)
+CREATE TABLE failed_callbacks (
+  id TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL,
+  callback_url TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  attempts INTEGER DEFAULT 0,
+  last_attempt_at TEXT,
+  next_retry_at TEXT,
+  created_at TEXT NOT NULL
+);
+
 -- Plugins
 CREATE TABLE plugins (
   name TEXT PRIMARY KEY,
@@ -598,6 +615,72 @@ CREATE TABLE plugins (
   updated_at TEXT
 );
 ```
+
+### Estrategia de Locking (SQLite)
+
+SQLite **nao suporta `SKIP LOCKED`** (feature exclusiva de PostgreSQL/MySQL). A solucao usa `BEGIN IMMEDIATE` + CAS (Compare-and-Swap) para dequeue atomico:
+
+```sql
+-- Dequeue atomico: BEGIN IMMEDIATE adquire write lock exclusivo
+-- WAL mode permite reads paralelos enquanto o write lock esta ativo
+BEGIN IMMEDIATE;
+UPDATE messages
+  SET status = 'locked', locked_by = :device_serial, locked_at = datetime('now')
+  WHERE id = (
+    SELECT id FROM messages
+    WHERE status = 'queued'
+    ORDER BY priority ASC, created_at ASC
+    LIMIT 1
+  )
+  RETURNING *;
+COMMIT;
+```
+
+**Como funciona:**
+- `BEGIN IMMEDIATE` garante que apenas 1 writer executa por vez (SQLite single-writer)
+- WAL mode permite que reads nao bloqueiem durante o dequeue
+- O `UPDATE ... WHERE id = (SELECT ...)` eh atomico dentro da transacao
+- `locked_by` identifica o device que pegou a mensagem
+- `locked_at` permite detectar locks estagnados (stale locks)
+
+**Stale Lock Cleanup:**
+Cron job executado a cada 30 segundos para liberar mensagens presas:
+
+```sql
+UPDATE messages
+  SET status = 'queued', locked_by = NULL, locked_at = NULL
+  WHERE status = 'locked'
+    AND locked_at < datetime('now', '-120 seconds');
+```
+
+Timeout de 120s cobre o tempo maximo para envio de 1 mensagem (typing + screenshot + validacao).
+
+### Rede e Endpoints
+
+Dispatch e Oralsin rodam em **infraestrutura separada** (servidores distintos, redes diferentes, comunicacao via internet).
+
+**Exposicao:**
+- Dispatch exposto via reverse proxy (Nginx/Caddy) com dominio proprio + SSL
+- Exemplo: `https://dispatch.debt.com.br`
+- Configuracao: variavel de ambiente `DISPATCH_PUBLIC_URL` no `.env`
+- Todos os webhook URLs que o Dispatch informa aos plugins sao derivados deste valor
+
+**Callback Delivery (at-least-once):**
+- Dispatch retenta callback 3x com backoff exponencial: 5s, 15s, 45s
+- Se todas as 3 tentativas falharem: persiste na tabela `failed_callbacks` para retry manual/agendado
+- Callback inclui `idempotency_key` para que o lado receptor (Oralsin) possa deduplicar
+
+### Trust Model
+
+Dispatch eh um **executor burro** — nao implementa logica de negocio.
+
+- **Dispatch confia na Oralsin**: aceita qualquer mensagem que passe na validacao de schema
+- **Validacao**: apenas Zod (schema validation) — campos obrigatorios, tipos, formato do numero
+- **Rate limit**: aplica rate limit anti-ban por device/numero (protecao do canal, nao regra de negocio)
+- **Zero business logic**: Dispatch NAO valida weekly limit, templates, paciente ativo, ou qualquer regra de dominio
+- Toda logica de negocio (quem pode receber, quando, quantas vezes) fica na Oralsin
+
+Isso mantém o contrato simples e evita duplicacao de regras entre sistemas.
 
 ---
 
