@@ -93,8 +93,8 @@ Hardening:      3 + 6 → 8
 - [x] **Implement** Send Engine (minimal): `wa.me` intent → typing char-by-char → screenshot
 - [x] **Implement** REST API: `POST /messages` (201/409), `GET /devices`
 - [x] **Implement** Socket.IO: events `message:queued`, `message:sending`, `message:sent`
-- [ ] **Implement** UI minimal: 1 device card + fila + status
-- [ ] **Implement** Electron shell: main process carrega core + BrowserWindow carrega UI
+- [x] **Implement** UI minimal: 1 device card + fila + status
+- [x] **Implement** Electron shell: main process carrega core + BrowserWindow carrega UI
 - [ ] **TDD Green** — todos os testes passando
 - [ ] **E2E** — enviar msg real para `5543991938235` via ADB no POCO Serenity
 - [ ] **Simplify** — `/simplify` review do codigo escrito
