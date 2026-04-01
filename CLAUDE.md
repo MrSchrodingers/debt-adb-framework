@@ -100,7 +100,7 @@ Hardening:      3 + 6 → 8
 - [x] **Simplify** — `/simplify` review do codigo escrito
 - [x] **Code Review** — `superpowers:requesting-code-review`
 - [x] **Verify** — `superpowers:verification-before-completion`
-- [ ] **Phase Gate** — atualizar `.dev-state/progress.md` → APPROVED ou FAILED_REVIEW
+- [x] **Phase Gate** — atualizar `.dev-state/progress.md` → APPROVED ou FAILED_REVIEW
 
 ### Execution Bullets — Fase 2: Multi-Device + Health
 > **Deps**: Fase 1 APPROVED | **Issue**: #2 | **Estimativa**: M

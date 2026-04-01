@@ -1,17 +1,17 @@
 # Development Progress — DEBT ADB Framework
 
-> **Last updated**: 2026-04-01T19:25:00-03:00
-> **Current phase**: 1 — Tracer Bullet
-> **Next action**: Grill design da fila + locking SQLite
+> **Last updated**: 2026-04-01T19:32:00-03:00
+> **Current phase**: 1 — Tracer Bullet (APPROVED)
+> **Next action**: Start Phase 2 or Phase 4 (both unblocked)
 
 ## Phase Status
 
 | Phase | Title | Status | Started | Approved | Blocker |
 |-------|-------|--------|---------|----------|---------|
-| 1 | Tracer Bullet — 1 msg ponta-a-ponta | `IN_PROGRESS` | 2026-04-01 | — | — |
-| 2 | Multi-Device + Health Monitoring | `BLOCKED` | — | — | Phase 1 |
+| 1 | Tracer Bullet — 1 msg ponta-a-ponta | `APPROVED` | 2026-04-01 | 2026-04-01 | — |
+| 2 | Multi-Device + Health Monitoring | `READY` | — | — | — |
 | 3 | Send Engine Robusto + Anti-Ban | `BLOCKED` | — | — | Phase 2 |
-| 4 | WAHA Listener Passivo | `BLOCKED` | — | — | Phase 1 |
+| 4 | WAHA Listener Passivo | `READY` | — | — | — |
 | 5 | Chatwoot Bridge Bidirecional | `BLOCKED` | — | — | Phase 4 |
 | 6 | Dashboard Operacional | `BLOCKED` | — | — | Phase 2, 4 |
 | 7 | Plugin System + Plugin Oralsin | `BLOCKED` | — | — | Phase 3, 5 |
@@ -38,11 +38,11 @@
 
 | Phase | Approved At | Reviewer | Notes |
 |-------|------------|----------|-------|
-| — | — | — | No phases approved yet |
+| 1 | 2026-04-01 | Claude Opus 4.6 + Matheus | 14/14 criteria verified, 27 tests, 2 E2E sends, grill review resolved 3 blockers, code review fixed 2 criticals |
 
 ## Active Blockers
 
-None — Phase 1 in progress.
+None — Phase 1 approved. Phases 2 and 4 unblocked.
 
 ## Test Configuration
 
