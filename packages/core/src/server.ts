@@ -50,6 +50,43 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   registerMessageRoutes(server, queue, emitter)
   registerDeviceRoutes(server, adb)
 
+  // Manual send endpoint: POST /api/v1/messages/:id/send
+  server.post('/api/v1/messages/:id/send', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const message = queue.getById(id)
+
+    if (!message) {
+      return reply.status(404).send({ error: 'Message not found' })
+    }
+    if (message.status !== 'queued' && message.status !== 'failed') {
+      return reply.status(409).send({ error: `Cannot send message in status: ${message.status}` })
+    }
+
+    const devices = await adb.discover()
+    const online = devices.find(d => d.type === 'device')
+    if (!online) {
+      return reply.status(503).send({ error: 'No device available' })
+    }
+
+    // Re-queue if failed, then dequeue for this device
+    if (message.status === 'failed') {
+      queue.updateStatus(id, 'queued')
+    }
+
+    try {
+      const result = await engine.send(
+        message.status === 'failed' ? { ...message, status: 'queued' } : message,
+        online.serial,
+      )
+      return { status: 'sent', durationMs: result.durationMs }
+    } catch (err) {
+      return reply.status(500).send({
+        error: 'Send failed',
+        detail: err instanceof Error ? err.message : String(err),
+      })
+    }
+  })
+
   // Stale lock cleanup — every 30s
   const cleanupInterval = setInterval(() => {
     const cleaned = queue.cleanStaleLocks()
@@ -58,9 +95,29 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     }
   }, 30_000)
 
+  // Auto-worker loop — polls queue every 5s, sends to first available device
+  const workerInterval = setInterval(async () => {
+    if (engine.isProcessing) return // one at a time
+
+    try {
+      const devices = await adb.discover()
+      const online = devices.find(d => d.type === 'device')
+      if (!online) return
+
+      const message = queue.dequeue(online.serial)
+      if (!message) return
+
+      server.log.info({ messageId: message.id, device: online.serial }, 'Worker: sending message')
+      await engine.send(message, online.serial)
+    } catch (err) {
+      server.log.error({ err }, 'Worker: send failed')
+    }
+  }, 5_000)
+
   // Cleanup hook — must be registered BEFORE listen()
   server.addHook('onClose', () => {
     clearInterval(cleanupInterval)
+    clearInterval(workerInterval)
     db.close()
   })
 

@@ -22,6 +22,12 @@ export class MessageQueue {
       );
       CREATE INDEX IF NOT EXISTS idx_messages_dequeue
         ON messages(status, priority, created_at);
+
+      CREATE TABLE IF NOT EXISTS contacts (
+        phone TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        registered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
     `)
   }
 
@@ -106,6 +112,17 @@ export class MessageQueue {
       'SELECT * FROM messages WHERE id = ?',
     ).get(id) as Record<string, unknown> | undefined
     return row ? this.rowToMessage(row) : null
+  }
+
+  hasContact(phone: string): boolean {
+    const row = this.db.prepare('SELECT 1 FROM contacts WHERE phone = ?').get(phone)
+    return row !== undefined
+  }
+
+  saveContact(phone: string, name: string): void {
+    this.db.prepare(
+      'INSERT OR IGNORE INTO contacts (phone, name) VALUES (?, ?)',
+    ).run(phone, name)
   }
 
   private rowToMessage(row: Record<string, unknown>): Message {
