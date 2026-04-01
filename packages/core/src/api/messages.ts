@@ -3,12 +3,14 @@ import { z } from 'zod'
 import type { MessageQueue, MessageStatus } from '../queue/index.js'
 import type { DispatchEmitter } from '../events/index.js'
 
+const VALID_STATUSES = ['queued', 'locked', 'sending', 'sent', 'failed'] as const
+
 const enqueueSchema = z.object({
-  to: z.string().min(1),
-  body: z.string().min(1),
+  to: z.string().regex(/^\d{10,15}$/, 'Phone must be 10-15 digits'),
+  body: z.string().min(1).max(4096),
   idempotencyKey: z.string().min(1),
   priority: z.number().int().min(1).max(10).optional(),
-  senderNumber: z.string().optional(),
+  senderNumber: z.string().regex(/^\d{10,15}$/).optional(),
 })
 
 export function registerMessageRoutes(
@@ -43,8 +45,11 @@ export function registerMessageRoutes(
     return message
   })
 
-  server.get('/api/v1/messages', async (request) => {
+  server.get('/api/v1/messages', async (request, reply) => {
     const { status } = request.query as { status?: string }
+    if (status && !VALID_STATUSES.includes(status as MessageStatus)) {
+      return reply.status(400).send({ error: `Invalid status. Must be one of: ${VALID_STATUSES.join(', ')}` })
+    }
     return queue.list(status as MessageStatus | undefined)
   })
 }
