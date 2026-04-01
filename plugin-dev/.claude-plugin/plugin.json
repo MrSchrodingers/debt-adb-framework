@@ -1,0 +1,11 @@
+{
+  "name": "debt-dev",
+  "description": "Development workflow commands for debt-adb-framework: phase management, batch execution, validation, and advancement with TDD, grill, and code review gates",
+  "author": {
+    "name": "ti"
+  },
+  "keywords": [
+    "debt", "adb", "dispatch", "workflow", "tdd", "phase",
+    "execute", "validate", "advance", "development"
+  ]
+}
