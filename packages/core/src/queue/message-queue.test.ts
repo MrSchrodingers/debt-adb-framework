@@ -181,7 +181,7 @@ describe('MessageQueue', () => {
 
       // Manually backdate the locked_at to simulate stale lock
       db.prepare(
-        "UPDATE messages SET locked_at = datetime('now', '-130 seconds') WHERE id = ?",
+        "UPDATE messages SET locked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-130 seconds') WHERE id = ?",
       ).run(msg!.id)
 
       const cleaned = queue.cleanStaleLocks()
@@ -208,7 +208,7 @@ describe('MessageQueue', () => {
       queue.dequeue('device-002')
 
       db.prepare(
-        "UPDATE messages SET locked_at = datetime('now', '-130 seconds') WHERE status = 'locked'",
+        "UPDATE messages SET locked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-130 seconds') WHERE status = 'locked'",
       ).run()
 
       const cleaned = queue.cleanStaleLocks()
@@ -220,7 +220,7 @@ describe('MessageQueue', () => {
       const original = queue.dequeue('device-001')
 
       db.prepare(
-        "UPDATE messages SET locked_at = datetime('now', '-130 seconds') WHERE id = ?",
+        "UPDATE messages SET locked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-130 seconds') WHERE id = ?",
       ).run(original!.id)
 
       queue.cleanStaleLocks()
@@ -262,10 +262,14 @@ describe('MessageQueue', () => {
     it('updates the updatedAt timestamp', () => {
       queue.enqueue({ to: '111', body: 'Hello', idempotencyKey: 'k1' })
       const locked = queue.dequeue('device-001')
-      const before = locked!.updatedAt
+
+      // Backdate updatedAt to guarantee it changes on next update
+      db.prepare(
+        "UPDATE messages SET updated_at = '2000-01-01T00:00:00.000Z' WHERE id = ?",
+      ).run(locked!.id)
 
       const sending = queue.updateStatus(locked!.id, 'sending')
-      expect(sending.updatedAt).not.toBe(before)
+      expect(sending.updatedAt).not.toBe('2000-01-01T00:00:00.000Z')
     })
 
     it('throws for non-existent message id', () => {

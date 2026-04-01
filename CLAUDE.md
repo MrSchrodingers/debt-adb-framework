@@ -88,8 +88,8 @@ Hardening:      3 + 6 → 8
 - [x] **Scaffold** Turborepo: `packages/core`, `packages/ui`, `packages/electron`
 - [x] **Grill** design da fila + locking SQLite (`/grill-me`)
 - [x] **TDD Red** — testes de idempotency, lock exclusivity, dequeue atomico (`/tdd`)
-- [ ] **Implement** ADB Bridge: `adbkit` wrapper, `discover()`, `health()`, `shell()`
-- [ ] **Implement** Message Queue: SQLite WAL, `BEGIN IMMEDIATE` + CAS, stale lock cleanup
+- [x] **Implement** ADB Bridge: `adbkit` wrapper, `discover()`, `health()`, `shell()`
+- [x] **Implement** Message Queue: SQLite WAL, `BEGIN IMMEDIATE` + CAS, stale lock cleanup
 - [ ] **Implement** Send Engine (minimal): `wa.me` intent → typing char-by-char → screenshot
 - [ ] **Implement** REST API: `POST /messages` (201/409), `GET /devices`
 - [ ] **Implement** Socket.IO: events `message:queued`, `message:sending`, `message:sent`
