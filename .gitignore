@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+*.png
+*.jpg
+*.jpeg
+.DS_Store
