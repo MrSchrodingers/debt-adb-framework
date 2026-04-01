@@ -1,14 +1,14 @@
 # Development Progress — DEBT ADB Framework
 
-> **Last updated**: 2026-04-01T17:35:00-03:00
-> **Current phase**: NONE (Pre-implementation)
-> **Next action**: Start Phase 1
+> **Last updated**: 2026-04-01T19:25:00-03:00
+> **Current phase**: 1 — Tracer Bullet
+> **Next action**: Grill design da fila + locking SQLite
 
 ## Phase Status
 
 | Phase | Title | Status | Started | Approved | Blocker |
 |-------|-------|--------|---------|----------|---------|
-| 1 | Tracer Bullet — 1 msg ponta-a-ponta | `READY` | — | — | — |
+| 1 | Tracer Bullet — 1 msg ponta-a-ponta | `IN_PROGRESS` | 2026-04-01 | — | — |
 | 2 | Multi-Device + Health Monitoring | `BLOCKED` | — | — | Phase 1 |
 | 3 | Send Engine Robusto + Anti-Ban | `BLOCKED` | — | — | Phase 2 |
 | 4 | WAHA Listener Passivo | `BLOCKED` | — | — | Phase 1 |
@@ -42,7 +42,7 @@
 
 ## Active Blockers
 
-None — Phase 1 is READY to start.
+None — Phase 1 in progress.
 
 ## Test Configuration
 
@@ -56,3 +56,7 @@ DEVICE_SERIAL=9b01005930533036340030832250ac  (POCO Serenity)
 - 2026-04-01: Project created. PRD, plan, and 8 GitHub issues ready.
   ADB validated on POCO Serenity. Bloatware removed. Device healthy.
   Ready to scaffold Turborepo and start Phase 1.
+- 2026-04-01: Phase 1 started. Turborepo scaffolded with pnpm workspaces.
+  packages/core (Fastify+SQLite+adbkit), packages/ui (Vite+React+Tailwind),
+  packages/electron (Electron shell). All deps installed, core starts on :7890,
+  UI starts on :5173, vitest runs. Used @devicefarmer/adbkit (fork of adbkit).

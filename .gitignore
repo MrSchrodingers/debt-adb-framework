@@ -1,7 +1,12 @@
 node_modules/
 dist/
 .env
+.env.*
 *.png
 *.jpg
 *.jpeg
 .DS_Store
+.turbo
+*.db
+*.db-wal
+*.db-shm
