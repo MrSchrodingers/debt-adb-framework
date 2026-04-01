@@ -20,14 +20,20 @@ export class SendEngine {
     this.queue.updateStatus(message.id, 'sending')
     this.emitter.emit('message:sending', { id: message.id, deviceSerial })
 
-    // Open WhatsApp chat via wa.me deep link
+    // Step 0: Ensure clean state — dismiss any overlays, go home
+    await this.ensureCleanState(deviceSerial)
+
+    // Step 1: Register contact (ensures WhatsApp can find them)
+    await this.registerContact(deviceSerial, message.to)
+
+    // Step 2: Open WhatsApp Messenger chat (explicit -p com.whatsapp to avoid Business)
     await this.adb.shell(
       deviceSerial,
-      `am start -a android.intent.action.VIEW -d "https://wa.me/${message.to}"`,
+      `am start -a android.intent.action.VIEW -d "https://wa.me/${message.to}" -p com.whatsapp`,
     )
-    await this.delay(3000)
+    await this.delay(4000)
 
-    // Type message char by char with Gaussian delays
+    // Step 3: Type message char by char with Gaussian delays
     for (const char of message.body) {
       if (char === ' ') {
         await this.adb.shell(deviceSerial, 'input keyevent 62')
@@ -38,11 +44,11 @@ export class SendEngine {
       await this.delay(this.gaussianDelay(80, 30))
     }
 
-    // Press send (Enter)
+    // Step 4: Find and tap send button via UI hierarchy
     await this.delay(500)
-    await this.adb.shell(deviceSerial, 'input keyevent 66')
+    await this.tapSendButton(deviceSerial)
 
-    // Wait for send + take screenshot
+    // Step 5: Wait for send + take screenshot
     await this.delay(2000)
     const screenshot = await this.adb.screenshot(deviceSerial)
 
@@ -55,6 +61,49 @@ export class SendEngine {
     })
 
     return { screenshot, durationMs }
+  }
+
+  private async ensureCleanState(deviceSerial: string): Promise<void> {
+    // Dismiss any dialogs/overlays
+    await this.adb.shell(deviceSerial, 'input keyevent 4') // BACK
+    await this.delay(300)
+    // Go to home screen for a clean starting point
+    await this.adb.shell(deviceSerial, 'input keyevent 3') // HOME
+    await this.delay(500)
+  }
+
+  private async registerContact(deviceSerial: string, phone: string): Promise<void> {
+    const name = `Contato ${phone.slice(-4)}`
+    await this.adb.shell(
+      deviceSerial,
+      `am start -a android.intent.action.INSERT -t vnd.android.cursor.dir/contact --es phone "${phone}" --es name "${name}"`,
+    )
+    await this.delay(2000)
+
+    // Dismiss contact editor — press back twice to exit
+    await this.adb.shell(deviceSerial, 'input keyevent 4')
+    await this.delay(500)
+    await this.adb.shell(deviceSerial, 'input keyevent 4')
+    await this.delay(500)
+  }
+
+  private async tapSendButton(deviceSerial: string): Promise<void> {
+    // Use uiautomator to find the send button reliably
+    await this.adb.shell(deviceSerial, 'uiautomator dump /sdcard/dispatch-ui.xml')
+    const xml = await this.adb.shell(deviceSerial, 'cat /sdcard/dispatch-ui.xml')
+
+    const sendMatch = xml.match(
+      /resource-id="com\.whatsapp:id\/send"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/,
+    )
+
+    if (sendMatch) {
+      const cx = Math.round((parseInt(sendMatch[1]) + parseInt(sendMatch[3])) / 2)
+      const cy = Math.round((parseInt(sendMatch[2]) + parseInt(sendMatch[4])) / 2)
+      await this.adb.shell(deviceSerial, `input tap ${cx} ${cy}`)
+    } else {
+      // Fallback: press Enter (works in some WhatsApp configurations)
+      await this.adb.shell(deviceSerial, 'input keyevent 66')
+    }
   }
 
   private gaussianDelay(mean: number, stddev: number): number {
