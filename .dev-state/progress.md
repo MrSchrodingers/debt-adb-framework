@@ -11,7 +11,7 @@
 | 1 | Tracer Bullet — 1 msg ponta-a-ponta | `APPROVED` | 2026-04-01 | 2026-04-01 | — |
 | 2 | Multi-Device + Health Monitoring | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
 | 3 | Send Engine Robusto + Anti-Ban | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
-| 4 | WAHA Listener Passivo | `IN_PROGRESS` | 2026-04-02 | — | — |
+| 4 | WAHA Listener Passivo | `IN_REVIEW` | 2026-04-02 | — | — |
 | 5 | Chatwoot Bridge Bidirecional | `BLOCKED` | — | — | Phase 4 |
 | 6 | Dashboard Operacional | `BLOCKED` | — | — | Phase 2, 4 |
 | 7 | Plugin System + Plugin Oralsin | `BLOCKED` | — | — | Phase 3, 5 |
