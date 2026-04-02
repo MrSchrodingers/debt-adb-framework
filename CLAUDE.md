@@ -113,7 +113,7 @@ Hardening:      3 + 6 → 8
 - [x] **Implement** Alert System: thresholds configuraveis + EventEmitter + SQLite
 - [x] **Implement** UI: device grid, health cards, spark charts, alert panel
 - [x] **Implement** Actions: screenshot sob demanda, reboot, restart WhatsApp
-- [ ] **TDD Green** + **E2E** conectar 2+ devices, verificar health
+- [x] **TDD Green** + **E2E** conectar 2+ devices, verificar health
 - [ ] **Review** + **Verify** + **Phase Gate**
 
 ### Execution Bullets — Fase 3: Send Engine Robusto + Anti-Ban
