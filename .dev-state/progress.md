@@ -1,8 +1,8 @@
 # Development Progress — DEBT ADB Framework
 
-> **Last updated**: 2026-04-02T16:45:00-03:00
-> **Current phase**: 3 — Send Engine Robusto + Anti-Ban (APPROVED)
-> **Next action**: Start Phase 4 (parallel track) or Phase 7 waits for Phase 5
+> **Last updated**: 2026-04-02T19:03:00-03:00
+> **Current phase**: 4 — WAHA Listener Passivo (APPROVED)
+> **Next action**: Start Phase 5 (Chatwoot) or Phase 6 (Dashboard) — both now READY
 
 ## Phase Status
 
@@ -11,9 +11,9 @@
 | 1 | Tracer Bullet — 1 msg ponta-a-ponta | `APPROVED` | 2026-04-01 | 2026-04-01 | — |
 | 2 | Multi-Device + Health Monitoring | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
 | 3 | Send Engine Robusto + Anti-Ban | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
-| 4 | WAHA Listener Passivo | `IN_REVIEW` | 2026-04-02 | — | — |
-| 5 | Chatwoot Bridge Bidirecional | `BLOCKED` | — | — | Phase 4 |
-| 6 | Dashboard Operacional | `BLOCKED` | — | — | Phase 2, 4 |
+| 4 | WAHA Listener Passivo | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
+| 5 | Chatwoot Bridge Bidirecional | `READY` | — | — | — |
+| 6 | Dashboard Operacional | `READY` | — | — | — |
 | 7 | Plugin System + Plugin Oralsin | `BLOCKED` | — | — | Phase 3, 5 |
 | 8 | Multi-Profile + Hardening + Docker | `BLOCKED` | — | — | Phase 3, 6 |
 
@@ -41,6 +41,7 @@
 | 1 | 2026-04-01 | Claude Opus 4.6 + Matheus | 14/14 criteria verified, 27 tests, 2 E2E sends, grill review resolved 3 blockers, code review fixed 2 criticals |
 | 2 | 2026-04-02 | Claude Opus 4.6 + Matheus | 8/8 criteria verified, 78 tests, 12 grill decisions, 8 commits, simplify fixed 10 findings, review fixed 2 criticals + 4 importants |
 | 3 | 2026-04-02 | Claude Opus 4.6 + Matheus | 7/8 criteria verified, 145 tests, 18 grill decisions, 9 commits, simplify fixed 6 findings, review fixed 2 criticals + 3 importants. Temporal.io + Redis architecture. E2E: 5 rate-limited msgs on POCO Serenity |
+| 4 | 2026-04-02 | Claude Opus 4.6 + Matheus | 10/10 criteria verified, 188 tests (43 new), 17 grill decisions, 7 commits, simplify fixed 6 findings, review fixed 2 criticals + 4 importants. Shared WAHA Plus GoWS, HMAC SHA-512, webhook-first, 90-day retention |
 
 ## Phase 4 Grill Progress
 
