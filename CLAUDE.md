@@ -107,8 +107,8 @@ Hardening:      3 + 6 → 8
 
 - [x] **Grill** device discovery, health polling, alert thresholds (`/grill-me`)
 - [x] **TDD Red** — testes de discovery mock, alert thresholds, health persistence
-- [ ] **Implement** Device Manager: auto-discovery via `adb devices` polling (5s)
-- [ ] **Implement** Health Collector: RAM, bateria, temp, storage, WiFi (30s poll)
+- [x] **Implement** Device Manager: auto-discovery via `adb devices` polling (5s)
+- [x] **Implement** Health Collector: RAM, bateria, temp, storage, WiFi (30s poll)
 - [ ] **Implement** WA Account Mapper: device → profile → WA/WAB → numero
 - [ ] **Implement** Alert System: thresholds configuraveis + EventEmitter + SQLite
 - [ ] **Implement** UI: device grid, health cards, spark charts, alert panel
