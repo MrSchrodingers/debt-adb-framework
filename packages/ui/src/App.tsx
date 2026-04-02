@@ -6,6 +6,7 @@ import { DeviceDetail } from './components/device-detail'
 import { AlertPanel } from './components/alert-panel'
 import { MessageList } from './components/message-list'
 import { SendForm } from './components/send-form'
+import { SessionManager } from './components/session-manager'
 import type { DeviceRecord, HealthSnapshot, WhatsAppAccount, Alert, Message } from './types'
 
 export function App() {
@@ -17,6 +18,7 @@ export function App() {
   const [detailHealth, setDetailHealth] = useState<HealthSnapshot[]>([])
   const [detailAccounts, setDetailAccounts] = useState<WhatsAppAccount[]>([])
   const [detailAlerts, setDetailAlerts] = useState<Alert[]>([])
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'sessions'>('dashboard')
 
   const fetchDevices = useCallback(() => {
     fetch(`${CORE_URL}/api/v1/monitor/devices`)
@@ -131,61 +133,92 @@ export function App() {
         <h1 className="text-xl font-bold">Dispatch</h1>
         <div className={`h-2 w-2 rounded-full ${connected ? 'bg-emerald-500' : 'bg-red-500'}`} />
         <span className="text-xs text-zinc-500">{connected ? 'connected' : 'disconnected'}</span>
-        <span className="ml-auto text-xs text-zinc-600">
-          {devices.length} device{devices.length !== 1 ? 's' : ''}
-        </span>
+        <div className="ml-auto flex items-center gap-3">
+          <div className="flex rounded-lg bg-zinc-900 border border-zinc-800 p-0.5">
+            <button
+              onClick={() => setActiveTab('dashboard')}
+              className={`rounded px-3 py-1 text-xs font-medium transition ${
+                activeTab === 'dashboard'
+                  ? 'bg-zinc-700 text-zinc-100'
+                  : 'text-zinc-500 hover:text-zinc-300'
+              }`}
+            >
+              Dashboard
+            </button>
+            <button
+              onClick={() => setActiveTab('sessions')}
+              className={`rounded px-3 py-1 text-xs font-medium transition ${
+                activeTab === 'sessions'
+                  ? 'bg-zinc-700 text-zinc-100'
+                  : 'text-zinc-500 hover:text-zinc-300'
+              }`}
+            >
+              Sessions
+            </button>
+          </div>
+          <span className="text-xs text-zinc-600">
+            {devices.length} device{devices.length !== 1 ? 's' : ''}
+          </span>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left column: devices + alerts */}
-        <div className="lg:col-span-2 space-y-6">
-          <section>
-            <h2 className="text-sm font-medium text-zinc-400 mb-2">Devices</h2>
-            <DeviceGrid
-              devices={devices}
-              alerts={alerts}
-              selectedSerial={selectedSerial}
-              onSelect={(serial) =>
-                setSelectedSerial(serial === selectedSerial ? null : serial)
-              }
-            />
-          </section>
-
-          {selectedDevice && (
+      {activeTab === 'sessions' ? (
+        <section>
+          <h2 className="text-sm font-medium text-zinc-400 mb-3">Session Manager</h2>
+          <SessionManager />
+        </section>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Left column: devices + alerts */}
+          <div className="lg:col-span-2 space-y-6">
             <section>
-              <DeviceDetail
-                device={selectedDevice}
-                health={detailHealth}
-                accounts={detailAccounts}
-                alerts={detailAlerts}
-                onClose={() => setSelectedSerial(null)}
+              <h2 className="text-sm font-medium text-zinc-400 mb-2">Devices</h2>
+              <DeviceGrid
+                devices={devices}
+                alerts={alerts}
+                selectedSerial={selectedSerial}
+                onSelect={(serial) =>
+                  setSelectedSerial(serial === selectedSerial ? null : serial)
+                }
               />
             </section>
-          )}
 
-          <section>
-            <h2 className="text-sm font-medium text-zinc-400 mb-2">Send Message</h2>
-            <SendForm onSend={handleSend} disabled={!hasOnlineDevice} />
-          </section>
+            {selectedDevice && (
+              <section>
+                <DeviceDetail
+                  device={selectedDevice}
+                  health={detailHealth}
+                  accounts={detailAccounts}
+                  alerts={detailAlerts}
+                  onClose={() => setSelectedSerial(null)}
+                />
+              </section>
+            )}
 
-          <section>
-            <h2 className="text-sm font-medium text-zinc-400 mb-2">
-              Queue ({messages.length})
-            </h2>
-            <MessageList messages={messages} />
-          </section>
+            <section>
+              <h2 className="text-sm font-medium text-zinc-400 mb-2">Send Message</h2>
+              <SendForm onSend={handleSend} disabled={!hasOnlineDevice} />
+            </section>
+
+            <section>
+              <h2 className="text-sm font-medium text-zinc-400 mb-2">
+                Queue ({messages.length})
+              </h2>
+              <MessageList messages={messages} />
+            </section>
+          </div>
+
+          {/* Right column: alerts */}
+          <div>
+            <section>
+              <h2 className="text-sm font-medium text-zinc-400 mb-2">
+                Alerts ({alerts.length})
+              </h2>
+              <AlertPanel alerts={alerts} />
+            </section>
+          </div>
         </div>
-
-        {/* Right column: alerts */}
-        <div>
-          <section>
-            <h2 className="text-sm font-medium text-zinc-400 mb-2">
-              Alerts ({alerts.length})
-            </h2>
-            <AlertPanel alerts={alerts} />
-          </section>
-        </div>
-      </div>
+      )}
     </div>
   )
 }

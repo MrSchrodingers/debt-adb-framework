@@ -6,10 +6,11 @@ import { MessageQueue } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
 import { SendEngine } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
-import { registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes } from './api/index.js'
+import { registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes } from './api/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
 import { SessionManager, WebhookHandler, MessageHistory } from './waha/index.js'
 import { createWahaHttpClient } from './waha/waha-http-client.js'
+import { createChatwootHttpClient, ManagedSessions, InboxAutomation } from './chatwoot/index.js'
 import type { DispatchEventName } from './events/index.js'
 
 export interface DispatchCore {
@@ -64,6 +65,11 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   })
 
   let sessionManager: SessionManager | null = null
+  let inboxAutomation: InboxAutomation | null = null
+
+  // Initialize managed sessions table (always available, even without WAHA/Chatwoot)
+  const managedSessions = new ManagedSessions(db)
+  managedSessions.initialize()
 
   if (wahaApiUrl && wahaApiKey) {
     const wahaClient = createWahaHttpClient(wahaApiUrl, wahaApiKey)
@@ -73,6 +79,23 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       hmacSecret: process.env.WAHA_WEBHOOK_HMAC_SECRET,
     })
     sessionManager.initialize()
+
+    // Initialize Chatwoot integration (Phase 5)
+    const chatwootApiUrl = process.env.CHATWOOT_API_URL
+    const chatwootApiToken = process.env.CHATWOOT_API_TOKEN
+    const chatwootAccountId = Number(process.env.CHATWOOT_ACCOUNT_ID) || 1
+
+    if (chatwootApiUrl && chatwootApiToken) {
+      const chatwootClient = createChatwootHttpClient({
+        apiUrl: chatwootApiUrl,
+        accountId: chatwootAccountId,
+        apiToken: chatwootApiToken,
+      })
+      inboxAutomation = new InboxAutomation(chatwootClient, wahaClient, managedSessions, {
+        wahaApiUrl,
+        wahaApiKey,
+      })
+    }
   }
 
   server.get('/api/v1/health', async () => ({
@@ -86,6 +109,9 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // WAHA routes always registered (webhook receiver works without WAHA client)
   // sessionManager may be null if WAHA_API_URL not configured
   registerWahaRoutes(server, { webhookHandler, sessionManager, messageHistory })
+
+  // Session management routes (Phase 5)
+  registerSessionRoutes(server, { inboxAutomation, managedSessions })
 
   let workerRunning = false
 
