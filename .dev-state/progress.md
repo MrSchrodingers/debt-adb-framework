@@ -1,8 +1,8 @@
 # Development Progress — DEBT ADB Framework
 
-> **Last updated**: 2026-04-01T19:32:00-03:00
-> **Current phase**: 2 — Multi-Device + Health (APPROVED)
-> **Next action**: Start Phase 3 (critical path) or Phase 4 (parallel track)
+> **Last updated**: 2026-04-02T13:45:00-03:00
+> **Current phase**: 3 — Send Engine Robusto + Anti-Ban (IN_PROGRESS)
+> **Next action**: TDD Red — write failing tests for Phase 3
 
 ## Phase Status
 
@@ -10,7 +10,7 @@
 |-------|-------|--------|---------|----------|---------|
 | 1 | Tracer Bullet — 1 msg ponta-a-ponta | `APPROVED` | 2026-04-01 | 2026-04-01 | — |
 | 2 | Multi-Device + Health Monitoring | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
-| 3 | Send Engine Robusto + Anti-Ban | `READY` | — | — | — |
+| 3 | Send Engine Robusto + Anti-Ban | `IN_PROGRESS` | 2026-04-02 | — | — |
 | 4 | WAHA Listener Passivo | `READY` | — | — | — |
 | 5 | Chatwoot Bridge Bidirecional | `BLOCKED` | — | — | Phase 4 |
 | 6 | Dashboard Operacional | `BLOCKED` | — | — | Phase 2, 4 |
@@ -51,6 +51,11 @@ None.
   per-device workers, but actual multi-device send requires Phase 3's robust send engine.
 - **Per-device send lock**: `engine.isProcessing` is a single boolean. Phase 3 will track
   `send_phase` per device/message for proper multi-device locking.
+
+## Phase 3 Grill Progress
+
+See `.dev-state/phase-3-grill.md` for 18 confirmed decisions.
+Grill ✅ COMPLETE. Key: Temporal.io + Redis, signal-driven dispatcher, behavioral ban validation.
 
 ## Phase 2 Grill Progress
 
@@ -101,3 +106,11 @@ DEVICE_SERIAL=9b01005930533036340030832250ac  (POCO Serenity)
   78/78 tests passing. E2E: POCO Serenity detected online, health metrics (100% battery,
   25.6°C, 1163MB RAM, 38GB storage), WA+WABA on profiles 0 and 10, monitor API endpoints
   verified. Screenshot proof: reports/phase-2-e2e-20260402-120315.png.
+- 2026-04-02: Phase 3 started. Grill complete (18 decisions). Major architectural shift:
+  Temporal.io for workflow orchestration (everywhere, including Electron embedded), Redis for
+  hot state (rate limits, volume counters, send phase, cooldowns). Central Dispatcher as
+  signal-driven Temporal Workflow (zero polling). Per-number rate limits, per-device serial
+  execution. Ban detection: post-send OCR + behavioral validation (wa.me intent) + UIAutomator
+  countdown extraction. Retry: 5 attempts, exponential backoff (30s-480s). Auto-recovery:
+  UIAutomator + pidof crash detection. Jitter: 0.8-1.5x on scaled_delay (floor 20s, cap 300s).
+  See `.dev-state/phase-3-grill.md` for full decisions.
