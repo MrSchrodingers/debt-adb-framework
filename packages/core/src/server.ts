@@ -58,8 +58,12 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   const wahaApiUrl = process.env.WAHA_API_URL
   const wahaApiKey = process.env.WAHA_API_KEY
+  // WebhookHandler works without WAHA client (receives webhooks regardless)
+  const webhookHandler = new WebhookHandler(db, emitter, messageHistory, {
+    hmacSecret: process.env.WAHA_WEBHOOK_HMAC_SECRET,
+  })
+
   let sessionManager: SessionManager | null = null
-  let webhookHandler: WebhookHandler | null = null
 
   if (wahaApiUrl && wahaApiKey) {
     const wahaClient: WahaApiClient = {
@@ -67,13 +71,13 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         const res = await fetch(`${wahaApiUrl}/api/sessions`, {
           headers: { 'X-Api-Key': wahaApiKey },
         })
-        return res.json()
+        return res.json() as Promise<ReturnType<WahaApiClient['listSessions']> extends Promise<infer T> ? T : never>
       },
       async getSession(name) {
         const res = await fetch(`${wahaApiUrl}/api/sessions/${name}`, {
           headers: { 'X-Api-Key': wahaApiKey },
         })
-        return res.json()
+        return res.json() as Promise<ReturnType<WahaApiClient['getSession']> extends Promise<infer T> ? T : never>
       },
       async updateSessionWebhooks(name, webhooks) {
         await fetch(`${wahaApiUrl}/api/sessions/${name}`, {
@@ -92,7 +96,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         const res = await fetch(`${wahaApiUrl}/api/server/version`, {
           headers: { 'X-Api-Key': wahaApiKey },
         })
-        return res.json()
+        return res.json() as Promise<{ version: string; engine: string; tier: string }>
       },
       async downloadMedia(fileUrl) {
         const res = await fetch(fileUrl, {
@@ -107,10 +111,6 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       hmacSecret: process.env.WAHA_WEBHOOK_HMAC_SECRET,
     })
     sessionManager.initialize()
-
-    webhookHandler = new WebhookHandler(db, emitter, messageHistory, {
-      hmacSecret: process.env.WAHA_WEBHOOK_HMAC_SECRET,
-    })
   }
 
   server.get('/api/v1/health', async () => ({
@@ -121,9 +121,9 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   registerDeviceRoutes(server, adb)
   registerMonitorRoutes(server, { adb, engine, deviceManager, healthCollector, waMapper, alertSystem })
 
-  if (sessionManager && webhookHandler) {
-    registerWahaRoutes(server, { webhookHandler, sessionManager, messageHistory })
-  }
+  // WAHA routes always registered (webhook receiver works without WAHA client)
+  // sessionManager may be null if WAHA_API_URL not configured
+  registerWahaRoutes(server, { webhookHandler, sessionManager, messageHistory })
 
   let workerRunning = false
 

@@ -3,7 +3,7 @@ import { z } from 'zod'
 import type { MessageQueue, MessageStatus } from '../queue/index.js'
 import type { DispatchEmitter } from '../events/index.js'
 
-const VALID_STATUSES = ['queued', 'locked', 'sending', 'sent', 'failed'] as const
+const VALID_STATUSES: readonly MessageStatus[] = ['queued', 'locked', 'sending', 'sent', 'failed', 'permanently_failed', 'waiting_device']
 
 const enqueueSchema = z.object({
   to: z.string().regex(/^\d{10,15}$/, 'Phone must be 10-15 digits'),
