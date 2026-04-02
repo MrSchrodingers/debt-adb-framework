@@ -120,7 +120,7 @@ Hardening:      3 + 6 → 8
 > **Deps**: Fase 2 APPROVED | **Issue**: #3 | **Estimativa**: G
 
 - [x] **Grill** rate limiting, distribution algorithm, ban detection (`/grill-me`)
-- [ ] **TDD Red** — testes: rate limiter timing, distribution fairness, ban detection (fixtures), retry
+- [x] **TDD Red** — testes: rate limiter timing, distribution fairness, ban detection (fixtures), retry
 - [ ] **Implement** Rate Limiter: port exato do WAHA client Oralsin (volume scaling exponencial)
 - [ ] **Implement** Distribuicao: round-robin ponderado (health score × inverse send count)
 - [ ] **Implement** Ban Detection: screenshot + Tesseract.js OCR (crop centro, strings, confidence >= 60%)
