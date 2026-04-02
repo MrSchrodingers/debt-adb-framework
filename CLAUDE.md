@@ -109,8 +109,8 @@ Hardening:      3 + 6 → 8
 - [x] **TDD Red** — testes de discovery mock, alert thresholds, health persistence
 - [x] **Implement** Device Manager: auto-discovery via `adb devices` polling (5s)
 - [x] **Implement** Health Collector: RAM, bateria, temp, storage, WiFi (30s poll)
-- [ ] **Implement** WA Account Mapper: device → profile → WA/WAB → numero
-- [ ] **Implement** Alert System: thresholds configuraveis + EventEmitter + SQLite
+- [x] **Implement** WA Account Mapper: device → profile → WA/WAB → numero
+- [x] **Implement** Alert System: thresholds configuraveis + EventEmitter + SQLite
 - [ ] **Implement** UI: device grid, health cards, spark charts, alert panel
 - [ ] **Implement** Actions: screenshot sob demanda, reboot, restart WhatsApp
 - [ ] **TDD Green** + **E2E** conectar 2+ devices, verificar health
