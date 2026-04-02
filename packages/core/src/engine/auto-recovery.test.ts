@@ -6,9 +6,11 @@ describe('AutoRecovery', () => {
   let adb: AdbShellAdapter
   let recovery: AutoRecovery
 
+  const noopDelay = async () => {}
+
   beforeEach(() => {
     adb = { shell: vi.fn<(serial: string, cmd: string) => Promise<string>>() }
-    recovery = new AutoRecovery(adb)
+    recovery = new AutoRecovery(adb, noopDelay)
   })
 
   describe('detectCrash', () => {

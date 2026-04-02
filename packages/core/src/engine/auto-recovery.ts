@@ -2,23 +2,60 @@ import type { CrashDetection, RecoveryResult } from './types.js'
 import type { AdbShellAdapter } from '../monitor/types.js'
 
 export class AutoRecovery {
-  constructor(private adb: AdbShellAdapter) {}
+  private wait: (ms: number) => Promise<void>
 
-  /** Detect if WhatsApp has crashed based on UI dump and process state */
-  detectCrash(
-    _sendButtonFound: boolean,
-    _pidOutput: string,
-  ): CrashDetection {
-    throw new Error('Not implemented')
+  constructor(
+    private adb: AdbShellAdapter,
+    delay?: (ms: number) => Promise<void>,
+  ) {
+    this.wait = delay ?? ((ms) => new Promise(resolve => setTimeout(resolve, ms)))
   }
 
-  /** Recover WhatsApp after a crash */
-  recover(
-    _deviceSerial: string,
-    _crashInfo: CrashDetection,
-    _toNumber: string,
-    _packageName?: string,
+  detectCrash(sendButtonFound: boolean, pidOutput: string): CrashDetection {
+    if (sendButtonFound) {
+      return { crashed: false, hasPid: pidOutput.trim().length > 0 }
+    }
+    return {
+      crashed: true,
+      hasPid: pidOutput.trim().length > 0,
+    }
+  }
+
+  async recover(
+    deviceSerial: string,
+    crashInfo: CrashDetection,
+    toNumber: string,
+    packageName = 'com.whatsapp',
   ): Promise<RecoveryResult> {
-    throw new Error('Not implemented')
+    if (!crashInfo.crashed) {
+      return { recovered: true, action: 'none' }
+    }
+
+    try {
+      if (!crashInfo.hasPid) {
+        // Process dead → force-stop + restart
+        await this.adb.shell(deviceSerial, `am force-stop ${packageName}`)
+        await this.wait(3000)
+        await this.adb.shell(
+          deviceSerial,
+          `am start -a android.intent.action.VIEW -d "https://wa.me/${toNumber}" -p ${packageName}`,
+        )
+        return { recovered: true, action: 'force_stop' }
+      }
+
+      // Process alive but UI gone → BACK×3 + re-open
+      for (let i = 0; i < 3; i++) {
+        await this.adb.shell(deviceSerial, 'input keyevent 4')
+        await this.wait(300)
+      }
+      await this.adb.shell(
+        deviceSerial,
+        `am start -a android.intent.action.VIEW -d "https://wa.me/${toNumber}" -p ${packageName}`,
+      )
+      return { recovered: true, action: 'back_reopen' }
+    } catch {
+      return { recovered: false, action: 'force_stop' }
+    }
   }
+
 }

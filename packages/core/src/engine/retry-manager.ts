@@ -10,18 +10,28 @@ export interface RetryDecision {
 export class RetryManager {
   constructor(private config: RetryConfig) {}
 
-  /** Decide whether a failed message should be retried */
-  shouldRetry(_message: Message, _attempts: number): boolean {
-    throw new Error('Not implemented')
+  shouldRetry(_message: Message, attempts: number): boolean {
+    return attempts < this.config.maxAttempts
   }
 
-  /** Calculate backoff delay for a given attempt number (1-indexed) */
-  getBackoffDelay(_attemptNumber: number): number {
-    throw new Error('Not implemented')
+  getBackoffDelay(attemptNumber: number): number {
+    return this.config.backoffBaseS * 1000 *
+      Math.pow(this.config.backoffMultiplier, attemptNumber - 1)
   }
 
-  /** Prepare a message for retry: increment attempts, calculate delay */
-  prepareRetry(_message: Message, _attempts: number): RetryDecision {
-    throw new Error('Not implemented')
+  prepareRetry(message: Message, attempts: number): RetryDecision {
+    if (!this.shouldRetry(message, attempts)) {
+      return {
+        shouldRetry: false,
+        backoffMs: 0,
+        reason: `max attempts (${this.config.maxAttempts}) reached`,
+      }
+    }
+
+    return {
+      shouldRetry: true,
+      backoffMs: this.getBackoffDelay(attempts),
+      reason: `retry ${attempts + 1}/${this.config.maxAttempts}`,
+    }
   }
 }
