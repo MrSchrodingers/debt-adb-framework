@@ -68,6 +68,7 @@ describe('PluginEventBus', () => {
       const handler = vi.fn<(data: unknown) => Promise<void>>().mockResolvedValue(undefined)
       eventBus.registerHandler('oralsin', 'message:sent', handler)
       registry.disablePlugin('oralsin')
+      eventBus.setPluginEnabled('oralsin', false)
 
       emitter.emit('message:sent', {
         id: 'msg-1',

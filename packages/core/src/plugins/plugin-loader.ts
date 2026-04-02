@@ -19,24 +19,45 @@ const PRIORITY_MAP: Record<string, number> = {
   normal: 5,
 }
 
+export interface RegisteredRoute {
+  pluginName: string
+  method: HttpMethod
+  path: string
+  handler: RouteHandler
+}
+
+export interface PluginLoggerFactory {
+  child(bindings: Record<string, unknown>): PluginLogger
+}
+
 export class PluginLoader {
   private loadedPlugins = new Map<string, DispatchPlugin>()
+  private registeredRoutes: RegisteredRoute[] = []
+  private loggerFactory: PluginLoggerFactory
 
   constructor(
     private registry: PluginRegistry,
     private eventBus: PluginEventBus,
     private queue: MessageQueue,
     private db: Database.Database,
-  ) {}
+    logger?: PluginLoggerFactory,
+  ) {
+    this.loggerFactory = logger ?? {
+      child: (bindings) => ({
+        info: (msg, data) => console.log(JSON.stringify({ ...bindings, msg, ...data })),
+        warn: (msg, data) => console.warn(JSON.stringify({ ...bindings, msg, ...data })),
+        error: (msg, data) => console.error(JSON.stringify({ ...bindings, msg, ...data })),
+        debug: (msg, data) => console.debug(JSON.stringify({ ...bindings, msg, ...data })),
+      }),
+    }
+  }
 
   async loadPlugin(plugin: DispatchPlugin, apiKey: string, hmacSecret: string): Promise<void> {
-    // Check if already registered and disabled
     const existing = this.registry.getPlugin(plugin.name)
     if (existing && existing.enabled === 0) {
-      return // Skip disabled plugins
+      return
     }
 
-    // Register/upsert in registry
     this.registry.register({
       name: plugin.name,
       version: plugin.version,
@@ -46,7 +67,6 @@ export class PluginLoader {
       events: plugin.events as string[],
     })
 
-    // Create restricted PluginContext
     const ctx = this.createContext(plugin.name)
 
     try {
@@ -71,8 +91,12 @@ export class PluginLoader {
     }
   }
 
+  getRegisteredRoutes(): RegisteredRoute[] {
+    return this.registeredRoutes
+  }
+
   private createContext(pluginName: string): PluginContext {
-    const logger = this.createLogger(pluginName)
+    const logger = this.loggerFactory.child({ plugin: pluginName })
 
     return {
       enqueue: (msgs: PluginEnqueueParams[]): PluginMessage[] => {
@@ -126,30 +150,12 @@ export class PluginLoader {
         this.eventBus.registerHandler(pluginName, event, handler)
       },
 
-      registerRoute: (_method: HttpMethod, _path: string, _handler: RouteHandler): void => {
-        // Route registration is handled by the server integration layer
-        // Stored for later binding when Fastify is available
-        logger.debug(`Route registered: ${_method} /api/v1/plugins/${pluginName}${_path}`)
+      registerRoute: (method: HttpMethod, path: string, handler: RouteHandler): void => {
+        this.registeredRoutes.push({ pluginName, method, path, handler })
+        logger.debug(`Route registered: ${method} /api/v1/plugins/${pluginName}${path}`)
       },
 
       logger,
-    }
-  }
-
-  private createLogger(pluginName: string): PluginLogger {
-    return {
-      info: (msg: string, data?: Record<string, unknown>) => {
-        console.log(JSON.stringify({ level: 'info', plugin: pluginName, msg, ...data }))
-      },
-      warn: (msg: string, data?: Record<string, unknown>) => {
-        console.warn(JSON.stringify({ level: 'warn', plugin: pluginName, msg, ...data }))
-      },
-      error: (msg: string, data?: Record<string, unknown>) => {
-        console.error(JSON.stringify({ level: 'error', plugin: pluginName, msg, ...data }))
-      },
-      debug: (msg: string, data?: Record<string, unknown>) => {
-        console.debug(JSON.stringify({ level: 'debug', plugin: pluginName, msg, ...data }))
-      },
     }
   }
 }
