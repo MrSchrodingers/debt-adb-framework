@@ -1,8 +1,8 @@
 # Development Progress — DEBT ADB Framework
 
-> **Last updated**: 2026-04-02T22:30:00-03:00
-> **Current phase**: 7 — Plugin System + Plugin Oralsin (IN_REVIEW)
-> **Next action**: /validate to approve Phase 7, then start Phase 6 (Dashboard) or Phase 8
+> **Last updated**: 2026-04-02T23:00:00-03:00
+> **Current phase**: 7 — Plugin System + Plugin Oralsin (APPROVED)
+> **Next action**: Start Phase 6 (Dashboard) — only remaining blocker for Phase 8
 
 ## Phase Status
 
@@ -14,7 +14,7 @@
 | 4 | WAHA Listener Passivo | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
 | 5 | Session Management + Inbox Automation | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
 | 6 | Dashboard Operacional | `READY` | — | — | — |
-| 7 | Plugin System + Plugin Oralsin | `IN_REVIEW` | 2026-04-02 | — | — |
+| 7 | Plugin System + Plugin Oralsin | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
 | 8 | Multi-Profile + Hardening + Docker | `BLOCKED` | — | — | Phase 3, 6 |
 
 ### Status Legend
@@ -43,6 +43,7 @@
 | 3 | 2026-04-02 | Claude Opus 4.6 + Matheus | 7/8 criteria verified, 145 tests, 18 grill decisions, 9 commits, simplify fixed 6 findings, review fixed 2 criticals + 3 importants. Temporal.io + Redis architecture. E2E: 5 rate-limited msgs on POCO Serenity |
 | 4 | 2026-04-02 | Claude Opus 4.6 + Matheus | 10/10 criteria verified, 188 tests (43 new), 17 grill decisions, 7 commits, simplify fixed 6 findings, review fixed 2 criticals + 4 importants. Shared WAHA Plus GoWS, HMAC SHA-512, webhook-first, 90-day retention |
 | 5 | 2026-04-02 | Claude Opus 4.6 + Matheus | 8/8 criteria verified, 231 tests (43 new), 12 grill decisions, 6 commits, simplify fixed 8 findings. Scope redefined: WAHA native handles bridge, Dispatch manages sessions + inbox automation. Shared http-utils, N+1 fix |
+| 7 | 2026-04-02 | Claude Opus 4.6 + Matheus | 8/8 criteria verified, 276 tests (45 new), 18 grill decisions, 8 commits, simplify fixed 9 findings. Hub-Spoke plugin model, PluginContext sandbox, 4 contracts with real JSON, batch enqueue, HMAC callback, correlation fix. E2E: plugin enqueue → ADB send on POCO Serenity |
 
 ## Phase 7 Grill Progress
 
