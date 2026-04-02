@@ -111,8 +111,8 @@ Hardening:      3 + 6 → 8
 - [x] **Implement** Health Collector: RAM, bateria, temp, storage, WiFi (30s poll)
 - [x] **Implement** WA Account Mapper: device → profile → WA/WAB → numero
 - [x] **Implement** Alert System: thresholds configuraveis + EventEmitter + SQLite
-- [ ] **Implement** UI: device grid, health cards, spark charts, alert panel
-- [ ] **Implement** Actions: screenshot sob demanda, reboot, restart WhatsApp
+- [x] **Implement** UI: device grid, health cards, spark charts, alert panel
+- [x] **Implement** Actions: screenshot sob demanda, reboot, restart WhatsApp
 - [ ] **TDD Green** + **E2E** conectar 2+ devices, verificar health
 - [ ] **Review** + **Verify** + **Phase Gate**
 

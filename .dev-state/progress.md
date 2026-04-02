@@ -2,7 +2,7 @@
 
 > **Last updated**: 2026-04-01T19:32:00-03:00
 > **Current phase**: 2 — Multi-Device + Health (IN_PROGRESS)
-> **Next action**: Phase 2 Implement — Device Manager, Health Collector, WA Mapper, Alerts
+> **Next action**: Phase 2 TDD Green + E2E — run full suite, connect devices, verify health
 
 ## Phase Status
 
