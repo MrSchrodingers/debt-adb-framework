@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import type { AlertSeverity, AlertType } from '../monitor/types.js'
 
 export interface DispatchEventMap {
   'message:queued': { id: string; to: string; priority: number }
@@ -8,7 +9,7 @@ export interface DispatchEventMap {
   'device:connected': { serial: string; brand?: string; model?: string }
   'device:disconnected': { serial: string }
   'device:health': { serial: string; batteryPercent: number; temperatureCelsius: number; ramAvailableMb: number; storageFreeBytes: number }
-  'alert:new': { id: string; deviceSerial: string; severity: string; type: string; message: string }
+  'alert:new': { id: string; deviceSerial: string; severity: AlertSeverity; type: AlertType; message: string }
 }
 
 export type DispatchEventName = keyof DispatchEventMap

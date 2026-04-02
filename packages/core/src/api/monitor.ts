@@ -47,13 +47,6 @@ export function registerMonitorRoutes(server: FastifyInstance, deps: MonitorDeps
     return waMapper.getAccountsByDevice(serial)
   })
 
-  // Screenshot (already in devices.ts, but adding here for monitor context)
-  server.post('/api/v1/monitor/devices/:serial/screenshot', async (request, reply) => {
-    const { serial } = request.params as { serial: string }
-    const png = await adb.screenshot(serial)
-    return reply.type('image/png').send(png)
-  })
-
   // Reboot device — with send-lock guard
   server.post('/api/v1/monitor/devices/:serial/reboot', async (request, reply) => {
     const { serial } = request.params as { serial: string }
@@ -85,9 +78,6 @@ export function registerMonitorRoutes(server: FastifyInstance, deps: MonitorDeps
     if (serial) {
       return active === 'true' ? alertSystem.getActive(serial) : alertSystem.getAll(serial)
     }
-    // No serial — return all devices' active alerts
-    const devices = deviceManager.getDevices()
-    const allAlerts = devices.flatMap((d) => alertSystem.getActive(d.serial))
-    return allAlerts
+    return alertSystem.getAllActive()
   })
 }

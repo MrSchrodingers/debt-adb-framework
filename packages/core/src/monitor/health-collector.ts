@@ -1,9 +1,5 @@
 import type Database from 'better-sqlite3'
-import type { HealthSnapshot } from './types.js'
-
-interface AdbShellAdapter {
-  shell: (serial: string, command: string) => Promise<string>
-}
+import type { HealthSnapshot, AdbShellAdapter } from './types.js'
 
 export class HealthCollector {
   private db: Database.Database

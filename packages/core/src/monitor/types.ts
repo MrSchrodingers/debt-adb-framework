@@ -38,6 +38,10 @@ export interface WhatsAppAccount {
   phoneNumber: string | null
 }
 
+export interface AdbShellAdapter {
+  shell: (serial: string, command: string) => Promise<string>
+}
+
 export interface DeviceRecord {
   serial: string
   brand: string | null

@@ -100,14 +100,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     }
   })
 
-  // Device discovery polling (5s)
-  const discoveryInterval = setInterval(async () => {
-    try {
-      await deviceManager.poll()
-    } catch (err) {
-      server.log.error({ err }, 'Device discovery poll failed')
-    }
-  }, 5_000)
+  // Device discovery polling (5s) — managed by DeviceManager
+  deviceManager.startPolling(5_000)
 
   // Health collection polling (30s)
   const healthInterval = setInterval(async () => {
@@ -158,8 +152,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     workerRunning = true
 
     try {
-      const devices = await adb.discover()
-      const online = devices.find(d => d.type === 'device')
+      const online = deviceManager.getDevices().find(d => d.status === 'online')
       if (!online) return
 
       const message = queue.dequeue(online.serial)
@@ -175,7 +168,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   }, 5_000)
 
   server.addHook('onClose', () => {
-    clearInterval(discoveryInterval)
+    deviceManager.stop()
     clearInterval(healthInterval)
     clearInterval(accountInterval)
     clearInterval(healthCleanupInterval)

@@ -131,6 +131,13 @@ export class AlertSystem {
     return rows.map(rowToAlert)
   }
 
+  getAllActive(): Alert[] {
+    const rows = this.db
+      .prepare('SELECT * FROM alerts WHERE resolved = 0 ORDER BY created_at DESC')
+      .all() as Record<string, unknown>[]
+    return rows.map(rowToAlert)
+  }
+
   setDeviceThresholds(serial: string, overrides: Partial<ThresholdConfig>): void {
     this.deviceOverrides.set(serial, overrides)
   }
