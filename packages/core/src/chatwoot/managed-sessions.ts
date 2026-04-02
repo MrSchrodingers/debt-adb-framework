@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import type { Statement } from 'better-sqlite3'
 import type { ManagedSessionRecord } from './types.js'
 
 interface Row {
@@ -25,6 +26,15 @@ function rowToRecord(row: Row): ManagedSessionRecord {
 
 export class ManagedSessions {
   private db: Database.Database
+  private stmtAdd!: Statement
+  private stmtGet!: Statement
+  private stmtListAll!: Statement
+  private stmtListManaged!: Statement
+  private stmtSetManaged!: Statement
+  private stmtUpdateInbox!: Statement
+  private stmtRemove!: Statement
+  private stmtFindByPhone!: Statement
+  private stmtFindByDevice!: Statement
 
   constructor(db: Database.Database) {
     this.db = db
@@ -42,6 +52,19 @@ export class ManagedSessions {
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       )
     `)
+
+    this.stmtAdd = this.db.prepare(
+      `INSERT INTO managed_sessions (session_name, phone_number, device_serial, profile_id, chatwoot_inbox_id)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+    this.stmtGet = this.db.prepare('SELECT * FROM managed_sessions WHERE session_name = ?')
+    this.stmtListAll = this.db.prepare('SELECT * FROM managed_sessions ORDER BY session_name')
+    this.stmtListManaged = this.db.prepare('SELECT * FROM managed_sessions WHERE managed = 1 ORDER BY session_name')
+    this.stmtSetManaged = this.db.prepare('UPDATE managed_sessions SET managed = ? WHERE session_name = ?')
+    this.stmtUpdateInbox = this.db.prepare('UPDATE managed_sessions SET chatwoot_inbox_id = ? WHERE session_name = ?')
+    this.stmtRemove = this.db.prepare('DELETE FROM managed_sessions WHERE session_name = ?')
+    this.stmtFindByPhone = this.db.prepare('SELECT * FROM managed_sessions WHERE phone_number = ? ORDER BY session_name')
+    this.stmtFindByDevice = this.db.prepare('SELECT * FROM managed_sessions WHERE device_serial = ? ORDER BY session_name')
   }
 
   add(params: {
@@ -51,74 +74,53 @@ export class ManagedSessions {
     profileId: number | null
     chatwootInboxId: number | null
   }): string {
-    this.db
-      .prepare(
-        `INSERT INTO managed_sessions (session_name, phone_number, device_serial, profile_id, chatwoot_inbox_id)
-         VALUES (?, ?, ?, ?, ?)`,
-      )
-      .run(
-        params.sessionName,
-        params.phoneNumber,
-        params.deviceSerial,
-        params.profileId,
-        params.chatwootInboxId,
-      )
+    this.stmtAdd.run(
+      params.sessionName,
+      params.phoneNumber,
+      params.deviceSerial,
+      params.profileId,
+      params.chatwootInboxId,
+    )
     return params.sessionName
   }
 
   get(sessionName: string): ManagedSessionRecord | null {
-    const row = this.db
-      .prepare('SELECT * FROM managed_sessions WHERE session_name = ?')
-      .get(sessionName) as Row | undefined
+    const row = this.stmtGet.get(sessionName) as Row | undefined
     return row ? rowToRecord(row) : null
   }
 
   listAll(): ManagedSessionRecord[] {
-    const rows = this.db
-      .prepare('SELECT * FROM managed_sessions ORDER BY session_name')
-      .all() as Row[]
-    return rows.map(rowToRecord)
+    return (this.stmtListAll.all() as Row[]).map(rowToRecord)
+  }
+
+  listAllAsMap(): Map<string, ManagedSessionRecord> {
+    return new Map(this.listAll().map((r) => [r.sessionName, r]))
   }
 
   listManaged(): ManagedSessionRecord[] {
-    const rows = this.db
-      .prepare('SELECT * FROM managed_sessions WHERE managed = 1 ORDER BY session_name')
-      .all() as Row[]
-    return rows.map(rowToRecord)
+    return (this.stmtListManaged.all() as Row[]).map(rowToRecord)
   }
 
   setManaged(sessionName: string, managed: boolean): void {
-    const result = this.db
-      .prepare('UPDATE managed_sessions SET managed = ? WHERE session_name = ?')
-      .run(managed ? 1 : 0, sessionName)
+    const result = this.stmtSetManaged.run(managed ? 1 : 0, sessionName)
     if (result.changes === 0) {
       throw new Error(`Session ${sessionName} not found`)
     }
   }
 
   updateChatwootInboxId(sessionName: string, inboxId: number): void {
-    this.db
-      .prepare('UPDATE managed_sessions SET chatwoot_inbox_id = ? WHERE session_name = ?')
-      .run(inboxId, sessionName)
+    this.stmtUpdateInbox.run(inboxId, sessionName)
   }
 
   remove(sessionName: string): void {
-    this.db
-      .prepare('DELETE FROM managed_sessions WHERE session_name = ?')
-      .run(sessionName)
+    this.stmtRemove.run(sessionName)
   }
 
   findByPhoneNumber(phoneNumber: string): ManagedSessionRecord[] {
-    const rows = this.db
-      .prepare('SELECT * FROM managed_sessions WHERE phone_number = ? ORDER BY session_name')
-      .all(phoneNumber) as Row[]
-    return rows.map(rowToRecord)
+    return (this.stmtFindByPhone.all(phoneNumber) as Row[]).map(rowToRecord)
   }
 
   findByDeviceSerial(deviceSerial: string): ManagedSessionRecord[] {
-    const rows = this.db
-      .prepare('SELECT * FROM managed_sessions WHERE device_serial = ? ORDER BY session_name')
-      .all(deviceSerial) as Row[]
-    return rows.map(rowToRecord)
+    return (this.stmtFindByDevice.all(deviceSerial) as Row[]).map(rowToRecord)
   }
 }

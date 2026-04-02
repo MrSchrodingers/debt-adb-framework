@@ -37,6 +37,7 @@ function createMockWahaClient(sessions: WahaSessionInfo[] = []): WahaApiClient {
     restartSession: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
     getServerVersion: vi.fn().mockResolvedValue({ version: '2026.3.1', engine: 'GOWS', tier: 'PLUS' }),
     downloadMedia: vi.fn().mockResolvedValue(Buffer.from('')),
+    getQrCode: vi.fn<(name: string) => Promise<string>>().mockResolvedValue('base64-qr'),
   }
 }
 

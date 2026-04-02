@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import type { InboxAutomation } from '../chatwoot/inbox-automation.js'
 import type { ManagedSessions } from '../chatwoot/managed-sessions.js'
@@ -19,9 +19,9 @@ const createInboxSchema = z.object({
 export function registerSessionRoutes(server: FastifyInstance, deps: SessionDeps): void {
   const { inboxAutomation, managedSessions } = deps
 
-  const requireAutomation = (reply: ReturnType<typeof server.decorateReply>): boolean => {
+  const requireAutomation = (reply: FastifyReply): boolean => {
     if (!inboxAutomation) {
-      (reply as { status: (code: number) => { send: (body: unknown) => void } }).status(503).send({
+      reply.status(503).send({
         error: 'Session automation not configured. Set WAHA_API_URL, WAHA_API_KEY, CHATWOOT_API_URL, CHATWOOT_API_TOKEN.',
       })
       return false
@@ -29,18 +29,17 @@ export function registerSessionRoutes(server: FastifyInstance, deps: SessionDeps
     return true
   }
 
-  // List all WAHA sessions enriched with managed/chatwoot status
+  // --- All WAHA sessions (enriched) ---
   server.get('/api/v1/sessions', async (_request, reply) => {
     if (!requireAutomation(reply)) return
     return inboxAutomation!.listSessionsWithStatus()
   })
 
-  // List only managed sessions (from SQLite, no WAHA call)
+  // --- Managed sessions group (SQLite, contiguous) ---
   server.get('/api/v1/sessions/managed', async () => {
     return managedSessions.listManaged()
   })
 
-  // Bulk set sessions as managed
   server.post('/api/v1/sessions/managed', async (request, reply) => {
     if (!requireAutomation(reply)) return
 
@@ -52,35 +51,42 @@ export function registerSessionRoutes(server: FastifyInstance, deps: SessionDeps
     return inboxAutomation!.bulkSetManaged(parsed.data.sessionNames)
   })
 
-  // Unmanage a session (set managed=false, keep record)
+  server.get('/api/v1/sessions/managed/:name', async (request, reply) => {
+    const { name } = request.params as { name: string }
+    const record = managedSessions.get(name)
+    if (!record) {
+      return reply.status(404).send({ error: 'Session not found' })
+    }
+    return record
+  })
+
   server.delete('/api/v1/sessions/managed/:name', async (request, reply) => {
     const { name } = request.params as { name: string }
     try {
       managedSessions.setManaged(name, false)
       return { ok: true, session: name, managed: false }
     } catch (err) {
-      return reply.status(404).send({
-        error: 'Session not found',
-        detail: err instanceof Error ? err.message : String(err),
-      })
+      if (err instanceof Error && err.message.includes('not found')) {
+        return reply.status(404).send({ error: 'Session not found' })
+      }
+      throw err
     }
   })
 
-  // Re-manage a session
   server.put('/api/v1/sessions/managed/:name', async (request, reply) => {
     const { name } = request.params as { name: string }
     try {
       managedSessions.setManaged(name, true)
       return { ok: true, session: name, managed: true }
     } catch (err) {
-      return reply.status(404).send({
-        error: 'Session not found',
-        detail: err instanceof Error ? err.message : String(err),
-      })
+      if (err instanceof Error && err.message.includes('not found')) {
+        return reply.status(404).send({ error: 'Session not found' })
+      }
+      throw err
     }
   })
 
-  // Create Chatwoot inbox for a session
+  // --- Per-session operations ---
   server.post('/api/v1/sessions/:name/inbox', async (request, reply) => {
     if (!requireAutomation(reply)) return
 
@@ -97,7 +103,6 @@ export function registerSessionRoutes(server: FastifyInstance, deps: SessionDeps
     return result
   })
 
-  // Get QR code for a session (for pairing)
   server.get('/api/v1/sessions/:name/qr', async (request, reply) => {
     if (!requireAutomation(reply)) return
 
@@ -111,15 +116,5 @@ export function registerSessionRoutes(server: FastifyInstance, deps: SessionDeps
         detail: err instanceof Error ? err.message : String(err),
       })
     }
-  })
-
-  // Get single managed session detail
-  server.get('/api/v1/sessions/managed/:name', async (request, reply) => {
-    const { name } = request.params as { name: string }
-    const record = managedSessions.get(name)
-    if (!record) {
-      return reply.status(404).send({ error: 'Session not found' })
-    }
-    return record
   })
 }

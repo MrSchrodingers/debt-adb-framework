@@ -86,6 +86,7 @@ export interface WahaApiClient {
   restartSession(name: string): Promise<void>
   getServerVersion(): Promise<{ version: string; engine: string; tier: string }>
   downloadMedia(fileUrl: string): Promise<Buffer>
+  getQrCode(name: string): Promise<string>
 }
 
 export interface StorageAdapter {

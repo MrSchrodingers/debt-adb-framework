@@ -15,11 +15,6 @@ export interface ChatwootInbox {
   inbox_identifier?: string
 }
 
-export interface ChatwootCreateInboxPayload {
-  name: string
-  channel: { type: 'api' }
-}
-
 export interface ChatwootApiClient {
   listInboxes(): Promise<ChatwootInbox[]>
   createInbox(name: string): Promise<ChatwootInbox>
