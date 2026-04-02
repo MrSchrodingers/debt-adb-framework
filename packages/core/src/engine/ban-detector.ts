@@ -1,4 +1,5 @@
 import type { BanDetectionConfig, OcrAnalysis, BehavioralProbeResult, BanCountdown } from './types.js'
+import { assertSafePhone } from './types.js'
 import type { AdbShellAdapter } from '../monitor/types.js'
 
 export class BanDetector {
@@ -24,7 +25,7 @@ export class BanDetector {
   }
 
   async behavioralProbe(deviceSerial: string, toNumber: string): Promise<BehavioralProbeResult> {
-    // Open wa.me chat intent
+    assertSafePhone(toNumber)
     await this.adb.shell(
       deviceSerial,
       `am start -a android.intent.action.VIEW -d "https://wa.me/${toNumber}" -p com.whatsapp`,

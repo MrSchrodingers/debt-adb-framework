@@ -1,4 +1,5 @@
 import type { CrashDetection, RecoveryResult } from './types.js'
+import { assertSafePhone } from './types.js'
 import type { AdbShellAdapter } from '../monitor/types.js'
 
 export class AutoRecovery {
@@ -27,6 +28,7 @@ export class AutoRecovery {
     toNumber: string,
     packageName = 'com.whatsapp',
   ): Promise<RecoveryResult> {
+    assertSafePhone(toNumber)
     if (!crashInfo.crashed) {
       return { recovered: true, action: 'none' }
     }

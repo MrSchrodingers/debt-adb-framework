@@ -12,6 +12,7 @@ function makeMessage(overrides?: Partial<Message>): Message {
     priority: 5,
     senderNumber: '5543999990001',
     status: 'failed',
+    attempts: 0,
     lockedBy: null,
     lockedAt: null,
     createdAt: '2026-04-02T12:00:00Z',

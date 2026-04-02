@@ -1,9 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { Dispatcher } from './dispatcher.js'
-import { RateLimiter } from './rate-limiter.js'
 import type { SenderState } from './types.js'
-import { DEFAULT_RATE_LIMIT_CONFIG } from './types.js'
-import { InMemoryRateLimitStore } from './__test-utils__/in-memory-rate-limit-store.js'
 
 function makeSender(overrides: Partial<SenderState> & { senderNumber: string }): SenderState {
   return {
@@ -17,16 +14,12 @@ function makeSender(overrides: Partial<SenderState> & { senderNumber: string }):
 }
 
 describe('Dispatcher', () => {
-  let store: InMemoryRateLimitStore
-  let rateLimiter: RateLimiter
   let dispatcher: Dispatcher
   let currentTime: number
 
   beforeEach(() => {
-    store = new InMemoryRateLimitStore()
     currentTime = 1000000
-    rateLimiter = new RateLimiter(store, DEFAULT_RATE_LIMIT_CONFIG, () => currentTime)
-    dispatcher = new Dispatcher(rateLimiter, store, () => currentTime)
+    dispatcher = new Dispatcher(() => currentTime)
   })
 
   describe('selectSender', () => {

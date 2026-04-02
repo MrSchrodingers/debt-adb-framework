@@ -1,5 +1,4 @@
-import type { RateLimiter } from './rate-limiter.js'
-import type { RateLimitStore, SenderState } from './types.js'
+import type { SenderState } from './types.js'
 
 export interface DispatchDecision {
   senderNumber: string
@@ -8,11 +7,7 @@ export interface DispatchDecision {
 }
 
 export class Dispatcher {
-  constructor(
-    private rateLimiter: RateLimiter,
-    private store: RateLimitStore,
-    private now: () => number = Date.now,
-  ) {}
+  constructor(private now: () => number = Date.now) {}
 
   async selectSender(availableNumbers: SenderState[]): Promise<DispatchDecision | null> {
     const currentTime = this.now()
@@ -25,7 +20,6 @@ export class Dispatcher {
 
     if (eligible.length === 0) return null
 
-    // Active rebalancing: pick sender with fewest sends in window
     eligible.sort((a, b) => a.sendCountInWindow - b.sendCountInWindow)
 
     const selected = eligible[0]
@@ -40,11 +34,9 @@ export class Dispatcher {
     const nonBanned = availableNumbers.filter(s => !s.banned)
     if (nonBanned.length === 0) return null
 
-    // If any number has no cooldown, it's ready now
     const ready = nonBanned.find(s => s.cooldownExpiresAt === null)
     if (ready) return this.now()
 
-    // Find earliest cooldown expiry
     let earliest = Infinity
     for (const s of nonBanned) {
       if (s.cooldownExpiresAt !== null && s.cooldownExpiresAt < earliest) {
@@ -59,5 +51,4 @@ export class Dispatcher {
     if (senderStates.length === 0) return true
     return senderStates.every(s => s.banned)
   }
-
 }

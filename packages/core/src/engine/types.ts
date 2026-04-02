@@ -108,6 +108,19 @@ export const DEFAULT_RETRY_CONFIG: RetryConfig = {
   backoffMultiplier: 2.0,
 }
 
+/** Validates phone number is digits-only (defense-in-depth against shell injection) */
+export function assertSafePhone(phone: string): string {
+  if (!/^\d{10,15}$/.test(phone)) {
+    throw new Error(`Invalid phone number: must be 10-15 digits, got "${phone}"`)
+  }
+  return phone
+}
+
+/** Sanitizes a string for safe use in ADB shell double-quoted args */
+export function sanitizeShellArg(input: string): string {
+  return input.replace(/["`$\\]/g, '')
+}
+
 export const DEFAULT_BAN_DETECTION_CONFIG: BanDetectionConfig = {
   ocrConfidenceThreshold: 0.6,
   banStrings: [

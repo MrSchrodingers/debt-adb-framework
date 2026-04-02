@@ -14,10 +14,18 @@ export interface Message {
   priority: number
   senderNumber: string | null
   status: MessageStatus
+  attempts: number
   lockedBy: string | null
   lockedAt: string | null
   createdAt: string
   updatedAt: string
 }
 
-export type MessageStatus = 'queued' | 'locked' | 'sending' | 'sent' | 'failed'
+export type MessageStatus =
+  | 'queued'
+  | 'locked'
+  | 'sending'
+  | 'sent'
+  | 'failed'
+  | 'permanently_failed'
+  | 'waiting_device'
