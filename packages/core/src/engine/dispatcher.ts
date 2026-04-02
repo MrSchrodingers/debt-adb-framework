@@ -8,8 +8,6 @@ export interface DispatchDecision {
 }
 
 export class Dispatcher {
-  private bans = new Map<string, string>() // senderNumber → expiresAt
-
   constructor(
     private rateLimiter: RateLimiter,
     private store: RateLimitStore,
@@ -62,11 +60,4 @@ export class Dispatcher {
     return senderStates.every(s => s.banned)
   }
 
-  registerBan(senderNumber: string, expiresAt: string): void {
-    this.bans.set(senderNumber, expiresAt)
-  }
-
-  clearBan(senderNumber: string): void {
-    this.bans.delete(senderNumber)
-  }
 }

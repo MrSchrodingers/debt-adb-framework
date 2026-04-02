@@ -1,43 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { RateLimiter } from './rate-limiter.js'
-import type { RateLimitConfig, RateLimitStore } from './types.js'
 import { DEFAULT_RATE_LIMIT_CONFIG } from './types.js'
-
-/** In-memory store for testing (replaces Redis) */
-class InMemoryRateLimitStore implements RateLimitStore {
-  private timestamps = new Map<string, number[]>()
-  private pairSends = new Map<string, number>()
-
-  constructor(private now: () => number = Date.now) {}
-
-  async getSendTimestamps(senderNumber: string): Promise<number[]> {
-    return this.timestamps.get(senderNumber) ?? []
-  }
-
-  async addSendTimestamp(senderNumber: string, timestamp: number): Promise<void> {
-    const ts = this.timestamps.get(senderNumber) ?? []
-    ts.push(timestamp)
-    this.timestamps.set(senderNumber, ts)
-  }
-
-  async cleanExpiredTimestamps(senderNumber: string, windowMs: number): Promise<void> {
-    const ts = this.timestamps.get(senderNumber) ?? []
-    const cutoff = this.now() - windowMs
-    this.timestamps.set(senderNumber, ts.filter(t => t > cutoff))
-  }
-
-  async getLastPairSend(senderNumber: string, toNumber: string): Promise<number | null> {
-    return this.pairSends.get(`${senderNumber}:${toNumber}`) ?? null
-  }
-
-  async setLastPairSend(senderNumber: string, toNumber: string, timestamp: number): Promise<void> {
-    this.pairSends.set(`${senderNumber}:${toNumber}`, timestamp)
-  }
-
-  async getSendCount(senderNumber: string): Promise<number> {
-    return (this.timestamps.get(senderNumber) ?? []).length
-  }
-}
+import { InMemoryRateLimitStore } from './__test-utils__/in-memory-rate-limit-store.js'
 
 describe('RateLimiter', () => {
   let store: InMemoryRateLimitStore

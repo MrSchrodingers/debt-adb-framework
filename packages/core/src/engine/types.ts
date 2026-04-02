@@ -72,7 +72,7 @@ export interface SenderState {
   deviceSerial?: string
   profileId?: number
   banned: boolean
-  banExpiresAt: string | null
+  banExpiresAt: number | null
   sendCountInWindow: number
   lastSendAt: number | null
   cooldownExpiresAt: number | null
