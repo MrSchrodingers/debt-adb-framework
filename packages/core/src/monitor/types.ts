@@ -19,6 +19,8 @@ export type AlertType =
   | 'storage_low'
   | 'device_offline'
   | 'wa_crash'
+  | 'waha_session_down'
+  | 'waha_session_banned'
 
 export interface Alert {
   id: string
