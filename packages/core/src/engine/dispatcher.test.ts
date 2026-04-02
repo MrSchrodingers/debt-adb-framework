@@ -53,7 +53,7 @@ describe('Dispatcher', () => {
     store = new InMemoryRateLimitStore()
     currentTime = 1000000
     rateLimiter = new RateLimiter(store, DEFAULT_RATE_LIMIT_CONFIG, () => currentTime)
-    dispatcher = new Dispatcher(rateLimiter, store)
+    dispatcher = new Dispatcher(rateLimiter, store, () => currentTime)
   })
 
   describe('selectSender', () => {

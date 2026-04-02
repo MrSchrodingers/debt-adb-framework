@@ -69,6 +69,8 @@ export interface RecoveryResult {
 
 export interface SenderState {
   senderNumber: string
+  deviceSerial?: string
+  profileId?: number
   banned: boolean
   banExpiresAt: string | null
   sendCountInWindow: number

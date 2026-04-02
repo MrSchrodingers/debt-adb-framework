@@ -122,11 +122,11 @@ Hardening:      3 + 6 → 8
 - [x] **Grill** rate limiting, distribution algorithm, ban detection (`/grill-me`)
 - [x] **TDD Red** — testes: rate limiter timing, distribution fairness, ban detection (fixtures), retry
 - [x] **Implement** Rate Limiter: port exato do WAHA client Oralsin (volume scaling exponencial)
-- [ ] **Implement** Distribuicao: round-robin ponderado (health score × inverse send count)
-- [ ] **Implement** Ban Detection: screenshot + Tesseract.js OCR (crop centro, strings, confidence >= 60%)
+- [x] **Implement** Distribuicao: round-robin ponderado (health score × inverse send count)
+- [x] **Implement** Ban Detection: screenshot + Tesseract.js OCR (crop centro, strings, confidence >= 60%)
 - [x] **Implement** Retry: mensagem volta para fila, re-roteada, `attempts++`
 - [x] **Implement** Auto-recovery: WA crash → force-stop + intent restart + retry
-- [ ] **Implement** Contact Registration: intent ACTION_INSERT, fallback wa.me
+- [x] **Implement** Contact Registration: intent ACTION_INSERT, fallback wa.me
 - [x] **Implement** Jitter: distribuicao exponencial 30s-5min entre msgs
 - [ ] **TDD Green** + **E2E** enviar batch de 5 msgs para `5543991938235` com rate limit
 - [ ] **Review** + **Verify** + **Phase Gate**

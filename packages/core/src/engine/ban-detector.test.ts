@@ -9,7 +9,7 @@ describe('BanDetector', () => {
 
   beforeEach(() => {
     adb = { shell: vi.fn<(serial: string, cmd: string) => Promise<string>>() }
-    detector = new BanDetector(DEFAULT_BAN_DETECTION_CONFIG, adb)
+    detector = new BanDetector(DEFAULT_BAN_DETECTION_CONFIG, adb, async () => {})
   })
 
   describe('analyzeScreenshot', () => {
@@ -79,14 +79,11 @@ describe('BanDetector', () => {
   describe('behavioralProbe', () => {
     it('returns isBanned=false when input field is present in UI dump', async () => {
       const mockShell = adb.shell as ReturnType<typeof vi.fn>
-      // Simulate opening wa.me chat
       mockShell.mockResolvedValueOnce('') // am start intent
-      mockShell.mockResolvedValueOnce('') // sleep/wait
-      // UIAutomator dump with send button present
       mockShell.mockResolvedValueOnce('') // uiautomator dump
       mockShell.mockResolvedValueOnce(
         '<node resource-id="com.whatsapp:id/entry" class="android.widget.EditText" />'
-      )
+      ) // cat dump file
 
       const result = await detector.behavioralProbe('DEVICE1', '5543991938235')
       expect(result.isBanned).toBe(false)
@@ -96,12 +93,10 @@ describe('BanDetector', () => {
     it('returns isBanned=true when input field is missing in UI dump', async () => {
       const mockShell = adb.shell as ReturnType<typeof vi.fn>
       mockShell.mockResolvedValueOnce('') // am start intent
-      mockShell.mockResolvedValueOnce('') // sleep/wait
       mockShell.mockResolvedValueOnce('') // uiautomator dump
-      // UI dump without input field — ban/verify screen
       mockShell.mockResolvedValueOnce(
         '<node resource-id="com.whatsapp:id/verify_sms" class="android.widget.Button" text="Verify" />'
-      )
+      ) // cat dump file
 
       const result = await detector.behavioralProbe('DEVICE1', '5543991938235')
       expect(result.isBanned).toBe(true)
