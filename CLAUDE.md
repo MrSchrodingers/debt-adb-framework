@@ -179,11 +179,11 @@ Hardening:      3 + 6 → 8
 
 - [x] **Grill** plugin lifecycle, event bus, callback, contratos, escopo (18 decisões)
 - [x] **TDD Red** — 48 testes: registry (14), event bus (9), callback (13), loader (12)
-- [ ] **Implement** Plugin Interface + PluginContext: sandbox API restrita para plugins
-- [ ] **Implement** Plugin Registry: tabela `plugins`, auto-upsert no boot, admin API REST
-- [ ] **Implement** Event Bus: enriquecer eventos + dispatch para plugins assinantes + HMAC callback
-- [ ] **Implement** Route Injection: `PluginContext.registerRoute()` com prefixo automático
-- [ ] **Implement** Callback System: at-least-once, 3 retries, `failed_callbacks` table, 4 tipos
+- [x] **Implement** Plugin Interface + PluginContext: sandbox API restrita para plugins
+- [x] **Implement** Plugin Registry: tabela `plugins`, auto-upsert no boot, admin API REST
+- [x] **Implement** Event Bus: enriquecer eventos + dispatch para plugins assinantes + HMAC callback
+- [x] **Implement** Route Injection: `PluginContext.registerRoute()` com prefixo automático
+- [x] **Implement** Callback System: at-least-once, 3 retries, `failed_callbacks` table, 4 tipos
 - [ ] **Implement** Correlation Fix: insert adb_send no history, waha_message_id na messages
 - [ ] **Implement** Plugin Oralsin: contrato enqueue (batch), /status, /queue, senders[] fallback
 - [ ] **TDD Green** + **E2E** plugin enfileira batch → ADB envia para `5543991938235` → callback
