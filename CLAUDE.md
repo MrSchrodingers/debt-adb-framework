@@ -114,7 +114,7 @@ Hardening:      3 + 6 → 8
 - [x] **Implement** UI: device grid, health cards, spark charts, alert panel
 - [x] **Implement** Actions: screenshot sob demanda, reboot, restart WhatsApp
 - [x] **TDD Green** + **E2E** conectar 2+ devices, verificar health
-- [ ] **Review** + **Verify** + **Phase Gate**
+- [x] **Review** + **Verify** + **Phase Gate**
 
 ### Execution Bullets — Fase 3: Send Engine Robusto + Anti-Ban
 > **Deps**: Fase 2 APPROVED | **Issue**: #3 | **Estimativa**: G

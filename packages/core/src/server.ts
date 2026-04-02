@@ -103,11 +103,11 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // Device discovery polling (5s) — managed by DeviceManager
   deviceManager.startPolling(5_000)
 
-  // Health collection polling (30s)
+  // Health collection polling (30s) — per-device error isolation
   const healthInterval = setInterval(async () => {
-    try {
-      for (const device of deviceManager.getDevices()) {
-        if (device.status !== 'online') continue
+    for (const device of deviceManager.getDevices()) {
+      if (device.status !== 'online') continue
+      try {
         const snapshot = await healthCollector.collect(device.serial)
         alertSystem.evaluate(snapshot)
         emitter.emit('device:health', {
@@ -117,21 +117,21 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
           ramAvailableMb: snapshot.ramAvailableMb,
           storageFreeBytes: snapshot.storageFreeBytes,
         })
+      } catch (err) {
+        server.log.error({ err, serial: device.serial }, 'Health collection failed for device')
       }
-    } catch (err) {
-      server.log.error({ err }, 'Health collection failed')
     }
   }, 30_000)
 
-  // WA account mapping (every 5 minutes)
+  // WA account mapping (every 5 minutes) — per-device error isolation
   const accountInterval = setInterval(async () => {
-    try {
-      for (const device of deviceManager.getDevices()) {
-        if (device.status !== 'online') continue
+    for (const device of deviceManager.getDevices()) {
+      if (device.status !== 'online') continue
+      try {
         await waMapper.mapAccounts(device.serial)
+      } catch (err) {
+        server.log.error({ err, serial: device.serial }, 'WA account mapping failed for device')
       }
-    } catch (err) {
-      server.log.error({ err }, 'WA account mapping failed')
     }
   }, 300_000)
 

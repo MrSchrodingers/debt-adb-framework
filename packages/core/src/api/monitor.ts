@@ -12,6 +12,8 @@ interface MonitorDeps {
   alertSystem: AlertSystem
 }
 
+const ALLOWED_WA_PACKAGES = new Set(['com.whatsapp', 'com.whatsapp.w4b'])
+
 export function registerMonitorRoutes(server: FastifyInstance, deps: MonitorDeps): void {
   const { adb, engine, deviceManager, healthCollector, waMapper, alertSystem } = deps
 
@@ -47,9 +49,12 @@ export function registerMonitorRoutes(server: FastifyInstance, deps: MonitorDeps
     return waMapper.getAccountsByDevice(serial)
   })
 
-  // Reboot device — with send-lock guard
+  // Reboot device — with serial validation + send-lock guard
   server.post('/api/v1/monitor/devices/:serial/reboot', async (request, reply) => {
     const { serial } = request.params as { serial: string }
+    if (!deviceManager.getDevice(serial)) {
+      return reply.status(404).send({ error: 'Device not found' })
+    }
     if (engine.isProcessing) {
       return reply.status(409).send({ error: 'Device is sending a message. Try again in a few seconds.' })
     }
@@ -57,12 +62,18 @@ export function registerMonitorRoutes(server: FastifyInstance, deps: MonitorDeps
     return { status: 'rebooting', serial }
   })
 
-  // Restart WhatsApp — with send-lock guard
+  // Restart WhatsApp — with serial validation + package allowlist + send-lock guard
   server.post('/api/v1/monitor/devices/:serial/restart-whatsapp', async (request, reply) => {
     const { serial } = request.params as { serial: string }
     const { packageName } = request.query as { packageName?: string }
     const pkg = packageName || 'com.whatsapp'
 
+    if (!ALLOWED_WA_PACKAGES.has(pkg)) {
+      return reply.status(400).send({ error: `Invalid package. Allowed: ${[...ALLOWED_WA_PACKAGES].join(', ')}` })
+    }
+    if (!deviceManager.getDevice(serial)) {
+      return reply.status(404).send({ error: 'Device not found' })
+    }
     if (engine.isProcessing) {
       return reply.status(409).send({ error: 'Device is sending a message. Try again in a few seconds.' })
     }

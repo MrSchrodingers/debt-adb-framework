@@ -2,7 +2,7 @@
 
 > **Last updated**: 2026-04-01T19:32:00-03:00
 > **Current phase**: 2 — Multi-Device + Health (IN_PROGRESS)
-> **Next action**: Phase 2 Review + Verify + Phase Gate
+> **Next action**: Run /validate to approve Phase 2
 
 ## Phase Status
 
@@ -42,7 +42,14 @@
 
 ## Active Blockers
 
-None — Phase 1 approved. Phases 2 and 4 unblocked.
+None.
+
+## Deferred to Phase 3
+
+- **Worker-per-device**: Phase 2 uses single-device worker pattern. Grill decision #1 specifies
+  per-device workers, but actual multi-device send requires Phase 3's robust send engine.
+- **Per-device send lock**: `engine.isProcessing` is a single boolean. Phase 3 will track
+  `send_phase` per device/message for proper multi-device locking.
 
 ## Phase 2 Grill Progress
 
