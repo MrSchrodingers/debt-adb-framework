@@ -91,10 +91,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         accountId: chatwootAccountId,
         apiToken: chatwootApiToken,
       })
-      inboxAutomation = new InboxAutomation(chatwootClient, wahaClient, managedSessions, {
-        wahaApiUrl,
-        wahaApiKey,
-      })
+      inboxAutomation = new InboxAutomation(chatwootClient, wahaClient, managedSessions)
     }
   }
 

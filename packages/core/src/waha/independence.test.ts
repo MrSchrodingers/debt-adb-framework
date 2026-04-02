@@ -58,6 +58,7 @@ describe('WAHA-ADB Independence', () => {
       restartSession: vi.fn().mockResolvedValue(undefined),
       getServerVersion: vi.fn().mockResolvedValue({ version: '2026.3.1', engine: 'GOWS', tier: 'PLUS' }),
       downloadMedia: vi.fn().mockResolvedValue(Buffer.from('')),
+      getQrCode: vi.fn().mockResolvedValue('base64-qr'),
     }
 
     sessionManager = new SessionManager(db, emitter, wahaClient)

@@ -1,25 +1,20 @@
+import { jsonOrThrow, assertOk } from '../http-utils.js'
 import type { WahaApiClient, WahaSessionInfo, WahaWebhookConfig } from './types.js'
+
+const PREFIX = 'WAHA API'
 
 export function createWahaHttpClient(apiUrl: string, apiKey: string): WahaApiClient {
   const headers = { 'X-Api-Key': apiKey }
 
-  async function jsonOrThrow<T>(res: Response): Promise<T> {
-    if (!res.ok) {
-      const body = await res.text().catch(() => '')
-      throw new Error(`WAHA API ${res.status}: ${body}`)
-    }
-    return res.json() as Promise<T>
-  }
-
   return {
     async listSessions() {
       const res = await fetch(`${apiUrl}/api/sessions`, { headers })
-      return jsonOrThrow<WahaSessionInfo[]>(res)
+      return jsonOrThrow<WahaSessionInfo[]>(res, PREFIX)
     },
 
     async getSession(name) {
       const res = await fetch(`${apiUrl}/api/sessions/${encodeURIComponent(name)}`, { headers })
-      return jsonOrThrow<WahaSessionInfo>(res)
+      return jsonOrThrow<WahaSessionInfo>(res, PREFIX)
     },
 
     async updateSessionWebhooks(name, webhooks) {
@@ -28,10 +23,7 @@ export function createWahaHttpClient(apiUrl: string, apiKey: string): WahaApiCli
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ config: { webhooks } }),
       })
-      if (!res.ok) {
-        const body = await res.text().catch(() => '')
-        throw new Error(`WAHA API ${res.status}: ${body}`)
-      }
+      await assertOk(res, PREFIX)
     },
 
     async restartSession(name) {
@@ -39,23 +31,24 @@ export function createWahaHttpClient(apiUrl: string, apiKey: string): WahaApiCli
         method: 'POST',
         headers,
       })
-      if (!res.ok) {
-        const body = await res.text().catch(() => '')
-        throw new Error(`WAHA API ${res.status}: ${body}`)
-      }
+      await assertOk(res, PREFIX)
     },
 
     async getServerVersion() {
       const res = await fetch(`${apiUrl}/api/server/version`, { headers })
-      return jsonOrThrow<{ version: string; engine: string; tier: string }>(res)
+      return jsonOrThrow<{ version: string; engine: string; tier: string }>(res, PREFIX)
     },
 
     async downloadMedia(fileUrl) {
       const res = await fetch(fileUrl, { headers })
-      if (!res.ok) {
-        throw new Error(`WAHA media download ${res.status}`)
-      }
+      await assertOk(res, `${PREFIX} media download`)
       return Buffer.from(await res.arrayBuffer())
+    },
+
+    async getQrCode(name) {
+      const res = await fetch(`${apiUrl}/api/sessions/${encodeURIComponent(name)}/qr`, { headers })
+      const data = await jsonOrThrow<{ qr: string }>(res, PREFIX)
+      return data.qr
     },
   }
 }

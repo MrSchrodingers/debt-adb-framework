@@ -37,6 +37,7 @@ function createMockWahaClient(): WahaApiClient {
     restartSession: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
     getServerVersion: vi.fn().mockResolvedValue({ version: '2026.3.1', engine: 'GOWS', tier: 'PLUS' }),
     downloadMedia: vi.fn().mockResolvedValue(Buffer.from('')),
+    getQrCode: vi.fn<(name: string) => Promise<string>>().mockResolvedValue('base64-qr'),
   }
 }
 
@@ -226,13 +227,11 @@ describe('InboxAutomation', () => {
         timestamps: { activity: Date.now() },
       })
 
-      // Mock the QR endpoint separately
-      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-        new Response(JSON.stringify({ qr: 'base64-qr-data' }), { status: 200 }),
-      )
+      vi.mocked(wahaClient.getQrCode).mockResolvedValueOnce('base64-qr-data')
 
       const qr = await automation.getQrCode('new_session')
       expect(qr).toBe('base64-qr-data')
+      expect(wahaClient.getQrCode).toHaveBeenCalledWith('new_session')
     })
 
     it('throws if session is not in SCAN_QR_CODE status', async () => {

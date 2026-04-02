@@ -4,7 +4,7 @@ import type { ManagedSessions } from './managed-sessions.js'
 
 export interface SessionWithStatus {
   sessionName: string
-  wahaStatus: string
+  wahaStatus: WahaSessionInfo['status']
   phoneNumber: string | null
   managed: boolean
   chatwootInboxId: number | null
@@ -24,20 +24,15 @@ export class InboxAutomation {
   private chatwootClient: ChatwootApiClient
   private wahaClient: WahaApiClient
   private managedSessions: ManagedSessions
-  private wahaApiUrl: string
-  private wahaApiKey: string
 
   constructor(
     chatwootClient: ChatwootApiClient,
     wahaClient: WahaApiClient,
     managedSessions: ManagedSessions,
-    config?: { wahaApiUrl?: string; wahaApiKey?: string },
   ) {
     this.chatwootClient = chatwootClient
     this.wahaClient = wahaClient
     this.managedSessions = managedSessions
-    this.wahaApiUrl = config?.wahaApiUrl ?? ''
-    this.wahaApiKey = config?.wahaApiKey ?? ''
   }
 
   async createInboxForSession(
@@ -83,10 +78,13 @@ export class InboxAutomation {
   }
 
   async listSessionsWithStatus(): Promise<SessionWithStatus[]> {
-    const wahaSessions = await this.wahaClient.listSessions()
+    const [wahaSessions, managedMap] = await Promise.all([
+      this.wahaClient.listSessions(),
+      Promise.resolve(this.managedSessions.listAllAsMap()),
+    ])
 
     return wahaSessions.map((ws) => {
-      const managed = this.managedSessions.get(ws.name)
+      const managed = managedMap.get(ws.name)
       return {
         sessionName: ws.name,
         wahaStatus: ws.status,
@@ -101,16 +99,18 @@ export class InboxAutomation {
     if (sessionNames.length === 0) return []
 
     const results: BulkManagedResult[] = []
-    const wahaSessions = await this.wahaClient.listSessions()
+    const [wahaSessions, managedMap] = await Promise.all([
+      this.wahaClient.listSessions(),
+      Promise.resolve(this.managedSessions.listAllAsMap()),
+    ])
 
     for (const name of sessionNames) {
-      const existing = this.managedSessions.get(name)
+      const existing = managedMap.get(name)
       if (existing && existing.managed) {
         results.push({ sessionName: name, alreadyManaged: true })
         continue
       }
 
-      // Find session in WAHA list or fetch individually
       let session = wahaSessions.find((s) => s.name === name)
       if (!session) {
         try {
@@ -143,15 +143,6 @@ export class InboxAutomation {
     if (session.status !== 'SCAN_QR_CODE') {
       throw new Error(`Session ${sessionName} is not in SCAN_QR_CODE status (current: ${session.status})`)
     }
-
-    const url = `${this.wahaApiUrl}/api/sessions/${encodeURIComponent(sessionName)}/qr`
-    const headers: Record<string, string> = {}
-    if (this.wahaApiKey) {
-      headers['X-Api-Key'] = this.wahaApiKey
-    }
-
-    const res = await fetch(url, { headers })
-    const data = (await res.json()) as { qr: string }
-    return data.qr
+    return this.wahaClient.getQrCode(sessionName)
   }
 }
