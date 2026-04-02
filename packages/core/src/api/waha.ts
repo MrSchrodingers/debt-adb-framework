@@ -1,5 +1,4 @@
-import type { FastifyInstance } from 'fastify'
-import { z } from 'zod'
+import type { FastifyInstance, FastifyReply } from 'fastify'
 import type { WebhookHandler } from '../waha/webhook-handler.js'
 import type { SessionManager } from '../waha/session-manager.js'
 import type { MessageHistory } from '../waha/message-history.js'
@@ -14,11 +13,27 @@ export function registerWahaRoutes(server: FastifyInstance, deps: WahaDeps): voi
   const { webhookHandler, sessionManager, messageHistory } = deps
 
   // Webhook receiver — WAHA sends events here
+  // Use rawBody for HMAC validation (JSON.stringify of parsed body may differ from wire bytes)
+  server.addHook('preParsing', async (request, _reply, payload) => {
+    if (request.url === '/api/v1/webhooks/waha' && request.method === 'POST') {
+      const chunks: Buffer[] = []
+      for await (const chunk of payload) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+      }
+      const raw = Buffer.concat(chunks)
+      ;(request as typeof request & { rawBody: string }).rawBody = raw.toString('utf8')
+      // Return a new readable stream for Fastify's body parser
+      const { Readable } = await import('node:stream')
+      return Readable.from(raw)
+    }
+    return payload
+  })
+
   server.post('/api/v1/webhooks/waha', async (request, reply) => {
     // HMAC validation (if configured)
     const hmacHeader = request.headers['x-webhook-hmac'] as string | undefined
     if (hmacHeader) {
-      const rawBody = JSON.stringify(request.body)
+      const rawBody = (request as typeof request & { rawBody?: string }).rawBody ?? JSON.stringify(request.body)
       if (!webhookHandler.validateHmac(rawBody, hmacHeader)) {
         return reply.status(401).send({ error: 'Invalid HMAC signature' })
       }
@@ -33,7 +48,7 @@ export function registerWahaRoutes(server: FastifyInstance, deps: WahaDeps): voi
     return { ok: true, ...result }
   })
 
-  const requireWahaClient = (reply: Parameters<Parameters<typeof server.get>[1]>[1]) => {
+  const requireWahaClient = (reply: FastifyReply): boolean => {
     if (!sessionManager) {
       reply.status(503).send({ error: 'WAHA client not configured. Set WAHA_API_URL and WAHA_API_KEY.' })
       return false

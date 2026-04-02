@@ -9,7 +9,7 @@ import { DispatchEmitter } from './events/index.js'
 import { registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes } from './api/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
 import { SessionManager, WebhookHandler, MessageHistory } from './waha/index.js'
-import type { WahaApiClient } from './waha/index.js'
+import { createWahaHttpClient } from './waha/waha-http-client.js'
 import type { DispatchEventName } from './events/index.js'
 
 export interface DispatchCore {
@@ -66,45 +66,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   let sessionManager: SessionManager | null = null
 
   if (wahaApiUrl && wahaApiKey) {
-    const wahaClient: WahaApiClient = {
-      async listSessions() {
-        const res = await fetch(`${wahaApiUrl}/api/sessions`, {
-          headers: { 'X-Api-Key': wahaApiKey },
-        })
-        return res.json() as Promise<ReturnType<WahaApiClient['listSessions']> extends Promise<infer T> ? T : never>
-      },
-      async getSession(name) {
-        const res = await fetch(`${wahaApiUrl}/api/sessions/${name}`, {
-          headers: { 'X-Api-Key': wahaApiKey },
-        })
-        return res.json() as Promise<ReturnType<WahaApiClient['getSession']> extends Promise<infer T> ? T : never>
-      },
-      async updateSessionWebhooks(name, webhooks) {
-        await fetch(`${wahaApiUrl}/api/sessions/${name}`, {
-          method: 'PUT',
-          headers: { 'X-Api-Key': wahaApiKey, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ config: { webhooks } }),
-        })
-      },
-      async restartSession(name) {
-        await fetch(`${wahaApiUrl}/api/sessions/${name}/restart`, {
-          method: 'POST',
-          headers: { 'X-Api-Key': wahaApiKey },
-        })
-      },
-      async getServerVersion() {
-        const res = await fetch(`${wahaApiUrl}/api/server/version`, {
-          headers: { 'X-Api-Key': wahaApiKey },
-        })
-        return res.json() as Promise<{ version: string; engine: string; tier: string }>
-      },
-      async downloadMedia(fileUrl) {
-        const res = await fetch(fileUrl, {
-          headers: { 'X-Api-Key': wahaApiKey },
-        })
-        return Buffer.from(await res.arrayBuffer())
-      },
-    }
+    const wahaClient = createWahaHttpClient(wahaApiUrl, wahaApiKey)
 
     sessionManager = new SessionManager(db, emitter, wahaClient, {
       dispatchWebhookUrl: process.env.DISPATCH_WEBHOOK_URL,
@@ -238,8 +200,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   if (sessionManager) {
     sessionManager.startHealthPolling(60_000)
   }
+  const retentionDays = Number(process.env.MESSAGE_HISTORY_RETENTION_DAYS) || 90
   const historyCleanupInterval = setInterval(() => {
-    const retentionDays = Number(process.env.MESSAGE_HISTORY_RETENTION_DAYS) || 90
     messageHistory.cleanup(retentionDays)
   }, 3_600_000)
 
