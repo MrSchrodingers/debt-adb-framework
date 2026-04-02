@@ -8,6 +8,8 @@ class InMemoryRateLimitStore implements RateLimitStore {
   private timestamps = new Map<string, number[]>()
   private pairSends = new Map<string, number>()
 
+  constructor(private now: () => number = Date.now) {}
+
   async getSendTimestamps(senderNumber: string): Promise<number[]> {
     return this.timestamps.get(senderNumber) ?? []
   }
@@ -20,7 +22,7 @@ class InMemoryRateLimitStore implements RateLimitStore {
 
   async cleanExpiredTimestamps(senderNumber: string, windowMs: number): Promise<void> {
     const ts = this.timestamps.get(senderNumber) ?? []
-    const cutoff = Date.now() - windowMs
+    const cutoff = this.now() - windowMs
     this.timestamps.set(senderNumber, ts.filter(t => t > cutoff))
   }
 
@@ -43,8 +45,8 @@ describe('RateLimiter', () => {
   let currentTime: number
 
   beforeEach(() => {
-    store = new InMemoryRateLimitStore()
-    currentTime = 1000000
+    currentTime = 1000000000 // ~11.5 days in ms — enough room for 61min offsets
+    store = new InMemoryRateLimitStore(() => currentTime)
     limiter = new RateLimiter(store, DEFAULT_RATE_LIMIT_CONFIG, () => currentTime)
   })
 
