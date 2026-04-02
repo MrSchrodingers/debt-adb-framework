@@ -119,7 +119,7 @@ Hardening:      3 + 6 → 8
 ### Execution Bullets — Fase 3: Send Engine Robusto + Anti-Ban
 > **Deps**: Fase 2 APPROVED | **Issue**: #3 | **Estimativa**: G
 
-- [ ] **Grill** rate limiting, distribution algorithm, ban detection (`/grill-me`)
+- [x] **Grill** rate limiting, distribution algorithm, ban detection (`/grill-me`)
 - [ ] **TDD Red** — testes: rate limiter timing, distribution fairness, ban detection (fixtures), retry
 - [ ] **Implement** Rate Limiter: port exato do WAHA client Oralsin (volume scaling exponencial)
 - [ ] **Implement** Distribuicao: round-robin ponderado (health score × inverse send count)
