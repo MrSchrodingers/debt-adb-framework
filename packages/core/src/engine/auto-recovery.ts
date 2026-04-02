@@ -31,30 +31,26 @@ export class AutoRecovery {
       return { recovered: true, action: 'none' }
     }
 
+    const action = crashInfo.hasPid ? 'back_reopen' : 'force_stop' as const
+
     try {
       if (!crashInfo.hasPid) {
-        // Process dead → force-stop + restart
         await this.adb.shell(deviceSerial, `am force-stop ${packageName}`)
         await this.wait(3000)
-        await this.adb.shell(
-          deviceSerial,
-          `am start -a android.intent.action.VIEW -d "https://wa.me/${toNumber}" -p ${packageName}`,
-        )
-        return { recovered: true, action: 'force_stop' }
+      } else {
+        for (let i = 0; i < 3; i++) {
+          await this.adb.shell(deviceSerial, 'input keyevent 4')
+          await this.wait(300)
+        }
       }
 
-      // Process alive but UI gone → BACK×3 + re-open
-      for (let i = 0; i < 3; i++) {
-        await this.adb.shell(deviceSerial, 'input keyevent 4')
-        await this.wait(300)
-      }
       await this.adb.shell(
         deviceSerial,
         `am start -a android.intent.action.VIEW -d "https://wa.me/${toNumber}" -p ${packageName}`,
       )
-      return { recovered: true, action: 'back_reopen' }
+      return { recovered: true, action }
     } catch {
-      return { recovered: false, action: 'force_stop' }
+      return { recovered: false, action }
     }
   }
 

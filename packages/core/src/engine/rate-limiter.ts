@@ -1,7 +1,7 @@
 import type { RateLimitConfig, RateLimitStore, CanSendResult } from './types.js'
 
 export class RateLimiter {
-  private lastSendAt = new Map<string, number>()
+  private nextEligibleAt = new Map<string, number>()
 
   constructor(
     private store: RateLimitStore,
@@ -46,17 +46,14 @@ export class RateLimiter {
   }
 
   async canSend(senderNumber: string, toNumber: string): Promise<CanSendResult> {
-    // Check global cooldown (last send from this number)
-    const lastSend = this.lastSendAt.get(senderNumber)
-    if (lastSend !== undefined) {
-      const scaledDelay = await this.calculateScaledDelay(senderNumber)
-      const elapsed = this.now() - lastSend
-      if (elapsed < scaledDelay) {
-        return { canSend: false, waitMs: scaledDelay - elapsed }
+    const eligible = this.nextEligibleAt.get(senderNumber)
+    if (eligible !== undefined) {
+      const remaining = eligible - this.now()
+      if (remaining > 0) {
+        return { canSend: false, waitMs: remaining }
       }
     }
 
-    // Check pair rate limit
     const pairCheck = await this.checkPairLimit(senderNumber, toNumber)
     if (!pairCheck.canSend) return pairCheck
 
@@ -67,7 +64,11 @@ export class RateLimiter {
     const timestamp = this.now()
     await this.store.addSendTimestamp(senderNumber, timestamp)
     await this.store.setLastPairSend(senderNumber, toNumber, timestamp)
-    this.lastSendAt.set(senderNumber, timestamp)
+
+    // Compute deterministic cooldown: random delay decided once per send
+    const scaledDelay = await this.calculateScaledDelay(senderNumber)
+    const finalDelay = this.applyJitter(scaledDelay)
+    this.nextEligibleAt.set(senderNumber, timestamp + finalDelay)
   }
 
   async cleanExpiredTimestamps(senderNumber: string): Promise<void> {

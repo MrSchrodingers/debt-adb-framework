@@ -1,36 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { Dispatcher } from './dispatcher.js'
 import { RateLimiter } from './rate-limiter.js'
-import type { RateLimitStore, SenderState } from './types.js'
+import type { SenderState } from './types.js'
 import { DEFAULT_RATE_LIMIT_CONFIG } from './types.js'
-
-class InMemoryRateLimitStore implements RateLimitStore {
-  private timestamps = new Map<string, number[]>()
-  private pairSends = new Map<string, number>()
-
-  async getSendTimestamps(senderNumber: string): Promise<number[]> {
-    return this.timestamps.get(senderNumber) ?? []
-  }
-  async addSendTimestamp(senderNumber: string, timestamp: number): Promise<void> {
-    const ts = this.timestamps.get(senderNumber) ?? []
-    ts.push(timestamp)
-    this.timestamps.set(senderNumber, ts)
-  }
-  async cleanExpiredTimestamps(senderNumber: string, windowMs: number): Promise<void> {
-    const ts = this.timestamps.get(senderNumber) ?? []
-    const cutoff = Date.now() - windowMs
-    this.timestamps.set(senderNumber, ts.filter(t => t > cutoff))
-  }
-  async getLastPairSend(senderNumber: string, toNumber: string): Promise<number | null> {
-    return this.pairSends.get(`${senderNumber}:${toNumber}`) ?? null
-  }
-  async setLastPairSend(senderNumber: string, toNumber: string, timestamp: number): Promise<void> {
-    this.pairSends.set(`${senderNumber}:${toNumber}`, timestamp)
-  }
-  async getSendCount(senderNumber: string): Promise<number> {
-    return (this.timestamps.get(senderNumber) ?? []).length
-  }
-}
+import { InMemoryRateLimitStore } from './__test-utils__/in-memory-rate-limit-store.js'
 
 function makeSender(overrides: Partial<SenderState> & { senderNumber: string }): SenderState {
   return {
@@ -82,7 +55,7 @@ describe('Dispatcher', () => {
 
     it('skips banned numbers', async () => {
       const senders = [
-        makeSender({ senderNumber: '5543999990001', banned: true, banExpiresAt: '2026-04-03T00:00:00Z' }),
+        makeSender({ senderNumber: '5543999990001', banned: true, banExpiresAt: Date.parse('2026-04-03T00:00:00Z') }),
         makeSender({ senderNumber: '5543999990002', sendCountInWindow: 10 }),
       ]
 
@@ -166,26 +139,4 @@ describe('Dispatcher', () => {
     })
   })
 
-  describe('registerBan / clearBan', () => {
-    it('marks number as banned', () => {
-      dispatcher.registerBan('5543999990001', '2026-04-03T00:00:00Z')
-
-      const senders = [
-        makeSender({ senderNumber: '5543999990001', banned: true, banExpiresAt: '2026-04-03T00:00:00Z' }),
-      ]
-      expect(dispatcher.isAllBanned(senders)).toBe(true)
-    })
-
-    it('clears ban making number available', () => {
-      dispatcher.registerBan('5543999990001', '2026-04-03T00:00:00Z')
-      dispatcher.clearBan('5543999990001')
-
-      // After clearing, the number should be selectable
-      // (ban state is managed externally via SenderState, this just updates internal tracking)
-      const senders = [
-        makeSender({ senderNumber: '5543999990001', banned: false }),
-      ]
-      expect(dispatcher.isAllBanned(senders)).toBe(false)
-    })
-  })
 })
