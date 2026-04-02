@@ -186,7 +186,7 @@ Hardening:      3 + 6 → 8
 - [x] **Implement** Callback System: at-least-once, 3 retries, `failed_callbacks` table, 4 tipos
 - [x] **Implement** Correlation Fix: insert adb_send no history, waha_message_id na messages
 - [x] **Implement** Plugin Oralsin: contrato enqueue (batch), /status, /queue, senders[] fallback
-- [ ] **TDD Green** + **E2E** plugin enfileira batch → ADB envia para `5543991938235` → callback
+- [x] **TDD Green** + **E2E** plugin enfileira batch → ADB envia para `5543991938235` → callback
 - [ ] **Review** + **Verify** + **Phase Gate**
 
 ### Execution Bullets — Fase 8: Multi-Profile + Hardening + Docker
