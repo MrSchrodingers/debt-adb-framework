@@ -6,7 +6,8 @@ import { MessageQueue } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
 import { SendEngine } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
-import { registerMessageRoutes, registerDeviceRoutes } from './api/index.js'
+import { registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes } from './api/index.js'
+import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
 import type { DispatchEventName } from './events/index.js'
 
 export interface DispatchCore {
@@ -39,12 +40,23 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const emitter = new DispatchEmitter()
   const engine = new SendEngine(adb, queue, emitter)
 
+  // Initialize monitor modules
+  const deviceManager = new DeviceManager(db, emitter, adb)
+  deviceManager.initialize()
+  const healthCollector = new HealthCollector(db, adb)
+  healthCollector.initialize()
+  const waMapper = new WaAccountMapper(db, adb)
+  waMapper.initialize()
+  const alertSystem = new AlertSystem(db, emitter)
+  alertSystem.initialize()
+
   server.get('/api/v1/health', async () => ({
     status: 'ok',
     timestamp: new Date().toISOString(),
   }))
   registerMessageRoutes(server, queue, emitter)
   registerDeviceRoutes(server, adb)
+  registerMonitorRoutes(server, { adb, engine, deviceManager, healthCollector, waMapper, alertSystem })
 
   let workerRunning = false
 
@@ -88,6 +100,52 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     }
   })
 
+  // Device discovery polling (5s)
+  const discoveryInterval = setInterval(async () => {
+    try {
+      await deviceManager.poll()
+    } catch (err) {
+      server.log.error({ err }, 'Device discovery poll failed')
+    }
+  }, 5_000)
+
+  // Health collection polling (30s)
+  const healthInterval = setInterval(async () => {
+    try {
+      for (const device of deviceManager.getDevices()) {
+        if (device.status !== 'online') continue
+        const snapshot = await healthCollector.collect(device.serial)
+        alertSystem.evaluate(snapshot)
+        emitter.emit('device:health', {
+          serial: device.serial,
+          batteryPercent: snapshot.batteryPercent,
+          temperatureCelsius: snapshot.temperatureCelsius,
+          ramAvailableMb: snapshot.ramAvailableMb,
+          storageFreeBytes: snapshot.storageFreeBytes,
+        })
+      }
+    } catch (err) {
+      server.log.error({ err }, 'Health collection failed')
+    }
+  }, 30_000)
+
+  // WA account mapping (every 5 minutes)
+  const accountInterval = setInterval(async () => {
+    try {
+      for (const device of deviceManager.getDevices()) {
+        if (device.status !== 'online') continue
+        await waMapper.mapAccounts(device.serial)
+      }
+    } catch (err) {
+      server.log.error({ err }, 'WA account mapping failed')
+    }
+  }, 300_000)
+
+  // Health data cleanup (hourly, removes > 7 days)
+  const healthCleanupInterval = setInterval(() => {
+    healthCollector.cleanup()
+  }, 3_600_000)
+
   const cleanupInterval = setInterval(() => {
     const cleaned = queue.cleanStaleLocks()
     if (cleaned > 0) {
@@ -117,6 +175,10 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   }, 5_000)
 
   server.addHook('onClose', () => {
+    clearInterval(discoveryInterval)
+    clearInterval(healthInterval)
+    clearInterval(accountInterval)
+    clearInterval(healthCleanupInterval)
     clearInterval(cleanupInterval)
     clearInterval(workerInterval)
     db.close()
@@ -128,7 +190,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   const events: DispatchEventName[] = [
     'message:queued', 'message:sending', 'message:sent', 'message:failed',
-    'device:connected', 'device:disconnected',
+    'device:connected', 'device:disconnected', 'device:health', 'alert:new',
   ]
   for (const event of events) {
     emitter.on(event, (data) => io.emit(event, data))
