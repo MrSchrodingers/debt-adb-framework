@@ -178,7 +178,7 @@ Hardening:      3 + 6 → 8
 > **PRIMEIRO TESTE REAL COM PRODUCAO**
 
 - [x] **Grill** plugin lifecycle, event bus, callback, contratos, escopo (18 decisões)
-- [ ] **TDD Red** — testes: plugin lifecycle, registry, event bus, callback delivery, batch enqueue
+- [x] **TDD Red** — 48 testes: registry (14), event bus (9), callback (13), loader (12)
 - [ ] **Implement** Plugin Interface + PluginContext: sandbox API restrita para plugins
 - [ ] **Implement** Plugin Registry: tabela `plugins`, auto-upsert no boot, admin API REST
 - [ ] **Implement** Event Bus: enriquecer eventos + dispatch para plugins assinantes + HMAC callback
