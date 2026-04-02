@@ -1,9 +1,5 @@
 import type Database from 'better-sqlite3'
-import type { WhatsAppAccount } from './types.js'
-
-interface AdbShellAdapter {
-  shell: (serial: string, command: string) => Promise<string>
-}
+import type { WhatsAppAccount, AdbShellAdapter } from './types.js'
 
 const PROFILES = [0, 10, 11, 12]
 const WA_PACKAGES = ['com.whatsapp', 'com.whatsapp.w4b'] as const

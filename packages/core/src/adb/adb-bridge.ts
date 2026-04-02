@@ -22,8 +22,12 @@ export class AdbBridge {
         type: d.type as DeviceInfo['type'],
       }
       if (d.type === 'device') {
-        info.brand = await this.getProp(d.id, 'ro.product.brand')
-        info.model = await this.getProp(d.id, 'ro.product.model')
+        const [brand, model] = await Promise.all([
+          this.getProp(d.id, 'ro.product.brand'),
+          this.getProp(d.id, 'ro.product.model'),
+        ])
+        info.brand = brand
+        info.model = model
       }
       results.push(info)
     }

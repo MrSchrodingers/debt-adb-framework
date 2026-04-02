@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts'
 import { CORE_URL } from '../config'
-import type { DeviceRecord, HealthSnapshot, WhatsAppAccount, Alert } from '../types'
+import type { Alert, DeviceRecord, HealthSnapshot, WhatsAppAccount } from '../types'
 
 interface DeviceDetailProps {
   device: DeviceRecord
@@ -16,6 +16,7 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
   const [confirmAction, setConfirmAction] = useState<string | null>(null)
 
   const latest = health[health.length - 1] ?? null
+  const hasAlert = (type: string) => alerts.some((a) => a.type === type)
 
   const executeAction = async (action: string) => {
     setActionLoading(action)
@@ -61,13 +62,13 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
       {/* Health Metrics */}
       {latest && (
         <div className="grid grid-cols-4 gap-3 mb-4">
-          <MetricCard label="Battery" value={`${latest.batteryPercent}%`} warn={latest.batteryPercent < 15} />
-          <MetricCard label="Temp" value={`${latest.temperatureCelsius.toFixed(1)}C`} warn={latest.temperatureCelsius > 40} />
-          <MetricCard label="RAM" value={`${latest.ramAvailableMb}MB`} warn={latest.ramAvailableMb < 200} />
+          <MetricCard label="Battery" value={`${latest.batteryPercent}%`} warn={hasAlert('battery_low') || hasAlert('battery_critical')} />
+          <MetricCard label="Temp" value={`${latest.temperatureCelsius.toFixed(1)}C`} warn={hasAlert('temperature_high') || hasAlert('temperature_critical')} />
+          <MetricCard label="RAM" value={`${latest.ramAvailableMb}MB`} warn={hasAlert('ram_low')} />
           <MetricCard
             label="Storage"
             value={`${Math.round(latest.storageFreeBytes / 1_000_000)}MB`}
-            warn={latest.storageFreeBytes < 500_000_000}
+            warn={hasAlert('storage_low')}
           />
         </div>
       )}
@@ -123,7 +124,7 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
           onClick={async () => {
             setActionLoading('screenshot')
             try {
-              const res = await fetch(`${CORE_URL}/api/v1/monitor/devices/${device.serial}/screenshot`, {
+              const res = await fetch(`${CORE_URL}/api/v1/devices/${device.serial}/screenshot`, {
                 method: 'POST',
               })
               if (res.ok) {
@@ -135,50 +136,24 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
             }
           }}
         />
-        {confirmAction === 'reboot' ? (
-          <div className="flex gap-1">
-            <button
-              onClick={() => executeAction('reboot')}
-              className="rounded bg-red-600 px-2 py-1 text-xs text-white hover:bg-red-500"
-            >
-              Confirmar
-            </button>
-            <button
-              onClick={() => setConfirmAction(null)}
-              className="rounded bg-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-600"
-            >
-              Cancelar
-            </button>
-          </div>
-        ) : (
-          <ActionButton
-            label="Reboot"
-            loading={actionLoading === 'reboot'}
-            onClick={() => setConfirmAction('reboot')}
-          />
-        )}
-        {confirmAction === 'restart-wa' ? (
-          <div className="flex gap-1">
-            <button
-              onClick={() => executeAction('restart-wa')}
-              className="rounded bg-red-600 px-2 py-1 text-xs text-white hover:bg-red-500"
-            >
-              Confirmar
-            </button>
-            <button
-              onClick={() => setConfirmAction(null)}
-              className="rounded bg-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-600"
-            >
-              Cancelar
-            </button>
-          </div>
-        ) : (
-          <ActionButton
-            label="Restart WA"
-            loading={actionLoading === 'restart-wa'}
-            onClick={() => setConfirmAction('restart-wa')}
-          />
-        )}
+        <ConfirmableAction
+          action="reboot"
+          label="Reboot"
+          confirmAction={confirmAction}
+          actionLoading={actionLoading}
+          onConfirm={executeAction}
+          onRequestConfirm={setConfirmAction}
+          onCancel={() => setConfirmAction(null)}
+        />
+        <ConfirmableAction
+          action="restart-wa"
+          label="Restart WA"
+          confirmAction={confirmAction}
+          actionLoading={actionLoading}
+          onConfirm={executeAction}
+          onRequestConfirm={setConfirmAction}
+          onCancel={() => setConfirmAction(null)}
+        />
       </div>
     </div>
   )
@@ -242,13 +217,57 @@ function ActionButton({
   )
 }
 
-function severityBg(s: string) {
+function ConfirmableAction({
+  action,
+  label,
+  confirmAction,
+  actionLoading,
+  onConfirm,
+  onRequestConfirm,
+  onCancel,
+}: {
+  action: string
+  label: string
+  confirmAction: string | null
+  actionLoading: string | null
+  onConfirm: (action: string) => void
+  onRequestConfirm: (action: string) => void
+  onCancel: () => void
+}) {
+  if (confirmAction === action) {
+    return (
+      <div className="flex gap-1">
+        <button
+          onClick={() => onConfirm(action)}
+          className="rounded bg-red-600 px-2 py-1 text-xs text-white hover:bg-red-500"
+        >
+          Confirmar
+        </button>
+        <button
+          onClick={onCancel}
+          className="rounded bg-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-600"
+        >
+          Cancelar
+        </button>
+      </div>
+    )
+  }
+  return (
+    <ActionButton
+      label={label}
+      loading={actionLoading === action}
+      onClick={() => onRequestConfirm(action)}
+    />
+  )
+}
+
+function severityBg(s: Alert['severity']) {
   if (s === 'critical') return 'bg-red-500/10'
   if (s === 'high') return 'bg-amber-500/10'
   return 'bg-zinc-800'
 }
 
-function severityText(s: string) {
+function severityText(s: Alert['severity']) {
   if (s === 'critical') return 'text-red-400 font-medium'
   if (s === 'high') return 'text-amber-400 font-medium'
   return 'text-zinc-400'
