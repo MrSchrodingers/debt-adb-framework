@@ -150,7 +150,7 @@ Hardening:      3 + 6 → 8
 > **Scope redefined**: WAHA nativo já faz bridge com Chatwoot. Dispatch gerencia sessões e automatiza criação de inbox.
 
 - [x] **Grill** scope redefinition, managed sessions, inbox automation, QR flow (`/grill-me`)
-- [ ] **TDD Red** — testes: Chatwoot HTTP client, managed sessions CRUD, inbox creation orchestration
+- [x] **TDD Red** — testes: Chatwoot HTTP client, managed sessions CRUD, inbox creation orchestration
 - [ ] **Implement** Chatwoot HTTP Client: wrapper API Chatwoot (criar/listar inboxes)
 - [ ] **Implement** Managed Sessions: tabela `managed_sessions`, CRUD, join com `whatsapp_accounts`
 - [ ] **Implement** Inbox Automation: orquestrar criação WAHA session + Chatwoot inbox
