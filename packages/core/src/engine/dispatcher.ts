@@ -8,33 +8,65 @@ export interface DispatchDecision {
 }
 
 export class Dispatcher {
+  private bans = new Map<string, string>() // senderNumber → expiresAt
+
   constructor(
     private rateLimiter: RateLimiter,
     private store: RateLimitStore,
+    private now: () => number = Date.now,
   ) {}
 
-  /** Select the optimal sender number from available numbers */
-  selectSender(_availableNumbers: SenderState[]): Promise<DispatchDecision | null> {
-    throw new Error('Not implemented')
+  async selectSender(availableNumbers: SenderState[]): Promise<DispatchDecision | null> {
+    const currentTime = this.now()
+
+    const eligible = availableNumbers.filter(s => {
+      if (s.banned) return false
+      if (s.cooldownExpiresAt !== null && s.cooldownExpiresAt > currentTime) return false
+      return true
+    })
+
+    if (eligible.length === 0) return null
+
+    // Active rebalancing: pick sender with fewest sends in window
+    eligible.sort((a, b) => a.sendCountInWindow - b.sendCountInWindow)
+
+    const selected = eligible[0]
+    return {
+      senderNumber: selected.senderNumber,
+      deviceSerial: selected.deviceSerial ?? '',
+      profileId: selected.profileId ?? 0,
+    }
   }
 
-  /** Get the earliest time any sender can dispatch */
-  getNextDispatchTime(_availableNumbers: SenderState[]): Promise<number | null> {
-    throw new Error('Not implemented')
+  async getNextDispatchTime(availableNumbers: SenderState[]): Promise<number | null> {
+    const nonBanned = availableNumbers.filter(s => !s.banned)
+    if (nonBanned.length === 0) return null
+
+    // If any number has no cooldown, it's ready now
+    const ready = nonBanned.find(s => s.cooldownExpiresAt === null)
+    if (ready) return this.now()
+
+    // Find earliest cooldown expiry
+    let earliest = Infinity
+    for (const s of nonBanned) {
+      if (s.cooldownExpiresAt !== null && s.cooldownExpiresAt < earliest) {
+        earliest = s.cooldownExpiresAt
+      }
+    }
+
+    return earliest === Infinity ? null : earliest
   }
 
-  /** Check if all sender numbers are banned */
-  isAllBanned(_senderStates: SenderState[]): boolean {
-    throw new Error('Not implemented')
+  isAllBanned(senderStates: SenderState[]): boolean {
+    if (senderStates.length === 0) return true
+    return senderStates.every(s => s.banned)
   }
 
-  /** Register a ban for a sender number */
-  registerBan(_senderNumber: string, _expiresAt: string): void {
-    throw new Error('Not implemented')
+  registerBan(senderNumber: string, expiresAt: string): void {
+    this.bans.set(senderNumber, expiresAt)
   }
 
-  /** Clear a ban, making number available again */
-  clearBan(_senderNumber: string): void {
-    throw new Error('Not implemented')
+  clearBan(senderNumber: string): void {
+    this.bans.delete(senderNumber)
   }
 }
