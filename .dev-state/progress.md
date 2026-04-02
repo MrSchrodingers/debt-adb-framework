@@ -1,8 +1,8 @@
 # Development Progress — DEBT ADB Framework
 
-> **Last updated**: 2026-04-02T19:03:00-03:00
-> **Current phase**: 4 — WAHA Listener Passivo (APPROVED)
-> **Next action**: Start Phase 5 (Chatwoot) or Phase 6 (Dashboard) — both now READY
+> **Last updated**: 2026-04-02T19:30:00-03:00
+> **Current phase**: 5 — Session Management + Inbox Automation (IN_PROGRESS)
+> **Next action**: TDD Red — write failing tests for Chatwoot client, managed sessions, inbox automation
 
 ## Phase Status
 
@@ -12,7 +12,7 @@
 | 2 | Multi-Device + Health Monitoring | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
 | 3 | Send Engine Robusto + Anti-Ban | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
 | 4 | WAHA Listener Passivo | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
-| 5 | Chatwoot Bridge Bidirecional | `READY` | — | — | — |
+| 5 | Session Management + Inbox Automation | `IN_PROGRESS` | 2026-04-02 | — | — |
 | 6 | Dashboard Operacional | `READY` | — | — | — |
 | 7 | Plugin System + Plugin Oralsin | `BLOCKED` | — | — | Phase 3, 5 |
 | 8 | Multi-Profile + Hardening + Docker | `BLOCKED` | — | — | Phase 3, 6 |
@@ -42,6 +42,13 @@
 | 2 | 2026-04-02 | Claude Opus 4.6 + Matheus | 8/8 criteria verified, 78 tests, 12 grill decisions, 8 commits, simplify fixed 10 findings, review fixed 2 criticals + 4 importants |
 | 3 | 2026-04-02 | Claude Opus 4.6 + Matheus | 7/8 criteria verified, 145 tests, 18 grill decisions, 9 commits, simplify fixed 6 findings, review fixed 2 criticals + 3 importants. Temporal.io + Redis architecture. E2E: 5 rate-limited msgs on POCO Serenity |
 | 4 | 2026-04-02 | Claude Opus 4.6 + Matheus | 10/10 criteria verified, 188 tests (43 new), 17 grill decisions, 7 commits, simplify fixed 6 findings, review fixed 2 criticals + 4 importants. Shared WAHA Plus GoWS, HMAC SHA-512, webhook-first, 90-day retention |
+
+## Phase 5 Grill Progress
+
+See `.dev-state/phase-5-grill.md` for 12 confirmed decisions.
+Grill COMPLETE. Key: scope redefined from "Chatwoot Bridge Bidirecional" to "Session Management +
+Inbox Automation". WAHA native Chatwoot App already handles message bridging. Dispatch manages
+sessions (managed flag), automates inbox creation (WAHA + Chatwoot), and provides admin UI.
 
 ## Phase 4 Grill Progress
 
@@ -137,3 +144,12 @@ DEVICE_SERIAL=9b01005930533036340030832250ac  (POCO Serenity)
   Simplify: fixed 6 findings (HMAC raw body, res.ok guards, SQL params, sargable dedup).
   Review: fixed 4 findings (HMAC enforcement, Zod validation, dead code, restart backoff).
   E2E: webhook receiver processes outgoing+incoming, message_history persists correctly.
+- 2026-04-02: Phase 5 started. Grill complete (12 decisions). MAJOR SCOPE CHANGE: renamed from
+  "Chatwoot Bridge Bidirecional" to "Session Management + Inbox Automation". WAHA Plus already
+  has native Chatwoot App integration (chat.debt.com.br, v4.11.0, account_id=1, same server
+  37.27.210.137). 8 oralsin_* sessions already connected to Chatwoot inboxes (1:1). Incoming
+  and outgoing bridging NOT needed — WAHA native handles it. Operator replies continue via
+  WAHA native. New scope: managed_sessions table (separate from whatsapp_accounts), Chatwoot
+  HTTP client, inbox creation automation (WAHA + Chatwoot in one flow), QR code display via
+  Socket.IO, admin UI in Electron. Credentials: CHATWOOT_API_TOKEN env var.
+  See `.dev-state/phase-5-grill.md` for full decisions.
