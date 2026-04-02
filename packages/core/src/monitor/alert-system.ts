@@ -140,12 +140,36 @@ export class AlertSystem {
 
   setDeviceThresholds(serial: string, overrides: Partial<ThresholdConfig>): void {
     this.deviceOverrides.set(serial, overrides)
+    // Persist to devices table if it exists
+    try {
+      this.db
+        .prepare('UPDATE devices SET alert_thresholds = ? WHERE serial = ?')
+        .run(JSON.stringify(overrides), serial)
+    } catch {
+      // devices table may not exist in isolated test contexts
+    }
   }
 
   private getThresholds(serial: string): ThresholdConfig {
-    const overrides = this.deviceOverrides.get(serial)
-    if (!overrides) return GLOBAL_THRESHOLDS
-    return { ...GLOBAL_THRESHOLDS, ...overrides }
+    // Check in-memory cache first
+    const cached = this.deviceOverrides.get(serial)
+    if (cached) return { ...GLOBAL_THRESHOLDS, ...cached }
+
+    // Load from devices table if it exists
+    try {
+      const row = this.db
+        .prepare('SELECT alert_thresholds FROM devices WHERE serial = ?')
+        .get(serial) as { alert_thresholds: string | null } | undefined
+      if (row?.alert_thresholds) {
+        const overrides = JSON.parse(row.alert_thresholds) as Partial<ThresholdConfig>
+        this.deviceOverrides.set(serial, overrides)
+        return { ...GLOBAL_THRESHOLDS, ...overrides }
+      }
+    } catch {
+      // devices table may not exist in isolated test contexts
+    }
+
+    return GLOBAL_THRESHOLDS
   }
 
   private createIfNotExists(serial: string, type: AlertType, severity: AlertSeverity, message: string): void {

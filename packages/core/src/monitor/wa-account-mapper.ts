@@ -79,16 +79,19 @@ export class WaAccountMapper {
   }
 
   private upsertAccounts(serial: string, accounts: WhatsAppAccount[]): void {
-    this.db.prepare('DELETE FROM whatsapp_accounts WHERE device_serial = ?').run(serial)
+    const txn = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM whatsapp_accounts WHERE device_serial = ?').run(serial)
 
-    const insert = this.db.prepare(`
-      INSERT INTO whatsapp_accounts (device_serial, profile_id, package_name, phone_number, updated_at)
-      VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    `)
+      const insert = this.db.prepare(`
+        INSERT INTO whatsapp_accounts (device_serial, profile_id, package_name, phone_number, updated_at)
+        VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      `)
 
-    for (const acc of accounts) {
-      insert.run(acc.deviceSerial, acc.profileId, acc.packageName, acc.phoneNumber)
-    }
+      for (const acc of accounts) {
+        insert.run(acc.deviceSerial, acc.profileId, acc.packageName, acc.phoneNumber)
+      }
+    })
+    txn()
   }
 }
 
