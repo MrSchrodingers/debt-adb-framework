@@ -135,7 +135,7 @@ Hardening:      3 + 6 → 8
 > **Deps**: Fase 1 APPROVED | **Issue**: #4 | **Estimativa**: M
 > **PARALELO** com Fases 2/3
 
-- [ ] **Grill** WAHA session lifecycle, multi-device sync, independence (`/grill-me`)
+- [x] **Grill** WAHA session lifecycle, multi-device sync, independence (`/grill-me`)
 - [ ] **TDD Red** — testes: webhook processing, session health, independence
 - [ ] **Implement** Session Manager: parear WAHA por numero, exponential backoff (5s→80s, 5x)
 - [ ] **Implement** Webhook Receiver: `POST /api/v1/webhooks/waha` (message.received, message.sent)
