@@ -131,18 +131,13 @@ export class MessageHistory {
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
-    if (params.limit) {
-      conditions.length // used for where
-      values.push(params.limit)
-    }
-    if (params.offset) {
-      values.push(params.offset)
-    }
-    const limitClause = params.limit ? 'LIMIT ?' : ''
+    const limit = params.limit ?? 100
+    values.push(limit)
     const offsetClause = params.offset ? 'OFFSET ?' : ''
+    if (params.offset) values.push(params.offset)
 
     const rows = this.db.prepare(
-      `SELECT * FROM message_history ${where} ORDER BY created_at DESC ${limitClause} ${offsetClause}`,
+      `SELECT * FROM message_history ${where} ORDER BY created_at DESC LIMIT ? ${offsetClause}`,
     ).all(...values) as Record<string, unknown>[]
 
     return rows.map((row) => this.rowToRecord(row))

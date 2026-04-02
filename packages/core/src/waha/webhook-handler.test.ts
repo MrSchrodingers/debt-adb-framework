@@ -61,7 +61,7 @@ describe('WebhookHandler', () => {
     emitter = new DispatchEmitter()
     history = new MessageHistory(db)
     history.initialize()
-    handler = new WebhookHandler(db, emitter, history, { hmacSecret: HMAC_SECRET })
+    handler = new WebhookHandler(emitter, history, { hmacSecret: HMAC_SECRET })
   })
 
   afterEach(() => {

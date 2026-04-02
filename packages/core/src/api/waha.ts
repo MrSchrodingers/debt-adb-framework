@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
+import { z } from 'zod'
 import type { WebhookHandler } from '../waha/webhook-handler.js'
 import type { SessionManager } from '../waha/session-manager.js'
 import type { MessageHistory } from '../waha/message-history.js'
@@ -9,11 +10,32 @@ interface WahaDeps {
   messageHistory: MessageHistory
 }
 
+const webhookPayloadSchema = z.object({
+  event: z.enum(['message', 'message.any', 'message.ack', 'session.status']),
+  session: z.string().min(1),
+  me: z.object({ id: z.string(), pushName: z.string() }).optional(),
+  payload: z.record(z.unknown()),
+  engine: z.string().optional(),
+  environment: z.object({
+    version: z.string(),
+    engine: z.string(),
+    tier: z.string(),
+  }).optional(),
+})
+
+const historyQuerySchema = z.object({
+  from: z.string().optional(),
+  to: z.string().optional(),
+  direction: z.enum(['incoming', 'outgoing']).optional(),
+  session: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(1000).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+})
+
 export function registerWahaRoutes(server: FastifyInstance, deps: WahaDeps): void {
   const { webhookHandler, sessionManager, messageHistory } = deps
 
-  // Webhook receiver — WAHA sends events here
-  // Use rawBody for HMAC validation (JSON.stringify of parsed body may differ from wire bytes)
+  // Capture raw body for HMAC validation (JSON.stringify of parsed body may differ from wire bytes)
   server.addHook('preParsing', async (request, _reply, payload) => {
     if (request.url === '/api/v1/webhooks/waha' && request.method === 'POST') {
       const chunks: Buffer[] = []
@@ -22,7 +44,6 @@ export function registerWahaRoutes(server: FastifyInstance, deps: WahaDeps): voi
       }
       const raw = Buffer.concat(chunks)
       ;(request as typeof request & { rawBody: string }).rawBody = raw.toString('utf8')
-      // Return a new readable stream for Fastify's body parser
       const { Readable } = await import('node:stream')
       return Readable.from(raw)
     }
@@ -30,21 +51,24 @@ export function registerWahaRoutes(server: FastifyInstance, deps: WahaDeps): voi
   })
 
   server.post('/api/v1/webhooks/waha', async (request, reply) => {
-    // HMAC validation (if configured)
+    // HMAC enforcement: if secret is configured, REQUIRE the header
     const hmacHeader = request.headers['x-webhook-hmac'] as string | undefined
-    if (hmacHeader) {
+    if (webhookHandler.isHmacConfigured()) {
+      if (!hmacHeader) {
+        return reply.status(401).send({ error: 'Missing HMAC signature' })
+      }
       const rawBody = (request as typeof request & { rawBody?: string }).rawBody ?? JSON.stringify(request.body)
       if (!webhookHandler.validateHmac(rawBody, hmacHeader)) {
         return reply.status(401).send({ error: 'Invalid HMAC signature' })
       }
     }
 
-    const payload = request.body as Record<string, unknown>
-    if (!payload.event || !payload.session) {
-      return reply.status(400).send({ error: 'Missing required fields: event, session' })
+    const parsed = webhookPayloadSchema.safeParse(request.body)
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Invalid webhook payload', details: parsed.error.issues })
     }
 
-    const result = await webhookHandler.processWebhook(payload as unknown as Parameters<typeof webhookHandler.processWebhook>[0])
+    const result = await webhookHandler.processWebhook(parsed.data)
     return { ok: true, ...result }
   })
 
@@ -56,20 +80,17 @@ export function registerWahaRoutes(server: FastifyInstance, deps: WahaDeps): voi
     return true
   }
 
-  // List managed WAHA sessions (matched with ADB devices)
   server.get('/api/v1/waha/sessions', async (_request, reply) => {
     if (!requireWahaClient(reply)) return
     return sessionManager!.discoverManagedSessions()
   })
 
-  // Trigger health check manually
   server.post('/api/v1/waha/health-check', async (_request, reply) => {
     if (!requireWahaClient(reply)) return
     await sessionManager!.checkHealth()
     return { ok: true, checkedAt: new Date().toISOString() }
   })
 
-  // Add Dispatch webhook to a session
   server.post('/api/v1/waha/sessions/:name/webhook', async (request, reply) => {
     if (!requireWahaClient(reply)) return
     const { name } = request.params as { name: string }
@@ -84,7 +105,6 @@ export function registerWahaRoutes(server: FastifyInstance, deps: WahaDeps): voi
     }
   })
 
-  // Restart a WAHA session
   server.post('/api/v1/waha/sessions/:name/restart', async (request, reply) => {
     if (!requireWahaClient(reply)) return
     const { name } = request.params as { name: string }
@@ -99,16 +119,18 @@ export function registerWahaRoutes(server: FastifyInstance, deps: WahaDeps): voi
     }
   })
 
-  // Query message history
-  server.get('/api/v1/waha/history', async (request) => {
-    const query = request.query as Record<string, string | undefined>
+  server.get('/api/v1/waha/history', async (request, reply) => {
+    const parsed = historyQuerySchema.safeParse(request.query)
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Invalid query', details: parsed.error.issues })
+    }
     return messageHistory.query({
-      fromNumber: query.from,
-      toNumber: query.to,
-      direction: query.direction as 'incoming' | 'outgoing' | undefined,
-      wahaSessionName: query.session,
-      limit: query.limit ? parseInt(query.limit, 10) : 50,
-      offset: query.offset ? parseInt(query.offset, 10) : 0,
+      fromNumber: parsed.data.from,
+      toNumber: parsed.data.to,
+      direction: parsed.data.direction,
+      wahaSessionName: parsed.data.session,
+      limit: parsed.data.limit,
+      offset: parsed.data.offset,
     })
   })
 }

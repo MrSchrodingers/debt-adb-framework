@@ -1,5 +1,4 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
-import type Database from 'better-sqlite3'
 import type { DispatchEmitter } from '../events/index.js'
 import type { MessageHistory } from './message-history.js'
 import type { WahaWebhookPayload, WahaMessagePayload } from './types.js'
@@ -17,11 +16,14 @@ export interface WebhookResult {
 
 export class WebhookHandler {
   constructor(
-    private readonly db: Database.Database,
     private readonly emitter: DispatchEmitter,
     private readonly history: MessageHistory,
     private readonly config: WebhookHandlerConfig = {},
   ) {}
+
+  isHmacConfigured(): boolean {
+    return !!this.config.hmacSecret
+  }
 
   validateHmac(body: string, signature: string): boolean {
     if (!this.config.hmacSecret) return false
