@@ -62,6 +62,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // WebhookHandler works without WAHA client (receives webhooks regardless)
   const webhookHandler = new WebhookHandler(emitter, messageHistory, {
     hmacSecret: process.env.WAHA_WEBHOOK_HMAC_SECRET,
+    queue,
   })
 
   let sessionManager: SessionManager | null = null
@@ -212,6 +213,17 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
       server.log.info({ messageId: message.id, device: online.serial }, 'Worker: sending message')
       await engine.send(message, online.serial)
+
+      // Correlation fix: record ADB send in message_history for WAHA dedup
+      messageHistory.insert({
+        messageId: message.id,
+        direction: 'outgoing',
+        fromNumber: message.senderNumber,
+        toNumber: message.to,
+        text: message.body,
+        deviceSerial: online.serial,
+        capturedVia: 'adb_send',
+      })
     } catch (err) {
       server.log.error({ err }, 'Worker: send failed')
     } finally {
