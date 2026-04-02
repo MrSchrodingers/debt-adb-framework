@@ -105,7 +105,7 @@ Hardening:      3 + 6 → 8
 ### Execution Bullets — Fase 2: Multi-Device + Health
 > **Deps**: Fase 1 APPROVED | **Issue**: #2 | **Estimativa**: M
 
-- [ ] **Grill** device discovery, health polling, alert thresholds (`/grill-me`)
+- [x] **Grill** device discovery, health polling, alert thresholds (`/grill-me`)
 - [ ] **TDD Red** — testes de discovery mock, alert thresholds, health persistence
 - [ ] **Implement** Device Manager: auto-discovery via `adb devices` polling (5s)
 - [ ] **Implement** Health Collector: RAM, bateria, temp, storage, WiFi (30s poll)

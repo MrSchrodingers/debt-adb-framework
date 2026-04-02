@@ -1,15 +1,15 @@
 # Development Progress — DEBT ADB Framework
 
 > **Last updated**: 2026-04-01T19:32:00-03:00
-> **Current phase**: 1 — Tracer Bullet (APPROVED)
-> **Next action**: Start Phase 2 or Phase 4 (both unblocked)
+> **Current phase**: 2 — Multi-Device + Health (IN_PROGRESS)
+> **Next action**: Phase 2 TDD Red — write failing tests
 
 ## Phase Status
 
 | Phase | Title | Status | Started | Approved | Blocker |
 |-------|-------|--------|---------|----------|---------|
 | 1 | Tracer Bullet — 1 msg ponta-a-ponta | `APPROVED` | 2026-04-01 | 2026-04-01 | — |
-| 2 | Multi-Device + Health Monitoring | `READY` | — | — | — |
+| 2 | Multi-Device + Health Monitoring | `IN_PROGRESS` | 2026-04-02 | — | — |
 | 3 | Send Engine Robusto + Anti-Ban | `BLOCKED` | — | — | Phase 2 |
 | 4 | WAHA Listener Passivo | `READY` | — | — | — |
 | 5 | Chatwoot Bridge Bidirecional | `BLOCKED` | — | — | Phase 4 |
@@ -44,6 +44,11 @@
 
 None — Phase 1 approved. Phases 2 and 4 unblocked.
 
+## Phase 2 Grill Progress
+
+See `.dev-state/phase-2-grill.md` for 12 confirmed decisions.
+Grill ✅ COMPLETE. All decisions resolved.
+
 ## Test Configuration
 
 ```
@@ -67,3 +72,13 @@ DEVICE_SERIAL=9b01005930533036340030832250ac  (POCO Serenity)
   + failed status), contacts table (dedup). Code review: fixed command injection (digits-only
   validation), worker race condition (workerRunning guard), manual send locking (dequeue path).
   Ready for Phase Gate.
+- 2026-04-01/02: Phase 2 grill started. 9 decisions confirmed (worker-per-device, send_phase
+  tracking, 7-day health retention, root WA mapper, 4 profiles×2 apps, senderNumber obrigatório,
+  plugin-owned distribution, auto-resolve alerts, sequential profile switching for Phase 2).
+  MUMD research: tested scrcpy virtual displays + config_multiuserVisibleBackgroundUsers.
+  Confirmed MUMD requires root (Phase 8). Profile map documented for 4 WA numbers.
+  Root/unlock deferred as separate task — Phase 2 proceeds with profile batching.
+- 2026-04-02: Phase 2 grill completed (12/12 decisions). Resolved: alert thresholds (global
+  defaults + per-device JSON override, 8 thresholds), device actions safety (send-lock guard
+  + "Você tem certeza?" confirmation), UI hierarchy (3-level: device grid → detail → account,
+  Phase 2 implements levels 1-2, scales to 50+ devices). Phase 2 status → IN_PROGRESS.
