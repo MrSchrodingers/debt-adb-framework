@@ -6,7 +6,7 @@ import type { MessageHistory } from '../waha/message-history.js'
 
 interface WahaDeps {
   webhookHandler: WebhookHandler
-  sessionManager: SessionManager
+  sessionManager: SessionManager | null
   messageHistory: MessageHistory
 }
 
@@ -29,26 +29,37 @@ export function registerWahaRoutes(server: FastifyInstance, deps: WahaDeps): voi
       return reply.status(400).send({ error: 'Missing required fields: event, session' })
     }
 
-    const result = await webhookHandler.processWebhook(payload as Parameters<typeof webhookHandler.processWebhook>[0])
+    const result = await webhookHandler.processWebhook(payload as unknown as Parameters<typeof webhookHandler.processWebhook>[0])
     return { ok: true, ...result }
   })
 
+  const requireWahaClient = (reply: Parameters<Parameters<typeof server.get>[1]>[1]) => {
+    if (!sessionManager) {
+      reply.status(503).send({ error: 'WAHA client not configured. Set WAHA_API_URL and WAHA_API_KEY.' })
+      return false
+    }
+    return true
+  }
+
   // List managed WAHA sessions (matched with ADB devices)
-  server.get('/api/v1/waha/sessions', async () => {
-    return sessionManager.discoverManagedSessions()
+  server.get('/api/v1/waha/sessions', async (_request, reply) => {
+    if (!requireWahaClient(reply)) return
+    return sessionManager!.discoverManagedSessions()
   })
 
   // Trigger health check manually
-  server.post('/api/v1/waha/health-check', async () => {
-    await sessionManager.checkHealth()
+  server.post('/api/v1/waha/health-check', async (_request, reply) => {
+    if (!requireWahaClient(reply)) return
+    await sessionManager!.checkHealth()
     return { ok: true, checkedAt: new Date().toISOString() }
   })
 
   // Add Dispatch webhook to a session
   server.post('/api/v1/waha/sessions/:name/webhook', async (request, reply) => {
+    if (!requireWahaClient(reply)) return
     const { name } = request.params as { name: string }
     try {
-      await sessionManager.addWebhook(name)
+      await sessionManager!.addWebhook(name)
       return { ok: true, session: name }
     } catch (err) {
       return reply.status(500).send({
@@ -60,9 +71,10 @@ export function registerWahaRoutes(server: FastifyInstance, deps: WahaDeps): voi
 
   // Restart a WAHA session
   server.post('/api/v1/waha/sessions/:name/restart', async (request, reply) => {
+    if (!requireWahaClient(reply)) return
     const { name } = request.params as { name: string }
     try {
-      await sessionManager.restartSession(name)
+      await sessionManager!.restartSession(name)
       return { ok: true, session: name }
     } catch (err) {
       return reply.status(500).send({

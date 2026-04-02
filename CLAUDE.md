@@ -142,7 +142,7 @@ Hardening:      3 + 6 → 8
 - [x] **Implement** Message History: persistir in+out em `message_history`
 - [x] **Implement** Health Check: verificar sessoes, re-parear se caiu
 - [x] **Implement** Independence: ban WAHA gera alerta, NAO pausa ADB
-- [ ] **TDD Green** + **E2E** capturar msg outgoing enviada via ADB
+- [x] **TDD Green** + **E2E** capturar msg outgoing enviada via ADB
 - [ ] **Review** + **Verify** + **Phase Gate**
 
 ### Execution Bullets — Fase 5: Chatwoot Bridge Bidirecional
