@@ -1,8 +1,8 @@
 # Development Progress — DEBT ADB Framework
 
 > **Last updated**: 2026-04-02T19:30:00-03:00
-> **Current phase**: 5 — Session Management + Inbox Automation (IN_PROGRESS)
-> **Next action**: TDD Red — write failing tests for Chatwoot client, managed sessions, inbox automation
+> **Current phase**: 5 — Session Management + Inbox Automation (IN_REVIEW)
+> **Next action**: Run /validate to verify artifacts and approve
 
 ## Phase Status
 
@@ -12,7 +12,7 @@
 | 2 | Multi-Device + Health Monitoring | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
 | 3 | Send Engine Robusto + Anti-Ban | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
 | 4 | WAHA Listener Passivo | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
-| 5 | Session Management + Inbox Automation | `IN_PROGRESS` | 2026-04-02 | — | — |
+| 5 | Session Management + Inbox Automation | `IN_REVIEW` | 2026-04-02 | — | — |
 | 6 | Dashboard Operacional | `READY` | — | — | — |
 | 7 | Plugin System + Plugin Oralsin | `BLOCKED` | — | — | Phase 3, 5 |
 | 8 | Multi-Profile + Hardening + Docker | `BLOCKED` | — | — | Phase 3, 6 |
