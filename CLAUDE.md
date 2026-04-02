@@ -140,8 +140,8 @@ Hardening:      3 + 6 → 8
 - [x] **Implement** Session Manager: parear WAHA por numero, exponential backoff (5s→80s, 5x)
 - [x] **Implement** Webhook Receiver: `POST /api/v1/webhooks/waha` (message.received, message.sent)
 - [x] **Implement** Message History: persistir in+out em `message_history`
-- [ ] **Implement** Health Check: verificar sessoes, re-parear se caiu
-- [ ] **Implement** Independence: ban WAHA gera alerta, NAO pausa ADB
+- [x] **Implement** Health Check: verificar sessoes, re-parear se caiu
+- [x] **Implement** Independence: ban WAHA gera alerta, NAO pausa ADB
 - [ ] **TDD Green** + **E2E** capturar msg outgoing enviada via ADB
 - [ ] **Review** + **Verify** + **Phase Gate**
 

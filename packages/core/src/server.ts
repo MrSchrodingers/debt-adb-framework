@@ -6,8 +6,10 @@ import { MessageQueue } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
 import { SendEngine } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
-import { registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes } from './api/index.js'
+import { registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes } from './api/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
+import { SessionManager, WebhookHandler, MessageHistory } from './waha/index.js'
+import type { WahaApiClient } from './waha/index.js'
 import type { DispatchEventName } from './events/index.js'
 
 export interface DispatchCore {
@@ -50,6 +52,67 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const alertSystem = new AlertSystem(db, emitter)
   alertSystem.initialize()
 
+  // Initialize WAHA modules (Phase 4)
+  const messageHistory = new MessageHistory(db)
+  messageHistory.initialize()
+
+  const wahaApiUrl = process.env.WAHA_API_URL
+  const wahaApiKey = process.env.WAHA_API_KEY
+  let sessionManager: SessionManager | null = null
+  let webhookHandler: WebhookHandler | null = null
+
+  if (wahaApiUrl && wahaApiKey) {
+    const wahaClient: WahaApiClient = {
+      async listSessions() {
+        const res = await fetch(`${wahaApiUrl}/api/sessions`, {
+          headers: { 'X-Api-Key': wahaApiKey },
+        })
+        return res.json()
+      },
+      async getSession(name) {
+        const res = await fetch(`${wahaApiUrl}/api/sessions/${name}`, {
+          headers: { 'X-Api-Key': wahaApiKey },
+        })
+        return res.json()
+      },
+      async updateSessionWebhooks(name, webhooks) {
+        await fetch(`${wahaApiUrl}/api/sessions/${name}`, {
+          method: 'PUT',
+          headers: { 'X-Api-Key': wahaApiKey, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ config: { webhooks } }),
+        })
+      },
+      async restartSession(name) {
+        await fetch(`${wahaApiUrl}/api/sessions/${name}/restart`, {
+          method: 'POST',
+          headers: { 'X-Api-Key': wahaApiKey },
+        })
+      },
+      async getServerVersion() {
+        const res = await fetch(`${wahaApiUrl}/api/server/version`, {
+          headers: { 'X-Api-Key': wahaApiKey },
+        })
+        return res.json()
+      },
+      async downloadMedia(fileUrl) {
+        const res = await fetch(fileUrl, {
+          headers: { 'X-Api-Key': wahaApiKey },
+        })
+        return Buffer.from(await res.arrayBuffer())
+      },
+    }
+
+    sessionManager = new SessionManager(db, emitter, wahaClient, {
+      dispatchWebhookUrl: process.env.DISPATCH_WEBHOOK_URL,
+      hmacSecret: process.env.WAHA_WEBHOOK_HMAC_SECRET,
+    })
+    sessionManager.initialize()
+
+    webhookHandler = new WebhookHandler(db, emitter, messageHistory, {
+      hmacSecret: process.env.WAHA_WEBHOOK_HMAC_SECRET,
+    })
+  }
+
   server.get('/api/v1/health', async () => ({
     status: 'ok',
     timestamp: new Date().toISOString(),
@@ -57,6 +120,10 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   registerMessageRoutes(server, queue, emitter)
   registerDeviceRoutes(server, adb)
   registerMonitorRoutes(server, { adb, engine, deviceManager, healthCollector, waMapper, alertSystem })
+
+  if (sessionManager && webhookHandler) {
+    registerWahaRoutes(server, { webhookHandler, sessionManager, messageHistory })
+  }
 
   let workerRunning = false
 
@@ -167,11 +234,22 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     }
   }, 5_000)
 
+  // WAHA session health polling (60s) and history cleanup (hourly)
+  if (sessionManager) {
+    sessionManager.startHealthPolling(60_000)
+  }
+  const historyCleanupInterval = setInterval(() => {
+    const retentionDays = Number(process.env.MESSAGE_HISTORY_RETENTION_DAYS) || 90
+    messageHistory.cleanup(retentionDays)
+  }, 3_600_000)
+
   server.addHook('onClose', () => {
     deviceManager.stop()
+    sessionManager?.stop()
     clearInterval(healthInterval)
     clearInterval(accountInterval)
     clearInterval(healthCleanupInterval)
+    clearInterval(historyCleanupInterval)
     clearInterval(cleanupInterval)
     clearInterval(workerInterval)
     db.close()
@@ -184,6 +262,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const events: DispatchEventName[] = [
     'message:queued', 'message:sending', 'message:sent', 'message:failed',
     'device:connected', 'device:disconnected', 'device:health', 'alert:new',
+    'waha:message_received', 'waha:message_sent', 'waha:session_status',
   ]
   for (const event of events) {
     emitter.on(event, (data) => io.emit(event, data))
