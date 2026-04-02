@@ -128,3 +128,11 @@ DEVICE_SERIAL=9b01005930533036340030832250ac  (POCO Serenity)
   for future S3). 90-day retention. Webhook-first + gap-fill on reconnect (no periodic polling).
   Independence: WAHA ban ≠ ADB ban. Auto-restart failed sessions via API.
   See `.dev-state/phase-4-grill.md` for full decisions.
+- 2026-04-02: Phase 4 implementation complete. 5 modules: MessageHistory (SQLite, CRUD,
+  dedup, 90-day cleanup), SessionManager (discover, health check, webhook config, backoff
+  5s-80s 5x max), WebhookHandler (HMAC SHA-512 timing-safe, message.any/session.status/
+  message.ack processing, dedup), WahaHttpClient (fetch + res.ok guards), API routes
+  (6 endpoints, Zod validation, preParsing raw body for HMAC). 188 tests passing (43 new).
+  Simplify: fixed 6 findings (HMAC raw body, res.ok guards, SQL params, sargable dedup).
+  Review: fixed 4 findings (HMAC enforcement, Zod validation, dead code, restart backoff).
+  E2E: webhook receiver processes outgoing+incoming, message_history persists correctly.

@@ -17,8 +17,12 @@ export interface SessionManagerConfig {
   hmacSecret?: string
 }
 
+const MAX_RESTART_ATTEMPTS = 5
+const BACKOFF_BASE_MS = 5_000 // 5s, 10s, 20s, 40s, 80s
+
 export class SessionManager {
   private healthInterval: ReturnType<typeof setInterval> | null = null
+  private restartAttempts = new Map<string, { count: number; nextRetryAt: number }>()
 
   constructor(
     private readonly db: Database.Database,
@@ -73,21 +77,52 @@ export class SessionManager {
 
     for (const session of managed) {
       if (session.status === 'FAILED') {
-        // Generate alert
+        const tracker = this.restartAttempts.get(session.sessionName)
+        const now = Date.now()
+
+        // Skip if in backoff window
+        if (tracker && now < tracker.nextRetryAt) continue
+
+        // Skip if max attempts exhausted
+        if (tracker && tracker.count >= MAX_RESTART_ATTEMPTS) {
+          // Only alert once when hitting max
+          if (tracker.count === MAX_RESTART_ATTEMPTS) {
+            this.emitter.emit('alert:new', {
+              id: nanoid(),
+              deviceSerial: session.deviceSerial,
+              severity: 'critical',
+              type: 'waha_session_down',
+              message: `WAHA session '${session.sessionName}' for ${session.phoneNumber} failed ${MAX_RESTART_ATTEMPTS} restart attempts`,
+            })
+            tracker.count++ // prevent re-alerting
+          }
+          continue
+        }
+
+        const attempt = (tracker?.count ?? 0) + 1
+        const backoffMs = BACKOFF_BASE_MS * Math.pow(2, attempt - 1) // 5s, 10s, 20s, 40s, 80s
+
         this.emitter.emit('alert:new', {
           id: nanoid(),
           deviceSerial: session.deviceSerial,
           severity: 'high',
           type: 'waha_session_down',
-          message: `WAHA session '${session.sessionName}' for ${session.phoneNumber} is FAILED`,
+          message: `WAHA session '${session.sessionName}' for ${session.phoneNumber} is FAILED (attempt ${attempt}/${MAX_RESTART_ATTEMPTS})`,
         })
 
-        // Attempt auto-restart
+        this.restartAttempts.set(session.sessionName, {
+          count: attempt,
+          nextRetryAt: now + backoffMs,
+        })
+
         try {
           await this.wahaClient.restartSession(session.sessionName)
         } catch {
-          // Restart failed — alert already generated
+          // Restart failed — backoff will prevent immediate retry
         }
+      } else if (session.status === 'WORKING') {
+        // Session recovered — clear backoff tracker
+        this.restartAttempts.delete(session.sessionName)
       }
     }
   }

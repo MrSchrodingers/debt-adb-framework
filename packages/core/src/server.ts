@@ -59,7 +59,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const wahaApiUrl = process.env.WAHA_API_URL
   const wahaApiKey = process.env.WAHA_API_KEY
   // WebhookHandler works without WAHA client (receives webhooks regardless)
-  const webhookHandler = new WebhookHandler(db, emitter, messageHistory, {
+  const webhookHandler = new WebhookHandler(emitter, messageHistory, {
     hmacSecret: process.env.WAHA_WEBHOOK_HMAC_SECRET,
   })
 

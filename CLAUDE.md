@@ -143,7 +143,7 @@ Hardening:      3 + 6 → 8
 - [x] **Implement** Health Check: verificar sessoes, re-parear se caiu
 - [x] **Implement** Independence: ban WAHA gera alerta, NAO pausa ADB
 - [x] **TDD Green** + **E2E** capturar msg outgoing enviada via ADB
-- [ ] **Review** + **Verify** + **Phase Gate**
+- [x] **Review** + **Verify** + **Phase Gate**
 
 ### Execution Bullets — Fase 5: Chatwoot Bridge Bidirecional
 > **Deps**: Fase 4 APPROVED | **Issue**: #5 | **Estimativa**: M
