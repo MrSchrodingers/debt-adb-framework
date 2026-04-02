@@ -1,54 +1,124 @@
 import type Database from 'better-sqlite3'
 import type { ManagedSessionRecord } from './types.js'
 
+interface Row {
+  session_name: string
+  phone_number: string
+  device_serial: string | null
+  profile_id: number | null
+  chatwoot_inbox_id: number | null
+  managed: number
+  created_at: string
+}
+
+function rowToRecord(row: Row): ManagedSessionRecord {
+  return {
+    sessionName: row.session_name,
+    phoneNumber: row.phone_number,
+    deviceSerial: row.device_serial,
+    profileId: row.profile_id,
+    chatwootInboxId: row.chatwoot_inbox_id,
+    managed: row.managed === 1,
+    createdAt: row.created_at,
+  }
+}
+
 export class ManagedSessions {
-  constructor(_db: Database.Database) {
-    throw new Error('Not implemented — TDD Red')
+  private db: Database.Database
+
+  constructor(db: Database.Database) {
+    this.db = db
   }
 
   initialize(): void {
-    throw new Error('Not implemented — TDD Red')
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS managed_sessions (
+        session_name TEXT PRIMARY KEY,
+        phone_number TEXT NOT NULL,
+        device_serial TEXT,
+        profile_id INTEGER,
+        chatwoot_inbox_id INTEGER,
+        managed INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `)
   }
 
-  add(_params: {
+  add(params: {
     sessionName: string
     phoneNumber: string
     deviceSerial: string | null
     profileId: number | null
     chatwootInboxId: number | null
   }): string {
-    throw new Error('Not implemented — TDD Red')
+    this.db
+      .prepare(
+        `INSERT INTO managed_sessions (session_name, phone_number, device_serial, profile_id, chatwoot_inbox_id)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        params.sessionName,
+        params.phoneNumber,
+        params.deviceSerial,
+        params.profileId,
+        params.chatwootInboxId,
+      )
+    return params.sessionName
   }
 
-  get(_sessionName: string): ManagedSessionRecord | null {
-    throw new Error('Not implemented — TDD Red')
+  get(sessionName: string): ManagedSessionRecord | null {
+    const row = this.db
+      .prepare('SELECT * FROM managed_sessions WHERE session_name = ?')
+      .get(sessionName) as Row | undefined
+    return row ? rowToRecord(row) : null
   }
 
   listAll(): ManagedSessionRecord[] {
-    throw new Error('Not implemented — TDD Red')
+    const rows = this.db
+      .prepare('SELECT * FROM managed_sessions ORDER BY session_name')
+      .all() as Row[]
+    return rows.map(rowToRecord)
   }
 
   listManaged(): ManagedSessionRecord[] {
-    throw new Error('Not implemented — TDD Red')
+    const rows = this.db
+      .prepare('SELECT * FROM managed_sessions WHERE managed = 1 ORDER BY session_name')
+      .all() as Row[]
+    return rows.map(rowToRecord)
   }
 
-  setManaged(_sessionName: string, _managed: boolean): void {
-    throw new Error('Not implemented — TDD Red')
+  setManaged(sessionName: string, managed: boolean): void {
+    const result = this.db
+      .prepare('UPDATE managed_sessions SET managed = ? WHERE session_name = ?')
+      .run(managed ? 1 : 0, sessionName)
+    if (result.changes === 0) {
+      throw new Error(`Session ${sessionName} not found`)
+    }
   }
 
-  updateChatwootInboxId(_sessionName: string, _inboxId: number): void {
-    throw new Error('Not implemented — TDD Red')
+  updateChatwootInboxId(sessionName: string, inboxId: number): void {
+    this.db
+      .prepare('UPDATE managed_sessions SET chatwoot_inbox_id = ? WHERE session_name = ?')
+      .run(inboxId, sessionName)
   }
 
-  remove(_sessionName: string): void {
-    throw new Error('Not implemented — TDD Red')
+  remove(sessionName: string): void {
+    this.db
+      .prepare('DELETE FROM managed_sessions WHERE session_name = ?')
+      .run(sessionName)
   }
 
-  findByPhoneNumber(_phoneNumber: string): ManagedSessionRecord[] {
-    throw new Error('Not implemented — TDD Red')
+  findByPhoneNumber(phoneNumber: string): ManagedSessionRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM managed_sessions WHERE phone_number = ? ORDER BY session_name')
+      .all(phoneNumber) as Row[]
+    return rows.map(rowToRecord)
   }
 
-  findByDeviceSerial(_deviceSerial: string): ManagedSessionRecord[] {
-    throw new Error('Not implemented — TDD Red')
+  findByDeviceSerial(deviceSerial: string): ManagedSessionRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM managed_sessions WHERE device_serial = ? ORDER BY session_name')
+      .all(deviceSerial) as Row[]
+    return rows.map(rowToRecord)
   }
 }
