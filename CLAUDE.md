@@ -128,7 +128,7 @@ Hardening:      3 + 6 → 8
 - [x] **Implement** Auto-recovery: WA crash → force-stop + intent restart + retry
 - [x] **Implement** Contact Registration: intent ACTION_INSERT, fallback wa.me
 - [x] **Implement** Jitter: distribuicao exponencial 30s-5min entre msgs
-- [ ] **TDD Green** + **E2E** enviar batch de 5 msgs para `5543991938235` com rate limit
+- [x] **TDD Green** + **E2E** enviar batch de 5 msgs para `5543991938235` com rate limit
 - [ ] **Review** + **Verify** + **Phase Gate**
 
 ### Execution Bullets — Fase 4: WAHA Listener Passivo
