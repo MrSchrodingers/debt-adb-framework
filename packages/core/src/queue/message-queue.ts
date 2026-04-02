@@ -18,6 +18,12 @@ export class MessageQueue {
         attempts INTEGER NOT NULL DEFAULT 0,
         locked_by TEXT,
         locked_at TEXT,
+        plugin_name TEXT,
+        correlation_id TEXT,
+        senders_config TEXT,
+        context TEXT,
+        waha_message_id TEXT,
+        max_retries INTEGER NOT NULL DEFAULT 3,
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       );
@@ -35,8 +41,9 @@ export class MessageQueue {
   enqueue(params: EnqueueParams): Message {
     const id = nanoid()
     const row = this.db.prepare(`
-      INSERT INTO messages (id, to_number, body, idempotency_key, priority, sender_number)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO messages (id, to_number, body, idempotency_key, priority, sender_number,
+                            plugin_name, correlation_id, senders_config, context, max_retries)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       RETURNING *
     `).get(
       id,
@@ -45,8 +52,83 @@ export class MessageQueue {
       params.idempotencyKey,
       params.priority ?? 5,
       params.senderNumber ?? null,
+      params.pluginName ?? null,
+      params.correlationId ?? null,
+      params.sendersConfig ?? null,
+      params.context ?? null,
+      params.maxRetries ?? 3,
     ) as Record<string, unknown>
     return this.rowToMessage(row)
+  }
+
+  enqueueBatch(paramsList: EnqueueParams[]): Message[] {
+    const insert = this.db.prepare(`
+      INSERT INTO messages (id, to_number, body, idempotency_key, priority, sender_number,
+                            plugin_name, correlation_id, senders_config, context, max_retries)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      RETURNING *
+    `)
+    const txn = this.db.transaction((list: EnqueueParams[]) => {
+      return list.map((params) => {
+        const id = nanoid()
+        const row = insert.get(
+          id,
+          params.to,
+          params.body,
+          params.idempotencyKey,
+          params.priority ?? 5,
+          params.senderNumber ?? null,
+          params.pluginName ?? null,
+          params.correlationId ?? null,
+          params.sendersConfig ?? null,
+          params.context ?? null,
+          params.maxRetries ?? 3,
+        ) as Record<string, unknown>
+        return this.rowToMessage(row)
+      })
+    })
+    return txn(paramsList)
+  }
+
+  updateWahaMessageId(id: string, wahaMessageId: string): void {
+    this.db.prepare(
+      "UPDATE messages SET waha_message_id = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+    ).run(wahaMessageId, id)
+  }
+
+  getByWahaMessageId(wahaMessageId: string): Message | null {
+    const row = this.db.prepare(
+      'SELECT * FROM messages WHERE waha_message_id = ?',
+    ).get(wahaMessageId) as Record<string, unknown> | undefined
+    return row ? this.rowToMessage(row) : null
+  }
+
+  getQueueStats(pluginName?: string): { pending: number; processing: number; failedLastHour: number; oldestPendingAgeSeconds: number | null } {
+    const where = pluginName ? 'AND plugin_name = ?' : ''
+    const params = pluginName ? [pluginName] : []
+
+    const pending = (this.db.prepare(
+      `SELECT COUNT(*) as c FROM messages WHERE status = 'queued' ${where}`,
+    ).get(...params) as { c: number }).c
+
+    const processing = (this.db.prepare(
+      `SELECT COUNT(*) as c FROM messages WHERE status IN ('locked', 'sending') ${where}`,
+    ).get(...params) as { c: number }).c
+
+    const failedLastHour = (this.db.prepare(
+      `SELECT COUNT(*) as c FROM messages WHERE status IN ('failed', 'permanently_failed') AND updated_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 hour') ${where}`,
+    ).get(...params) as { c: number }).c
+
+    const oldest = this.db.prepare(
+      `SELECT MIN(created_at) as oldest FROM messages WHERE status = 'queued' ${where}`,
+    ).get(...params) as { oldest: string | null }
+
+    let oldestPendingAgeSeconds: number | null = null
+    if (oldest.oldest) {
+      oldestPendingAgeSeconds = Math.floor((Date.now() - new Date(oldest.oldest).getTime()) / 1000)
+    }
+
+    return { pending, processing, failedLastHour, oldestPendingAgeSeconds }
   }
 
   dequeue(deviceSerial: string): Message | null {
@@ -158,6 +240,12 @@ export class MessageQueue {
       lockedAt: (row.locked_at as string) ?? null,
       createdAt: row.created_at as string,
       updatedAt: row.updated_at as string,
+      pluginName: (row.plugin_name as string) ?? null,
+      correlationId: (row.correlation_id as string) ?? null,
+      sendersConfig: (row.senders_config as string) ?? null,
+      context: (row.context as string) ?? null,
+      wahaMessageId: (row.waha_message_id as string) ?? null,
+      maxRetries: (row.max_retries as number) ?? 3,
     }
   }
 }

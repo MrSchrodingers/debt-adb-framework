@@ -4,6 +4,11 @@ export interface EnqueueParams {
   idempotencyKey: string
   priority?: number
   senderNumber?: string
+  pluginName?: string
+  correlationId?: string
+  sendersConfig?: string
+  context?: string
+  maxRetries?: number
 }
 
 export interface Message {
@@ -19,6 +24,12 @@ export interface Message {
   lockedAt: string | null
   createdAt: string
   updatedAt: string
+  pluginName: string | null
+  correlationId: string | null
+  sendersConfig: string | null
+  context: string | null
+  wahaMessageId: string | null
+  maxRetries: number
 }
 
 export type MessageStatus =
