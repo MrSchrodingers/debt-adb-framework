@@ -2,7 +2,7 @@
 
 > **Last updated**: 2026-04-01T19:32:00-03:00
 > **Current phase**: 2 — Multi-Device + Health (IN_PROGRESS)
-> **Next action**: Phase 2 TDD Red — write failing tests
+> **Next action**: Phase 2 Implement — Device Manager, Health Collector, WA Mapper, Alerts
 
 ## Phase Status
 
@@ -82,3 +82,7 @@ DEVICE_SERIAL=9b01005930533036340030832250ac  (POCO Serenity)
   defaults + per-device JSON override, 8 thresholds), device actions safety (send-lock guard
   + "Você tem certeza?" confirmation), UI hierarchy (3-level: device grid → detail → account,
   Phase 2 implements levels 1-2, scales to 50+ devices). Phase 2 status → IN_PROGRESS.
+- 2026-04-02: Phase 2 TDD Red complete. 4 test files (monitor/): device-manager (10 tests),
+  health-collector (9 tests), wa-account-mapper (9 tests), alert-system (14 tests). All fail
+  (modules not implemented). Types file + DispatchEmitter updated with device:health, alert:new.
+  Existing 26 tests still pass.

@@ -7,6 +7,8 @@ export interface DispatchEventMap {
   'message:failed': { id: string; error: string }
   'device:connected': { serial: string; brand?: string; model?: string }
   'device:disconnected': { serial: string }
+  'device:health': { serial: string; batteryPercent: number; temperatureCelsius: number; ramAvailableMb: number; storageFreeBytes: number }
+  'alert:new': { id: string; deviceSerial: string; severity: string; type: string; message: string }
 }
 
 export type DispatchEventName = keyof DispatchEventMap
