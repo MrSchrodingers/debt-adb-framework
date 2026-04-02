@@ -1,4 +1,5 @@
 export { SessionManager } from './session-manager.js'
+export { createWahaHttpClient } from './waha-http-client.js'
 export type { ManagedSession, SessionManagerConfig } from './session-manager.js'
 export { WebhookHandler } from './webhook-handler.js'
 export type { WebhookHandlerConfig, WebhookResult } from './webhook-handler.js'

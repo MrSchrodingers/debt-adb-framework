@@ -88,10 +88,11 @@ export class MessageHistory {
       WHERE to_number = ?
         AND captured_via = 'adb_send'
         AND direction = 'outgoing'
-        AND abs(strftime('%s', created_at) - strftime('%s', ?)) <= ?
+        AND created_at >= datetime(?, '-' || ? || ' seconds')
+        AND created_at <= datetime(?, '+' || ? || ' seconds')
       ORDER BY created_at DESC
       LIMIT 1
-    `).get(toNumber, timestamp, windowSeconds) as Record<string, unknown> | undefined
+    `).get(toNumber, timestamp, windowSeconds, timestamp, windowSeconds) as Record<string, unknown> | undefined
 
     return row ? this.rowToRecord(row) : null
   }
@@ -130,11 +131,18 @@ export class MessageHistory {
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
-    const limit = params.limit ? `LIMIT ${params.limit}` : ''
-    const offset = params.offset ? `OFFSET ${params.offset}` : ''
+    if (params.limit) {
+      conditions.length // used for where
+      values.push(params.limit)
+    }
+    if (params.offset) {
+      values.push(params.offset)
+    }
+    const limitClause = params.limit ? 'LIMIT ?' : ''
+    const offsetClause = params.offset ? 'OFFSET ?' : ''
 
     const rows = this.db.prepare(
-      `SELECT * FROM message_history ${where} ORDER BY created_at DESC ${limit} ${offset}`,
+      `SELECT * FROM message_history ${where} ORDER BY created_at DESC ${limitClause} ${offsetClause}`,
     ).all(...values) as Record<string, unknown>[]
 
     return rows.map((row) => this.rowToRecord(row))
