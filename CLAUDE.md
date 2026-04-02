@@ -184,8 +184,8 @@ Hardening:      3 + 6 → 8
 - [x] **Implement** Event Bus: enriquecer eventos + dispatch para plugins assinantes + HMAC callback
 - [x] **Implement** Route Injection: `PluginContext.registerRoute()` com prefixo automático
 - [x] **Implement** Callback System: at-least-once, 3 retries, `failed_callbacks` table, 4 tipos
-- [ ] **Implement** Correlation Fix: insert adb_send no history, waha_message_id na messages
-- [ ] **Implement** Plugin Oralsin: contrato enqueue (batch), /status, /queue, senders[] fallback
+- [x] **Implement** Correlation Fix: insert adb_send no history, waha_message_id na messages
+- [x] **Implement** Plugin Oralsin: contrato enqueue (batch), /status, /queue, senders[] fallback
 - [ ] **TDD Green** + **E2E** plugin enfileira batch → ADB envia para `5543991938235` → callback
 - [ ] **Review** + **Verify** + **Phase Gate**
 

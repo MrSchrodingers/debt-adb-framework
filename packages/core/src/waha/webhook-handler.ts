@@ -1,10 +1,12 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import type { DispatchEmitter } from '../events/index.js'
 import type { MessageHistory } from './message-history.js'
+import type { MessageQueue } from '../queue/message-queue.js'
 import type { WahaWebhookPayload, WahaMessagePayload } from './types.js'
 
 export interface WebhookHandlerConfig {
   hmacSecret?: string
+  queue?: MessageQueue
 }
 
 export interface WebhookResult {
@@ -73,6 +75,10 @@ export class WebhookHandler {
       if (existing) {
         // Update existing ADB record with WAHA message ID
         this.history.updateWithWahaId(existing.id, msg.id)
+        // Correlation fix: copy waha_message_id to messages table
+        if (this.config.queue && existing.messageId) {
+          this.config.queue.updateWahaMessageId(existing.messageId, msg.id)
+        }
         this.emitter.emit('waha:message_sent', {
           sessionName: payload.session,
           fromNumber,
@@ -122,7 +128,25 @@ export class WebhookHandler {
   }
 
   private handleAck(payload: WahaWebhookPayload): WebhookResult {
-    // ACK events update delivery status — logged but not persisted to history
+    const ack = payload.payload as unknown as {
+      id?: string
+      ack?: number
+      ackName?: string
+      timestamp?: number
+    }
+
+    if (ack.id) {
+      const ackLevel = ack.ack ?? 0
+      const ackNames = ['error', 'pending', 'server', 'device', 'read', 'played']
+      this.emitter.emit('waha:message_ack', {
+        wahaMessageId: ack.id,
+        ackLevel,
+        ackLevelName: ackNames[ackLevel] ?? 'unknown',
+        deliveredAt: ackLevel >= 3 ? new Date((ack.timestamp ?? 0) * 1000).toISOString() : null,
+        readAt: ackLevel >= 4 ? new Date((ack.timestamp ?? 0) * 1000).toISOString() : null,
+      })
+    }
+
     return { processed: true, event: payload.event }
   }
 }

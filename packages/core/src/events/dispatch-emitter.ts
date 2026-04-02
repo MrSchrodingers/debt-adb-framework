@@ -13,6 +13,7 @@ export interface DispatchEventMap {
   'waha:message_received': { sessionName: string; fromNumber: string; toNumber: string; historyId: string }
   'waha:message_sent': { sessionName: string; fromNumber: string; toNumber: string; historyId: string; deduplicated: boolean }
   'waha:session_status': { sessionName: string; status: string; phoneNumber?: string }
+  'waha:message_ack': { wahaMessageId: string; ackLevel: number; ackLevelName: string; deliveredAt: string | null; readAt: string | null }
 }
 
 export type DispatchEventName = keyof DispatchEventMap
