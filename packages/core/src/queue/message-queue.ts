@@ -104,31 +104,33 @@ export class MessageQueue {
   }
 
   getQueueStats(pluginName?: string): { pending: number; processing: number; failedLastHour: number; oldestPendingAgeSeconds: number | null } {
-    const where = pluginName ? 'AND plugin_name = ?' : ''
-    const params = pluginName ? [pluginName] : []
-
-    const pending = (this.db.prepare(
-      `SELECT COUNT(*) as c FROM messages WHERE status = 'queued' ${where}`,
-    ).get(...params) as { c: number }).c
-
-    const processing = (this.db.prepare(
-      `SELECT COUNT(*) as c FROM messages WHERE status IN ('locked', 'sending') ${where}`,
-    ).get(...params) as { c: number }).c
-
-    const failedLastHour = (this.db.prepare(
-      `SELECT COUNT(*) as c FROM messages WHERE status IN ('failed', 'permanently_failed') AND updated_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 hour') ${where}`,
-    ).get(...params) as { c: number }).c
-
-    const oldest = this.db.prepare(
-      `SELECT MIN(created_at) as oldest FROM messages WHERE status = 'queued' ${where}`,
-    ).get(...params) as { oldest: string | null }
-
-    let oldestPendingAgeSeconds: number | null = null
-    if (oldest.oldest) {
-      oldestPendingAgeSeconds = Math.floor((Date.now() - new Date(oldest.oldest).getTime()) / 1000)
+    const row = this.db.prepare(`
+      SELECT
+        COUNT(*) FILTER (WHERE status = 'queued') AS pending,
+        COUNT(*) FILTER (WHERE status IN ('locked', 'sending')) AS processing,
+        COUNT(*) FILTER (WHERE status IN ('failed', 'permanently_failed')
+          AND updated_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 hour')) AS failed_last_hour,
+        MIN(CASE WHEN status = 'queued' THEN created_at END) AS oldest_queued
+      FROM messages
+      WHERE (? IS NULL OR plugin_name = ?)
+    `).get(pluginName ?? null, pluginName ?? null) as {
+      pending: number
+      processing: number
+      failed_last_hour: number
+      oldest_queued: string | null
     }
 
-    return { pending, processing, failedLastHour, oldestPendingAgeSeconds }
+    let oldestPendingAgeSeconds: number | null = null
+    if (row.oldest_queued) {
+      oldestPendingAgeSeconds = Math.floor((Date.now() - new Date(row.oldest_queued).getTime()) / 1000)
+    }
+
+    return {
+      pending: row.pending,
+      processing: row.processing,
+      failedLastHour: row.failed_last_hour,
+      oldestPendingAgeSeconds,
+    }
   }
 
   dequeue(deviceSerial: string): Message | null {

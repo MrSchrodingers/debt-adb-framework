@@ -36,6 +36,9 @@ export interface PluginLogger {
   debug(msg: string, data?: Record<string, unknown>): void
 }
 
+export type PluginStatus = 'active' | 'error' | 'disabled'
+export type CallbackType = 'result' | 'ack' | 'response'
+
 // ── Plugin Record (SQLite row) ──
 
 export interface PluginRecord {
@@ -46,7 +49,7 @@ export interface PluginRecord {
   hmac_secret: string
   events: string // JSON array of DispatchEventName
   enabled: number // 0 or 1
-  status: string // 'active' | 'error' | 'disabled'
+  status: PluginStatus
   created_at: string
   updated_at: string
 }
@@ -169,7 +172,7 @@ export interface FailedCallbackRecord {
   id: string
   plugin_name: string
   message_id: string
-  callback_type: string // 'result' | 'ack' | 'response'
+  callback_type: CallbackType
   payload: string // JSON
   webhook_url: string
   attempts: number

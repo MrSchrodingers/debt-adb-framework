@@ -1,4 +1,4 @@
-import type { DispatchEmitter, DispatchEventName } from '../events/index.js'
+import type { DispatchEmitter, DispatchEventName, DispatchEventMap } from '../events/index.js'
 import type { PluginRegistry } from './plugin-registry.js'
 
 type PluginHandler = (data: unknown) => Promise<void>
@@ -10,6 +10,7 @@ export class PluginEventBus {
   private handlers = new Map<string, Map<DispatchEventName, PluginHandler>>()
   private errorHandlers: ErrorHandler[] = []
   private listeners = new Map<DispatchEventName, (data: unknown) => void>()
+  private pluginEnabled = new Map<string, boolean>()
 
   constructor(
     private registry: PluginRegistry,
@@ -21,15 +22,19 @@ export class PluginEventBus {
       this.handlers.set(pluginName, new Map())
     }
     this.handlers.get(pluginName)!.set(event, handler)
+    this.pluginEnabled.set(pluginName, true)
 
-    // Subscribe to emitter if not already
     if (!this.listeners.has(event)) {
       const listener = (data: unknown) => {
         void this.dispatchToPlugins(event, data)
       }
-      this.emitter.on(event as keyof import('../events/index.js').DispatchEventMap, listener as never)
+      this.emitter.on(event as keyof DispatchEventMap, listener as never)
       this.listeners.set(event, listener)
     }
+  }
+
+  setPluginEnabled(pluginName: string, enabled: boolean): void {
+    this.pluginEnabled.set(pluginName, enabled)
   }
 
   onError(handler: ErrorHandler): void {
@@ -37,9 +42,13 @@ export class PluginEventBus {
   }
 
   destroy(): void {
+    for (const [event, listener] of this.listeners) {
+      this.emitter.off(event as keyof DispatchEventMap, listener as never)
+    }
     this.handlers.clear()
     this.errorHandlers.length = 0
     this.listeners.clear()
+    this.pluginEnabled.clear()
   }
 
   private async dispatchToPlugins(event: DispatchEventName, data: unknown): Promise<void> {
@@ -49,13 +58,7 @@ export class PluginEventBus {
       const handler = eventHandlers.get(event)
       if (!handler) continue
 
-      // Check if plugin is enabled
-      const plugin = this.registry.getPlugin(pluginName)
-      if (!plugin || plugin.enabled === 0) continue
-
-      // Check if plugin subscribes to this event
-      const subscribedEvents: string[] = JSON.parse(plugin.events)
-      if (!subscribedEvents.includes(event)) continue
+      if (!this.pluginEnabled.get(pluginName)) continue
 
       dispatches.push(this.executeWithTimeout(pluginName, handler, data))
     }

@@ -43,7 +43,7 @@ const enqueueRequestSchema = z.union([
 export class OralsinPlugin implements DispatchPlugin {
   name = 'oralsin' as const
   version = '1.0.0'
-  events: DispatchEventName[] = ['message:sent', 'message:failed', 'waha:message_ack']
+  events: DispatchEventName[] = ['message:sent', 'message:failed']
   webhookUrl: string
 
   private ctx: PluginContext | null = null

@@ -14,7 +14,7 @@ import { createChatwootHttpClient, ManagedSessions, InboxAutomation } from './ch
 import { PluginRegistry, PluginEventBus, CallbackDelivery, PluginLoader } from './plugins/index.js'
 import { OralsinPlugin } from './plugins/oralsin-plugin.js'
 import type { DispatchEventName } from './events/index.js'
-import type { DispatchPlugin, RouteHandler } from './plugins/types.js'
+import type { DispatchPlugin } from './plugins/types.js'
 
 export interface DispatchCore {
   server: ReturnType<typeof Fastify>
@@ -161,11 +161,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   pluginRegistry.initialize()
   const pluginEventBus = new PluginEventBus(pluginRegistry, emitter)
   const callbackDelivery = new CallbackDelivery(db, pluginRegistry, fetch)
-  const pluginLoader = new PluginLoader(pluginRegistry, pluginEventBus, queue, db)
-
-  // Route storage for plugin-registered routes
-  const pluginRoutes: Array<{ plugin: string; method: string; path: string; handler: RouteHandler }> = []
-  const originalRegisterRoute = pluginLoader['createContext'].bind(pluginLoader)
+  const pinoLogger = { child: (bindings: Record<string, unknown>) => ({ info: server.log.info.bind(server.log), warn: server.log.warn.bind(server.log), error: server.log.error.bind(server.log), debug: server.log.debug.bind(server.log) }) }
+  const pluginLoader = new PluginLoader(pluginRegistry, pluginEventBus, queue, db, pinoLogger)
 
   // Load plugins from config
   const pluginNames = (process.env.DISPATCH_PLUGINS || '').split(',').map(s => s.trim()).filter(Boolean)
@@ -183,75 +180,72 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     const apiKey = process.env[`PLUGIN_${name.toUpperCase()}_API_KEY`] || ''
     const hmacSecret = process.env[`PLUGIN_${name.toUpperCase()}_HMAC_SECRET`] || ''
     await pluginLoader.loadPlugin(plugin, apiKey, hmacSecret)
-
-    // Register plugin routes on Fastify
-    const record = pluginRegistry.getPlugin(name)
-    if (record && record.status === 'active') {
-      // The plugin has registered routes via PluginContext - we need to wire them to Fastify
-      // For now, register the known routes for the oralsin plugin
-      if (name === 'oralsin' && plugin instanceof OralsinPlugin) {
-        const oralsin = plugin as unknown as { handleEnqueue: RouteHandler; handleStatus: RouteHandler; handleQueue: RouteHandler }
-        server.post(`/api/v1/plugins/${name}/enqueue`, async (req, reply) => {
-          // API key validation
-          const providedKey = (req.headers as Record<string, string>)['x-api-key']
-          if (apiKey && providedKey !== apiKey) {
-            return reply.status(401).send({ error: 'Invalid API key' })
-          }
-          return oralsin.handleEnqueue.call(plugin, req, reply)
-        })
-        server.get(`/api/v1/plugins/${name}/status`, async (req, reply) => {
-          return oralsin.handleStatus.call(plugin, req, reply)
-        })
-        server.get(`/api/v1/plugins/${name}/queue`, async (req, reply) => {
-          return oralsin.handleQueue.call(plugin, req, reply)
-        })
-      }
-    }
     server.log.info({ plugin: name }, 'Plugin loaded')
   }
 
-  // Plugin callback listeners — dispatch callbacks on message events
-  emitter.on('message:sent', (data) => {
-    const msg = queue.getById(data.id)
-    if (msg?.pluginName) {
-      void callbackDelivery.sendResultCallback(msg.pluginName, msg.id, {
-        idempotency_key: msg.idempotencyKey,
-        correlation_id: msg.correlationId ?? undefined,
-        status: 'sent',
-        sent_at: data.sentAt,
-        delivery: {
-          message_id: msg.wahaMessageId,
-          provider: 'adb',
-          sender_phone: msg.senderNumber ?? '',
-          sender_session: '',
-          pair_used: '',
-          used_fallback: false,
-          elapsed_ms: data.durationMs,
-        },
-        error: null,
-        context: msg.context ? JSON.parse(msg.context) : undefined,
-      })
-    }
-  })
+  // Register plugin routes on Fastify (generic — works for any plugin)
+  for (const route of pluginLoader.getRegisteredRoutes()) {
+    const record = pluginRegistry.getPlugin(route.pluginName)
+    if (!record || record.status !== 'active') continue
+    const apiKey = process.env[`PLUGIN_${route.pluginName.toUpperCase()}_API_KEY`] || ''
+    const fullPath = `/api/v1/plugins/${route.pluginName}${route.path}`
+    const method = route.method.toLowerCase() as 'get' | 'post' | 'put' | 'patch' | 'delete'
 
-  emitter.on('message:failed', (data) => {
-    const msg = queue.getById(data.id)
-    if (msg?.pluginName) {
-      void callbackDelivery.sendResultCallback(msg.pluginName, msg.id, {
-        idempotency_key: msg.idempotencyKey,
-        correlation_id: msg.correlationId ?? undefined,
-        status: 'failed',
-        sent_at: null,
-        delivery: null,
-        error: {
-          code: 'send_failed',
-          message: data.error,
-          retryable: msg.attempts < msg.maxRetries,
-        },
-        context: msg.context ? JSON.parse(msg.context) : undefined,
-      })
-    }
-  })
+    server[method](fullPath, async (req, reply) => {
+      if (apiKey && method === 'post') {
+        const providedKey = (req.headers as Record<string, string>)['x-api-key']
+        if (providedKey !== apiKey) {
+          return reply.status(401).send({ error: 'Invalid API key' })
+        }
+      }
+      return route.handler(req, reply)
+    })
+  }
+
+  // Plugin callback listeners — only when plugins are configured
+  if (pluginNames.length > 0) {
+    emitter.on('message:sent', (data) => {
+      const msg = queue.getById(data.id)
+      if (msg?.pluginName) {
+        void callbackDelivery.sendResultCallback(msg.pluginName, msg.id, {
+          idempotency_key: msg.idempotencyKey,
+          correlation_id: msg.correlationId ?? undefined,
+          status: 'sent',
+          sent_at: data.sentAt,
+          delivery: {
+            message_id: msg.wahaMessageId,
+            provider: 'adb',
+            sender_phone: msg.senderNumber ?? '',
+            sender_session: '',
+            pair_used: '',
+            used_fallback: false,
+            elapsed_ms: data.durationMs,
+          },
+          error: null,
+          context: msg.context ? JSON.parse(msg.context) : undefined,
+        })
+      }
+    })
+
+    emitter.on('message:failed', (data) => {
+      const msg = queue.getById(data.id)
+      if (msg?.pluginName) {
+        void callbackDelivery.sendResultCallback(msg.pluginName, msg.id, {
+          idempotency_key: msg.idempotencyKey,
+          correlation_id: msg.correlationId ?? undefined,
+          status: 'failed',
+          sent_at: null,
+          delivery: null,
+          error: {
+            code: 'send_failed',
+            message: data.error,
+            retryable: msg.attempts < msg.maxRetries,
+          },
+          context: msg.context ? JSON.parse(msg.context) : undefined,
+        })
+      }
+    })
+  }
 
   // Admin routes for plugin management
   server.get('/api/v1/admin/plugins', async (_req, reply) => {

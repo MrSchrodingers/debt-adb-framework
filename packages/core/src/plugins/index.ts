@@ -3,6 +3,7 @@ export type { RegisterPluginParams, UpdatePluginParams } from './plugin-registry
 export { PluginEventBus } from './plugin-event-bus.js'
 export { CallbackDelivery } from './callback-delivery.js'
 export { PluginLoader } from './plugin-loader.js'
+export type { RegisteredRoute, PluginLoggerFactory } from './plugin-loader.js'
 export type {
   DispatchPlugin,
   PluginContext,
