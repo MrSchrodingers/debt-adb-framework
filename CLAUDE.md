@@ -177,18 +177,16 @@ Hardening:      3 + 6 → 8
 > **Deps**: Fase 3 + Fase 5 APPROVED | **Issue**: #7 | **Estimativa**: G
 > **PRIMEIRO TESTE REAL COM PRODUCAO**
 
-- [ ] **Grill** plugin lifecycle, event bus isolation, callback guarantee (`/grill-me`)
-- [ ] **TDD Red** — testes: plugin lifecycle, Oralsin adapter, fallback chain, event bus
-- [ ] **Implement** Plugin Interface: `{ name, version, init(core), destroy() }`
-- [ ] **Implement** Plugin Registry: load/unload/configure via SQLite + REST
-- [ ] **Implement** Event Bus: typed events, async handlers, try/catch isolado, 5s timeout
-- [ ] **Implement** Route Injection: plugins registram rotas no Fastify
-- [ ] **Implement** `DispatchNotifier(BaseNotifier)` na Oralsin
-- [ ] **Implement** Callback webhook: at-least-once, 3 retries, `failed_callbacks` table
-- [ ] **Implement** Fallback chain: ADB → WAHA API → SMS
-- [ ] **Implement** FlowStepConfig channel="adb" no registry Oralsin
-- [ ] **TDD Green** + **E2E** Oralsin enfileira notificacao → ADB envia para `5543991938235`
-- [ ] **INTEGRATION TEST** fluxo completo: Oralsin schedule → Dispatch → ADB → WAHA capture → Chatwoot
+- [x] **Grill** plugin lifecycle, event bus, callback, contratos, escopo (18 decisões)
+- [ ] **TDD Red** — testes: plugin lifecycle, registry, event bus, callback delivery, batch enqueue
+- [ ] **Implement** Plugin Interface + PluginContext: sandbox API restrita para plugins
+- [ ] **Implement** Plugin Registry: tabela `plugins`, auto-upsert no boot, admin API REST
+- [ ] **Implement** Event Bus: enriquecer eventos + dispatch para plugins assinantes + HMAC callback
+- [ ] **Implement** Route Injection: `PluginContext.registerRoute()` com prefixo automático
+- [ ] **Implement** Callback System: at-least-once, 3 retries, `failed_callbacks` table, 4 tipos
+- [ ] **Implement** Correlation Fix: insert adb_send no history, waha_message_id na messages
+- [ ] **Implement** Plugin Oralsin: contrato enqueue (batch), /status, /queue, senders[] fallback
+- [ ] **TDD Green** + **E2E** plugin enfileira batch → ADB envia para `5543991938235` → callback
 - [ ] **Review** + **Verify** + **Phase Gate**
 
 ### Execution Bullets — Fase 8: Multi-Profile + Hardening + Docker

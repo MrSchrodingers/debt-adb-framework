@@ -1,8 +1,8 @@
 # Development Progress — DEBT ADB Framework
 
-> **Last updated**: 2026-04-02T20:00:00-03:00
-> **Current phase**: 5 — Session Management + Inbox Automation (APPROVED)
-> **Next action**: Start Phase 7 (Plugins + Oralsin) — critical path, now READY
+> **Last updated**: 2026-04-02T21:30:00-03:00
+> **Current phase**: 7 — Plugin System + Plugin Oralsin (IN_PROGRESS)
+> **Next action**: TDD Red — escrever testes falhando para plugin system
 
 ## Phase Status
 
@@ -14,7 +14,7 @@
 | 4 | WAHA Listener Passivo | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
 | 5 | Session Management + Inbox Automation | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
 | 6 | Dashboard Operacional | `READY` | — | — | — |
-| 7 | Plugin System + Plugin Oralsin | `READY` | — | — | — |
+| 7 | Plugin System + Plugin Oralsin | `IN_PROGRESS` | 2026-04-02 | — | — |
 | 8 | Multi-Profile + Hardening + Docker | `BLOCKED` | — | — | Phase 3, 6 |
 
 ### Status Legend
@@ -43,6 +43,13 @@
 | 3 | 2026-04-02 | Claude Opus 4.6 + Matheus | 7/8 criteria verified, 145 tests, 18 grill decisions, 9 commits, simplify fixed 6 findings, review fixed 2 criticals + 3 importants. Temporal.io + Redis architecture. E2E: 5 rate-limited msgs on POCO Serenity |
 | 4 | 2026-04-02 | Claude Opus 4.6 + Matheus | 10/10 criteria verified, 188 tests (43 new), 17 grill decisions, 7 commits, simplify fixed 6 findings, review fixed 2 criticals + 4 importants. Shared WAHA Plus GoWS, HMAC SHA-512, webhook-first, 90-day retention |
 | 5 | 2026-04-02 | Claude Opus 4.6 + Matheus | 8/8 criteria verified, 231 tests (43 new), 12 grill decisions, 6 commits, simplify fixed 8 findings. Scope redefined: WAHA native handles bridge, Dispatch manages sessions + inbox automation. Shared http-utils, N+1 fix |
+
+## Phase 7 Grill Progress
+
+See `.dev-state/phase-7-grill.md` for 18 confirmed decisions.
+Grill COMPLETE. Key: scope reduced — removed Oralsin-side code (DispatchNotifier, fallback chain,
+FlowStepConfig). Plugin = Hub-Spoke in-process adapter with restricted PluginContext. 4 contracts
+with real JSON payloads. Batch enqueue, ordered senders[] fallback, 3 correlation gaps to fix.
 
 ## Phase 5 Grill Progress
 
@@ -154,3 +161,13 @@ DEVICE_SERIAL=9b01005930533036340030832250ac  (POCO Serenity)
   HTTP client, inbox creation automation (WAHA + Chatwoot in one flow), QR code display via
   Socket.IO, admin UI in Electron. Credentials: CHATWOOT_API_TOKEN env var.
   See `.dev-state/phase-5-grill.md` for full decisions.
+- 2026-04-02: Phase 7 started. Grill complete (18 decisions). SCOPE CHANGE: removed Oralsin-side
+  code (DispatchNotifier, FlowStepConfig, fallback chain ADB→WAHA→SMS) — all Oralsin business logic.
+  Plugin model: Hub-Spoke, in-process adapter with restricted PluginContext (no ADB access).
+  4 contracts defined with real JSON: request (batch enqueue), callback (result), ACK webhook,
+  response webhook. Sender fallback via ordered senders[] array with roles. Batch enqueue with
+  bulk insert. Context as pass-through opaque JSON. Send options: global defaults + per-message
+  override (max_retries, priority only). Auth: API key + HMAC via env vars. Plugin discovery via
+  dispatch.config.json. 3 correlation gaps identified (adb_send history insert, waha_message_id
+  linkage) — to be fixed in Phase 7. Admin API for plugin management.
+  See `.dev-state/phase-7-grill.md` for full decisions.
