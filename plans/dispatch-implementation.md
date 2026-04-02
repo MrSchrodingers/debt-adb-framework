@@ -298,40 +298,49 @@ Parear cada numero WhatsApp com uma sessao WAHA vinculada (linked device) em mod
 
 ---
 
-## Fase 5: Chatwoot Bridge Bidirecional
+## Fase 5: Session Management + Inbox Automation
 
 **User stories**: #22, #23, #24, #25, #26, #31
 **Estimativa**: M (3-5 dias)
 **Depende de**: Fase 4
 
+### Scope Redefinition (Grill Result)
+
+Original scope was "Chatwoot Bridge Bidirecional". Grill revealed that WAHA Plus already has
+native Chatwoot App integration — all message bridging (incoming + outgoing via multi-device sync)
+is already handled. Dispatch does NOT need to call Chatwoot API for messages.
+
+New scope: manage WAHA sessions, automate inbox creation, provide admin UI.
+
 ### O que construir
 
-Sincronizacao bidirecional com Chatwoot: incoming → Chatwoot conversation, outgoing → Chatwoot message, operator reply → ADB dispatch.
-
-1. Inbox manager: criar inbox Chatwoot por numero WhatsApp (API Chatwoot)
-2. Contact sync: criar/atualizar contato Chatwoot quando nova conversa
-3. Incoming bridge: mensagem capturada via WAHA webhook → criar message no Chatwoot
-4. Outgoing bridge: mensagem enviada via ADB confirmada → criar message outgoing no Chatwoot
-5. Operator reply: webhook Chatwoot (message_created, outgoing) → enfileirar no Dispatch para envio ADB
+1. Chatwoot HTTP Client: wrapper para API Chatwoot (criar/listar inboxes)
+2. Managed Sessions: tabela separada para flag "managed" (participa do ADB dispatch)
+3. Inbox Automation: orquestrar criacao de sessao WAHA + inbox Chatwoot em um fluxo
+4. Session API: endpoints REST para gerenciar sessoes e exibir QR code
+5. Admin UI: secao no Electron para listar sessoes, multi-select managed, QR code, criar inbox
 
 ### Criterios de aceitacao
 
-- [ ] Inbox criada automaticamente por numero no Chatwoot
-- [ ] Mensagem incoming aparece no Chatwoot em < 10s
-- [ ] Mensagem outgoing aparece no Chatwoot em < 30s
-- [ ] Operador responde no Chatwoot → mensagem enviada via ADB no device correto
-- [ ] Conversa completa (in+out) visivel no Chatwoot
-- [ ] Busca por numero destino funcional no audit log da UI
-- [ ] Device offline no reply: re-roteado para outro device com mesmo sender_number
-- [ ] Se nenhum device disponivel: status `waiting_device`, despacha no reconnect
-- [ ] TTL de reply: 4 horas, apos isso `expired` + alerta
-- [ ] Testes: Chatwoot API mock, webhook processing, bidirectional flow
+- [ ] Chatwoot HTTP client funcional (criar inbox, listar inboxes)
+- [ ] Tabela `managed_sessions` com CRUD completo
+- [ ] Admin pode marcar/desmarcar sessoes como "managed" via UI
+- [ ] Fluxo automatizado: criar inbox Chatwoot + configurar Chatwoot App no WAHA em um clique
+- [ ] QR code exibido na UI via WAHA API (base64), status real-time via Socket.IO
+- [ ] Sessoes managed participam do routing ADB; nao-managed sao ignoradas
+- [ ] Managed flag permanente (nao auto-desmarca em falha de sessao/device)
+- [ ] Testes: Chatwoot HTTP client mock, managed sessions CRUD, inbox creation orchestration
 
 ### Notas de implementacao
 
-- Chatwoot API: `POST /api/v1/accounts/{id}/conversations`, `POST .../messages`
-- Webhook: registrar `POST /api/v1/webhooks/chatwoot` no Chatwoot
-- Mapear numero → inbox_id → conversation_id em SQLite (cache)
+- Chatwoot: `chat.debt.com.br`, account_id=1, token via `CHATWOOT_API_TOKEN` env var
+- WAHA Chatwoot App: configurar via `PUT /api/sessions/{name}/chatwoot`
+- `managed_sessions` tabela separada de `whatsapp_accounts` (auto-discovered vs manual)
+- Join: `managed_sessions.phone_number = whatsapp_accounts.phone_number`
+- QR code: WAHA API retorna base64, status via webhook `session.status` → Socket.IO
+- Inbox naming: auto-generated default pattern, editable by user
+- Incoming/outgoing bridging NOT needed — WAHA native Chatwoot App handles it
+- Operator replies NOT intercepted — continue via WAHA native path
 
 ---
 

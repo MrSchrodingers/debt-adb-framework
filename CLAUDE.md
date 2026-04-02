@@ -145,18 +145,18 @@ Hardening:      3 + 6 → 8
 - [x] **TDD Green** + **E2E** capturar msg outgoing enviada via ADB
 - [x] **Review** + **Verify** + **Phase Gate**
 
-### Execution Bullets — Fase 5: Chatwoot Bridge Bidirecional
+### Execution Bullets — Fase 5: Session Management + Inbox Automation
 > **Deps**: Fase 4 APPROVED | **Issue**: #5 | **Estimativa**: M
+> **Scope redefined**: WAHA nativo já faz bridge com Chatwoot. Dispatch gerencia sessões e automatiza criação de inbox.
 
-- [ ] **Grill** routing de operator reply, device offline, TTL (`/grill-me`)
-- [ ] **TDD Red** — testes: Chatwoot API mock, webhook processing, bidirectional flow
-- [ ] **Implement** Inbox Manager: criar inbox Chatwoot por numero
-- [ ] **Implement** Contact Sync: criar/atualizar contato Chatwoot
-- [ ] **Implement** Incoming Bridge: WAHA webhook → Chatwoot message
-- [ ] **Implement** Outgoing Bridge: ADB send confirmado → Chatwoot outgoing
-- [ ] **Implement** Operator Reply: Chatwoot webhook → fila Dispatch → ADB
-- [ ] **Implement** Offline handling: re-route, `waiting_device`, TTL 4h
-- [ ] **TDD Green** + **E2E** conversa bidirecional visivel no Chatwoot
+- [x] **Grill** scope redefinition, managed sessions, inbox automation, QR flow (`/grill-me`)
+- [ ] **TDD Red** — testes: Chatwoot HTTP client, managed sessions CRUD, inbox creation orchestration
+- [ ] **Implement** Chatwoot HTTP Client: wrapper API Chatwoot (criar/listar inboxes)
+- [ ] **Implement** Managed Sessions: tabela `managed_sessions`, CRUD, join com `whatsapp_accounts`
+- [ ] **Implement** Inbox Automation: orquestrar criação WAHA session + Chatwoot inbox
+- [ ] **Implement** Session API: endpoints REST para listar sessões, marcar managed, QR code
+- [ ] **Implement** UI Session Manager: listar sessões, multi-select managed, QR code, criar inbox
+- [ ] **TDD Green** + **E2E** criar inbox automatizada, marcar sessão managed
 - [ ] **Review** + **Verify** + **Phase Gate**
 
 ### Execution Bullets — Fase 6: Dashboard Operacional
