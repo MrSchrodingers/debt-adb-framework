@@ -11,7 +11,7 @@
 | 1 | Tracer Bullet — 1 msg ponta-a-ponta | `APPROVED` | 2026-04-01 | 2026-04-01 | — |
 | 2 | Multi-Device + Health Monitoring | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
 | 3 | Send Engine Robusto + Anti-Ban | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
-| 4 | WAHA Listener Passivo | `READY` | — | — | — |
+| 4 | WAHA Listener Passivo | `IN_PROGRESS` | 2026-04-02 | — | — |
 | 5 | Chatwoot Bridge Bidirecional | `BLOCKED` | — | — | Phase 4 |
 | 6 | Dashboard Operacional | `BLOCKED` | — | — | Phase 2, 4 |
 | 7 | Plugin System + Plugin Oralsin | `BLOCKED` | — | — | Phase 3, 5 |
@@ -41,6 +41,11 @@
 | 1 | 2026-04-01 | Claude Opus 4.6 + Matheus | 14/14 criteria verified, 27 tests, 2 E2E sends, grill review resolved 3 blockers, code review fixed 2 criticals |
 | 2 | 2026-04-02 | Claude Opus 4.6 + Matheus | 8/8 criteria verified, 78 tests, 12 grill decisions, 8 commits, simplify fixed 10 findings, review fixed 2 criticals + 4 importants |
 | 3 | 2026-04-02 | Claude Opus 4.6 + Matheus | 7/8 criteria verified, 145 tests, 18 grill decisions, 9 commits, simplify fixed 6 findings, review fixed 2 criticals + 3 importants. Temporal.io + Redis architecture. E2E: 5 rate-limited msgs on POCO Serenity |
+
+## Phase 4 Grill Progress
+
+See `.dev-state/phase-4-grill.md` for 17 confirmed decisions.
+Grill COMPLETE. Key: shared WAHA Plus GoWS instance, webhook-first, HMAC auth, no session creation needed.
 
 ## Active Blockers
 
@@ -115,3 +120,11 @@ DEVICE_SERIAL=9b01005930533036340030832250ac  (POCO Serenity)
   countdown extraction. Retry: 5 attempts, exponential backoff (30s-480s). Auto-recovery:
   UIAutomator + pidof crash detection. Jitter: 0.8-1.5x on scaled_delay (floor 20s, cap 300s).
   See `.dev-state/phase-3-grill.md` for full decisions.
+- 2026-04-02: Phase 4 started. Grill complete (17 decisions). Explored WAHA production
+  server (37.27.210.137): WAHA Plus GoWS 2026.3.1, 136 existing sessions, Traefik v2.11,
+  Redis+Postgres. Key: Dispatch does NOT create sessions (already exist), adds webhook to
+  existing ones. HMAC SHA-512 per-session. message.any + session.status + message.ack events.
+  Dedup outgoing by to_number + ±30s window. Media download to local filesystem (StorageAdapter
+  for future S3). 90-day retention. Webhook-first + gap-fill on reconnect (no periodic polling).
+  Independence: WAHA ban ≠ ADB ban. Auto-restart failed sessions via API.
+  See `.dev-state/phase-4-grill.md` for full decisions.
