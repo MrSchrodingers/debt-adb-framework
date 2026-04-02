@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { nanoid } from 'nanoid'
 import type { DispatchEmitter } from '../events/index.js'
 import type { WahaApiClient, WahaSessionInfo, WahaWebhookConfig } from './types.js'
 
@@ -17,6 +18,8 @@ export interface SessionManagerConfig {
 }
 
 export class SessionManager {
+  private healthInterval: ReturnType<typeof setInterval> | null = null
+
   constructor(
     private readonly db: Database.Database,
     private readonly emitter: DispatchEmitter,
@@ -25,31 +28,128 @@ export class SessionManager {
   ) {}
 
   initialize(): void {
-    // TODO: Phase 4 implementation
+    // SessionManager doesn't own any tables — it reads whatsapp_accounts (Phase 2)
+    // and calls WAHA API for session state.
   }
 
   async discoverManagedSessions(): Promise<ManagedSession[]> {
-    // TODO: Cross-reference whatsapp_accounts with WAHA sessions
-    return []
+    // Get phone numbers managed by Dispatch (from whatsapp_accounts table)
+    const accounts = this.db.prepare(`
+      SELECT device_serial, profile_id, phone_number
+      FROM whatsapp_accounts
+      WHERE phone_number IS NOT NULL AND status = 'active'
+    `).all() as { device_serial: string; profile_id: number; phone_number: string }[]
+
+    const phoneNumbers = new Map(
+      accounts.map((a) => [a.phone_number, a]),
+    )
+
+    // List all WAHA sessions
+    const sessions = await this.wahaClient.listSessions()
+
+    const managed: ManagedSession[] = []
+    for (const session of sessions) {
+      if (!session.me) continue
+
+      // Extract phone number from WAHA id format "554396835104@c.us"
+      const phoneNumber = session.me.id.replace('@c.us', '')
+      const account = phoneNumbers.get(phoneNumber)
+      if (!account) continue
+
+      managed.push({
+        sessionName: session.name,
+        phoneNumber,
+        status: session.status,
+        deviceSerial: account.device_serial,
+        profileId: account.profile_id,
+      })
+    }
+
+    return managed
   }
 
   async checkHealth(): Promise<void> {
-    // TODO: Check WAHA session status for managed numbers
+    const managed = await this.discoverManagedSessions()
+
+    for (const session of managed) {
+      if (session.status === 'FAILED') {
+        // Generate alert
+        this.emitter.emit('alert:new', {
+          id: nanoid(),
+          deviceSerial: session.deviceSerial,
+          severity: 'high',
+          type: 'waha_session_down',
+          message: `WAHA session '${session.sessionName}' for ${session.phoneNumber} is FAILED`,
+        })
+
+        // Attempt auto-restart
+        try {
+          await this.wahaClient.restartSession(session.sessionName)
+        } catch {
+          // Restart failed — alert already generated
+        }
+      }
+    }
   }
 
   async addWebhook(sessionName: string): Promise<void> {
-    // TODO: Add Dispatch webhook to WAHA session
+    if (!this.config.dispatchWebhookUrl) {
+      throw new Error('dispatchWebhookUrl not configured')
+    }
+
+    const session = await this.wahaClient.getSession(sessionName)
+    const existingWebhooks = session.config.webhooks ?? []
+
+    // Check if Dispatch webhook already exists (idempotent)
+    const alreadyExists = existingWebhooks.some(
+      (w) => w.url === this.config.dispatchWebhookUrl,
+    )
+
+    let webhooks: WahaWebhookConfig[]
+    if (alreadyExists) {
+      // Update existing Dispatch webhook config, keep others
+      webhooks = existingWebhooks.map((w) =>
+        w.url === this.config.dispatchWebhookUrl
+          ? this.buildDispatchWebhook()
+          : w,
+      )
+    } else {
+      // Add new Dispatch webhook alongside existing ones
+      webhooks = [...existingWebhooks, this.buildDispatchWebhook()]
+    }
+
+    await this.wahaClient.updateSessionWebhooks(sessionName, webhooks)
   }
 
   async restartSession(sessionName: string): Promise<void> {
-    // TODO: Restart failed WAHA session
+    await this.wahaClient.restartSession(sessionName)
   }
 
   startHealthPolling(intervalMs?: number): void {
-    // TODO: Start polling loop
+    const interval = intervalMs ?? this.config.healthCheckIntervalMs ?? 60_000
+    this.healthInterval = setInterval(() => {
+      this.checkHealth().catch(() => {
+        // Health check errors are non-fatal
+      })
+    }, interval)
   }
 
   stop(): void {
-    // TODO: Stop polling
+    if (this.healthInterval) {
+      clearInterval(this.healthInterval)
+      this.healthInterval = null
+    }
+  }
+
+  private buildDispatchWebhook(): WahaWebhookConfig {
+    const webhook: WahaWebhookConfig = {
+      url: this.config.dispatchWebhookUrl!,
+      events: ['message.any', 'session.status', 'message.ack'],
+      retries: { policy: 'exponential', delaySeconds: 2, attempts: 10 },
+    }
+    if (this.config.hmacSecret) {
+      webhook.hmac = { key: this.config.hmacSecret }
+    }
+    return webhook
   }
 }
