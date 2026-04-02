@@ -1,8 +1,8 @@
 # Development Progress — DEBT ADB Framework
 
-> **Last updated**: 2026-04-02T19:30:00-03:00
-> **Current phase**: 5 — Session Management + Inbox Automation (IN_REVIEW)
-> **Next action**: Run /validate to verify artifacts and approve
+> **Last updated**: 2026-04-02T20:00:00-03:00
+> **Current phase**: 5 — Session Management + Inbox Automation (APPROVED)
+> **Next action**: Start Phase 7 (Plugins + Oralsin) — critical path, now READY
 
 ## Phase Status
 
@@ -12,9 +12,9 @@
 | 2 | Multi-Device + Health Monitoring | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
 | 3 | Send Engine Robusto + Anti-Ban | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
 | 4 | WAHA Listener Passivo | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
-| 5 | Session Management + Inbox Automation | `IN_REVIEW` | 2026-04-02 | — | — |
+| 5 | Session Management + Inbox Automation | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
 | 6 | Dashboard Operacional | `READY` | — | — | — |
-| 7 | Plugin System + Plugin Oralsin | `BLOCKED` | — | — | Phase 3, 5 |
+| 7 | Plugin System + Plugin Oralsin | `READY` | — | — | — |
 | 8 | Multi-Profile + Hardening + Docker | `BLOCKED` | — | — | Phase 3, 6 |
 
 ### Status Legend
@@ -42,6 +42,7 @@
 | 2 | 2026-04-02 | Claude Opus 4.6 + Matheus | 8/8 criteria verified, 78 tests, 12 grill decisions, 8 commits, simplify fixed 10 findings, review fixed 2 criticals + 4 importants |
 | 3 | 2026-04-02 | Claude Opus 4.6 + Matheus | 7/8 criteria verified, 145 tests, 18 grill decisions, 9 commits, simplify fixed 6 findings, review fixed 2 criticals + 3 importants. Temporal.io + Redis architecture. E2E: 5 rate-limited msgs on POCO Serenity |
 | 4 | 2026-04-02 | Claude Opus 4.6 + Matheus | 10/10 criteria verified, 188 tests (43 new), 17 grill decisions, 7 commits, simplify fixed 6 findings, review fixed 2 criticals + 4 importants. Shared WAHA Plus GoWS, HMAC SHA-512, webhook-first, 90-day retention |
+| 5 | 2026-04-02 | Claude Opus 4.6 + Matheus | 8/8 criteria verified, 231 tests (43 new), 12 grill decisions, 6 commits, simplify fixed 8 findings. Scope redefined: WAHA native handles bridge, Dispatch manages sessions + inbox automation. Shared http-utils, N+1 fix |
 
 ## Phase 5 Grill Progress
 
