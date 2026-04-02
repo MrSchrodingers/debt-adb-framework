@@ -1,8 +1,8 @@
 # Development Progress — DEBT ADB Framework
 
-> **Last updated**: 2026-04-02T21:30:00-03:00
-> **Current phase**: 7 — Plugin System + Plugin Oralsin (IN_PROGRESS)
-> **Next action**: TDD Red — escrever testes falhando para plugin system
+> **Last updated**: 2026-04-02T22:30:00-03:00
+> **Current phase**: 7 — Plugin System + Plugin Oralsin (IN_REVIEW)
+> **Next action**: /validate to approve Phase 7, then start Phase 6 (Dashboard) or Phase 8
 
 ## Phase Status
 
@@ -14,7 +14,7 @@
 | 4 | WAHA Listener Passivo | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
 | 5 | Session Management + Inbox Automation | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
 | 6 | Dashboard Operacional | `READY` | — | — | — |
-| 7 | Plugin System + Plugin Oralsin | `IN_PROGRESS` | 2026-04-02 | — | — |
+| 7 | Plugin System + Plugin Oralsin | `IN_REVIEW` | 2026-04-02 | — | — |
 | 8 | Multi-Profile + Hardening + Docker | `BLOCKED` | — | — | Phase 3, 6 |
 
 ### Status Legend
@@ -171,3 +171,11 @@ DEVICE_SERIAL=9b01005930533036340030832250ac  (POCO Serenity)
   dispatch.config.json. 3 correlation gaps identified (adb_send history insert, waha_message_id
   linkage) — to be fixed in Phase 7. Admin API for plugin management.
   See `.dev-state/phase-7-grill.md` for full decisions.
+- 2026-04-02: Phase 7 implementation complete. 6 modules: PluginRegistry (SQLite CRUD, upsert,
+  admin API), PluginEventBus (dispatch, isolation, 5s timeout, listener cleanup), CallbackDelivery
+  (HMAC SHA-256, 3 retries, failed_callbacks), PluginLoader (lifecycle, PluginContext sandbox,
+  generic route registration, pino logger), OralsinPlugin (Zod validation, batch enqueue, 3 routes),
+  correlation fix (adb_send insert, waha_message_id linkage, ACK event). Queue extended with 6 new
+  fields. 276 tests (45 new). Simplify: fixed 9 findings (listener leak, dead code, generic routes,
+  guarded callbacks, pino logger, single query stats, union types). E2E: plugin enqueue → ADB send
+  to 5543991938235 → delivered (screenshot proof). 7 commits.
