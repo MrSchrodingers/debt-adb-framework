@@ -151,9 +151,9 @@ Hardening:      3 + 6 → 8
 
 - [x] **Grill** scope redefinition, managed sessions, inbox automation, QR flow (`/grill-me`)
 - [x] **TDD Red** — testes: Chatwoot HTTP client, managed sessions CRUD, inbox creation orchestration
-- [ ] **Implement** Chatwoot HTTP Client: wrapper API Chatwoot (criar/listar inboxes)
-- [ ] **Implement** Managed Sessions: tabela `managed_sessions`, CRUD, join com `whatsapp_accounts`
-- [ ] **Implement** Inbox Automation: orquestrar criação WAHA session + Chatwoot inbox
+- [x] **Implement** Chatwoot HTTP Client: wrapper API Chatwoot (criar/listar inboxes)
+- [x] **Implement** Managed Sessions: tabela `managed_sessions`, CRUD, join com `whatsapp_accounts`
+- [x] **Implement** Inbox Automation: orquestrar criação WAHA session + Chatwoot inbox
 - [ ] **Implement** Session API: endpoints REST para listar sessões, marcar managed, QR code
 - [ ] **Implement** UI Session Manager: listar sessões, multi-select managed, QR code, criar inbox
 - [ ] **TDD Green** + **E2E** criar inbox automatizada, marcar sessão managed
