@@ -1,4 +1,5 @@
 import type { AdbShellAdapter } from '../monitor/types.js'
+import { assertSafePhone, sanitizeShellArg } from './types.js'
 
 export interface ContactRegistration {
   phone: string
@@ -31,14 +32,14 @@ export class ContactRegistrar {
     phone: string,
     name?: string,
   ): Promise<ContactRegistration> {
+    assertSafePhone(phone)
     if (this.registeredCache.has(phone)) {
       return { phone, name: name ?? '', registered: true }
     }
 
-    const contactName = name ?? `Contato ${phone.slice(-4)}`
+    const contactName = sanitizeShellArg(name ?? `Contato ${phone.slice(-4)}`)
 
     try {
-      // Open contact editor with pre-filled phone and name
       await this.adb.shell(
         deviceSerial,
         `am start -a android.intent.action.INSERT -t vnd.android.cursor.dir/contact --es phone "${phone}" --es name "${contactName}"`,

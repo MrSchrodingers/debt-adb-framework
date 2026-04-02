@@ -15,6 +15,7 @@ export class MessageQueue {
         priority INTEGER NOT NULL DEFAULT 5,
         sender_number TEXT,
         status TEXT NOT NULL DEFAULT 'queued',
+        attempts INTEGER NOT NULL DEFAULT 0,
         locked_by TEXT,
         locked_at TEXT,
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -83,6 +84,26 @@ export class MessageQueue {
     return this.rowToMessage(row)
   }
 
+  requeueForRetry(id: string): Message {
+    const row = this.db.prepare(`
+      UPDATE messages
+      SET status = 'queued',
+          attempts = attempts + 1,
+          locked_by = NULL,
+          locked_at = NULL,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = ?
+      RETURNING *
+    `).get(id) as Record<string, unknown> | undefined
+
+    if (!row) throw new Error(`Message not found: ${id}`)
+    return this.rowToMessage(row)
+  }
+
+  markPermanentlyFailed(id: string): Message {
+    return this.updateStatus(id, 'permanently_failed')
+  }
+
   cleanStaleLocks(): number {
     const result = this.db.prepare(`
       UPDATE messages
@@ -132,6 +153,7 @@ export class MessageQueue {
       priority: row.priority as number,
       senderNumber: (row.sender_number as string) ?? null,
       status: row.status as MessageStatus,
+      attempts: (row.attempts as number) ?? 0,
       lockedBy: (row.locked_by as string) ?? null,
       lockedAt: (row.locked_at as string) ?? null,
       createdAt: row.created_at as string,
