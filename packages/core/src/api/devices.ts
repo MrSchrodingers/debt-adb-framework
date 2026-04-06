@@ -55,40 +55,16 @@ export function registerDeviceRoutes(
     return reply.send({ serial, applied: results })
   })
 
-  // Hygienize device — per-user cleanup across ALL profiles
+  // Hygienize device — switches to EACH user, applies all settings per-user
   server.post('/api/v1/devices/:serial/hygienize', async (request, reply) => {
     const { serial } = request.params as { serial: string }
     const steps: Record<string, string> = {}
+    const PIN = '12345'
 
-    // Step 1: Keep awake (device-global)
-    const awakeCommands = [
-      { cmd: 'settings put system screen_off_timeout 2147483647', label: 'screen_timeout_max' },
-      { cmd: 'svc power stayon usb', label: 'stay_awake_usb' },
-      { cmd: 'locksettings set-disabled true', label: 'lock_disabled' },
-      { cmd: 'input keyevent KEYCODE_WAKEUP', label: 'wake_screen' },
-    ]
-    for (const { cmd, label } of awakeCommands) {
-      try { steps[label] = await adb.shell(serial, cmd) || 'ok' }
-      catch (err) { steps[label] = `error: ${(err as Error).message}` }
-    }
-
-    // Step 2: Discover profiles
-    let profileIds: number[] = [0]
-    try {
-      const usersOutput = await adb.shell(serial, 'pm list users')
-      const matches = [...usersOutput.matchAll(/UserInfo\{(\d+):/g)]
-      profileIds = matches.map(m => Number(m[1]))
-    } catch { /* fallback to [0] */ }
-    steps.profiles_found = profileIds.join(', ')
-
-    // Step 3: Uninstall bloatware PER USER
-    // NEVER remove: contacts, providers.contacts, phone (needed for WA mapping)
+    // Bloatware list (NEVER remove contacts/providers.contacts/whatsapp)
     const bloatPackages = [
-      // Facebook
       'com.facebook.appmanager', 'com.facebook.services', 'com.facebook.system',
-      // Amazon
       'com.amazon.appmanager',
-      // Google bloat
       'com.google.android.apps.youtube.music', 'com.google.android.youtube',
       'com.google.android.apps.maps', 'com.google.android.apps.photosgo',
       'com.google.android.apps.walletnfcrel', 'com.android.chrome',
@@ -100,88 +76,140 @@ export function registerDeviceRoutes(
       'com.google.android.gm', 'com.google.android.marvin.talkback',
       'com.google.android.videos', 'com.google.android.safetycore',
       'com.google.android.gms.supervision',
-      // Xiaomi/MIUI bloat
       'com.miui.android.fashiongallery', 'com.miui.gameCenter.overlay',
       'com.miui.calculator.go', 'com.miui.analytics.go', 'com.miui.bugreport',
       'com.miui.cleaner.go', 'com.miui.msa.global', 'com.miui.qr',
       'com.miui.theme.lite', 'com.miui.videoplayer', 'com.miui.player',
       'com.xiaomi.discover', 'com.xiaomi.mipicks', 'com.xiaomi.scanner',
       'com.xiaomi.glgm', 'com.mi.globalminusscreen',
-      // Dialer/SMS (block calls noise, but keep contacts provider)
       'com.unisoc.phone', 'com.android.mms.service',
-      // Calendar, FM, Browser
       'com.android.calendar.go', 'com.android.fmradio', 'com.go.browser',
     ]
 
-    let totalRemoved = 0
-    const perUser: Record<number, number> = {}
-    for (const uid of profileIds) {
-      let count = 0
-      for (const pkg of bloatPackages) {
-        try {
-          const out = await adb.shell(serial, `pm uninstall -k --user ${uid} ${pkg}`)
-          if (out.includes('Success')) count++
-        } catch { /* skip */ }
-      }
-      perUser[uid] = count
-      totalRemoved += count
-    }
-    steps.bloat_removed = `${totalRemoved} total (${profileIds.map(u => `P${u}:${perUser[u]}`).join(', ')})`
-
-    // Step 4: Ensure contacts provider exists on ALL profiles (needed for WA number extraction)
-    for (const uid of profileIds) {
-      try {
-        await adb.shell(serial, `cmd package install-existing --user ${uid} com.android.contacts`)
-        await adb.shell(serial, `cmd package install-existing --user ${uid} com.android.providers.contacts`)
-      } catch { /* ignore */ }
-    }
-    steps.contacts_restored = `${profileIds.length} profiles`
-
-    // Step 5: Silence (device-global)
-    const silenceCommands = [
-      { cmd: 'settings put global zen_mode 2', label: 'dnd_total_silence' },
-      { cmd: 'settings put secure notification_badging 0', label: 'badge_dots_off' },
-      { cmd: 'settings put system ringtone_volume 0', label: 'ringtone_muted' },
-      { cmd: 'settings put system notification_sound_volume 0', label: 'notification_muted' },
-      { cmd: 'settings put system alarm_volume 0', label: 'alarm_muted' },
-      { cmd: 'settings put system vibrate_when_ringing 0', label: 'vibrate_off' },
-      { cmd: 'settings put system haptic_feedback_enabled 0', label: 'haptic_off' },
+    // Per-user settings applied after switching to each user
+    const perUserSettings = [
+      'settings put system screen_off_timeout 2147483647',
+      'settings put system screen_brightness 255',
+      'settings put system screen_brightness_mode 0', // manual brightness
+      'svc power stayon usb',
+      'locksettings set-disabled true',
+      'settings put global zen_mode 2',              // DND total silence
+      'settings put secure notification_badging 0',
+      'settings put system ringtone_volume 0',
+      'settings put system notification_sound_volume 0',
+      'settings put system alarm_volume 0',
+      'settings put system vibrate_when_ringing 0',
+      'settings put system haptic_feedback_enabled 0',
     ]
-    for (const { cmd, label } of silenceCommands) {
-      try { steps[label] = await adb.shell(serial, cmd) || 'ok' }
-      catch (err) { steps[label] = `error: ${(err as Error).message}` }
-    }
 
-    // Step 6: Force-stop noisy services
-    for (const svc of ['com.google.android.gms', 'com.google.android.gsf', 'com.google.android.safetycore']) {
-      try { await adb.shell(serial, `am force-stop ${svc}`) } catch { /* ignore */ }
-    }
-    steps.services_stopped = 'ok'
+    // Discover profiles
+    let profileIds: number[] = [0]
+    try {
+      const usersOutput = await adb.shell(serial, 'pm list users')
+      const matches = [...usersOutput.matchAll(/UserInfo\{(\d+):/g)]
+      profileIds = matches.map(m => Number(m[1]))
+    } catch { /* fallback to [0] */ }
+    steps.profiles_found = profileIds.join(', ')
 
-    // Step 7: Detect and dismiss blocking WA screens (do NOT open WA — just check and fix)
+    // Process EACH profile: switch → unlock → settings → bloat → ensure WA + contacts
+    let totalRemoved = 0
+    const perUser: Record<number, string> = {}
     const blockingActivities = [
       'GoogleDriveNewUserSetupActivity', 'BackupSettingsActivity',
       'GdprActivity', 'VerifySmsActivity', 'RegistrationActivity',
       'UpdateActivity', 'EulaActivity', 'Welcome',
     ]
-    let dismissed = 0
-    try {
-      const activities = await adb.shell(serial, 'dumpsys activity activities | grep -E "topResumedActivity|mResumedActivity"')
-      for (const blocking of blockingActivities) {
-        if (activities.includes(blocking)) {
-          await adb.shell(serial, 'input keyevent KEYCODE_BACK')
-          await new Promise(r => setTimeout(r, 300))
-          await adb.shell(serial, 'input keyevent KEYCODE_BACK')
-          await new Promise(r => setTimeout(r, 300))
-          await adb.shell(serial, 'input keyevent KEYCODE_HOME')
-          dismissed++
-          break
-        }
-      }
-    } catch { /* ignore */ }
-    steps.blocking_screens_dismissed = dismissed > 0 ? `${dismissed} dismissada(s)` : 'nenhuma'
 
-    server.log.info({ serial, profiles: profileIds, totalRemoved }, 'Device hygienized (per-user)')
+    for (const uid of profileIds) {
+      const userLog: string[] = []
+
+      // Switch to this user
+      try {
+        await adb.shell(serial, `am switch-user ${uid}`)
+        await new Promise(r => setTimeout(r, 3500))
+        // Wake + unlock
+        await adb.shell(serial, 'input keyevent KEYCODE_WAKEUP')
+        await new Promise(r => setTimeout(r, 500))
+        await adb.shell(serial, 'input swipe 540 1400 540 400 300')
+        await new Promise(r => setTimeout(r, 500))
+        await adb.shell(serial, `input text ${PIN}`)
+        await new Promise(r => setTimeout(r, 300))
+        await adb.shell(serial, 'input keyevent KEYCODE_ENTER')
+        await new Promise(r => setTimeout(r, 2000))
+        userLog.push('switched+unlocked')
+      } catch (err) {
+        userLog.push(`switch-fail: ${(err as Error).message}`)
+        perUser[uid] = userLog.join(', ')
+        continue
+      }
+
+      // Apply all settings for this user
+      for (const cmd of perUserSettings) {
+        try { await adb.shell(serial, cmd) } catch { /* ignore */ }
+      }
+      userLog.push('settings-applied')
+
+      // Uninstall bloatware for this user
+      let removed = 0
+      for (const pkg of bloatPackages) {
+        try {
+          const out = await adb.shell(serial, `pm uninstall -k --user ${uid} ${pkg}`)
+          if (out.includes('Success')) removed++
+        } catch { /* skip */ }
+      }
+      totalRemoved += removed
+      userLog.push(`bloat:${removed}`)
+
+      // Ensure WA + contacts provider installed
+      for (const pkg of ['com.whatsapp', 'com.whatsapp.w4b', 'com.android.contacts', 'com.android.providers.contacts']) {
+        try { await adb.shell(serial, `cmd package install-existing --user ${uid} ${pkg}`) } catch { /* ignore */ }
+      }
+      userLog.push('wa+contacts-ensured')
+
+      // Dismiss blocking WA screens
+      try {
+        const activities = await adb.shell(serial, 'dumpsys activity activities | grep topResumedActivity')
+        for (const blocking of blockingActivities) {
+          if (activities.includes(blocking)) {
+            await adb.shell(serial, 'input keyevent KEYCODE_BACK')
+            await new Promise(r => setTimeout(r, 300))
+            await adb.shell(serial, 'input keyevent KEYCODE_BACK')
+            await adb.shell(serial, 'input keyevent KEYCODE_HOME')
+            userLog.push(`dismissed:${blocking}`)
+            break
+          }
+        }
+      } catch { /* ignore */ }
+
+      // Force stop noisy services
+      for (const svc of ['com.google.android.gms', 'com.google.android.gsf', 'com.google.android.safetycore']) {
+        try { await adb.shell(serial, `am force-stop ${svc}`) } catch { /* ignore */ }
+      }
+
+      // Go home
+      await adb.shell(serial, 'input keyevent KEYCODE_HOME').catch(() => {})
+
+      perUser[uid] = userLog.join(', ')
+    }
+
+    steps.bloat_removed = `${totalRemoved} total`
+    steps.per_user = JSON.stringify(perUser)
+
+    // Switch back to user 0
+    try {
+      await adb.shell(serial, 'am switch-user 0')
+      await new Promise(r => setTimeout(r, 3000))
+      await adb.shell(serial, 'input keyevent KEYCODE_WAKEUP')
+      await new Promise(r => setTimeout(r, 500))
+      await adb.shell(serial, 'input swipe 540 1400 540 400 300')
+      await new Promise(r => setTimeout(r, 500))
+      await adb.shell(serial, `input text ${PIN}`)
+      await new Promise(r => setTimeout(r, 300))
+      await adb.shell(serial, 'input keyevent KEYCODE_ENTER')
+      steps.switched_back = 'P0'
+    } catch { steps.switched_back = 'failed' }
+
+    server.log.info({ serial, profiles: profileIds, totalRemoved, perUser }, 'Device hygienized (per-user with switch)')
 
     return reply.send({ serial, profiles: profileIds, steps })
   })
