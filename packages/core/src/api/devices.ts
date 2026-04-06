@@ -76,16 +76,35 @@ export function registerDeviceRoutes(
     }
 
     // Step 2: Uninstall bloatware for user 0 (keeps APK, fully removes from user)
+    // Full aggressive list derived from diff of clean device vs stock POCO Serenity
     const bloatPackages = [
+      // Facebook
       'com.facebook.appmanager', 'com.facebook.services', 'com.facebook.system',
+      // Amazon
       'com.amazon.appmanager',
+      // Google bloat
       'com.google.android.apps.youtube.music', 'com.google.android.youtube',
       'com.google.android.apps.maps', 'com.google.android.apps.photosgo',
       'com.google.android.apps.walletnfcrel', 'com.android.chrome',
+      'com.google.android.apps.docs', 'com.google.android.apps.messaging',
+      'com.google.android.apps.nbu.files', 'com.google.android.apps.restore',
+      'com.google.android.apps.safetyhub', 'com.google.android.apps.searchlite',
+      'com.google.android.apps.subscriptions.red', 'com.google.android.apps.tachyon',
+      'com.google.android.apps.wellbeing', 'com.google.android.feedback',
+      'com.google.android.gm', 'com.google.android.marvin.talkback',
+      'com.google.android.videos', 'com.google.android.safetycore',
+      'com.google.android.gms.supervision',
+      // Xiaomi/MIUI bloat
       'com.miui.android.fashiongallery', 'com.miui.gameCenter.overlay',
-      'com.miui.calculator.go', 'com.android.calendar.go',
-      'com.xiaomi.glgm', 'com.miui.videoplayer', 'com.miui.player',
-      'com.google.android.safetycore', 'com.google.android.gms.supervision',
+      'com.miui.calculator.go', 'com.miui.analytics.go', 'com.miui.bugreport',
+      'com.miui.cleaner.go', 'com.miui.msa.global', 'com.miui.qr',
+      'com.miui.theme.lite', 'com.miui.videoplayer', 'com.miui.player',
+      'com.xiaomi.discover', 'com.xiaomi.mipicks', 'com.xiaomi.scanner',
+      'com.xiaomi.glgm', 'com.mi.globalminusscreen',
+      // Phone/Dialer/SMS/Contacts (block calls + SMS noise)
+      'com.unisoc.phone', 'com.android.contacts', 'com.android.mms.service',
+      // Calendar, FM, Browser
+      'com.android.calendar.go', 'com.android.fmradio', 'com.go.browser',
     ]
     const removed: string[] = []
     const skipped: string[] = []
@@ -103,10 +122,15 @@ export function registerDeviceRoutes(
     }
     steps.bloat_removed = `${removed.length} apps`
 
-    // Step 3: Silence notifications — DND mode + disable badge dots
+    // Step 3: Silence everything — DND, no badges, no ringtone, no vibration
     const silenceCommands = [
       { cmd: 'settings put global zen_mode 2', label: 'dnd_total_silence' },
       { cmd: 'settings put secure notification_badging 0', label: 'badge_dots_off' },
+      { cmd: 'settings put system ringtone_volume 0', label: 'ringtone_muted' },
+      { cmd: 'settings put system notification_sound_volume 0', label: 'notification_muted' },
+      { cmd: 'settings put system alarm_volume 0', label: 'alarm_muted' },
+      { cmd: 'settings put system vibrate_when_ringing 0', label: 'vibrate_off' },
+      { cmd: 'settings put system haptic_feedback_enabled 0', label: 'haptic_off' },
     ]
     for (const { cmd, label } of silenceCommands) {
       try {
