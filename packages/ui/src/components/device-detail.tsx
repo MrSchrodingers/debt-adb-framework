@@ -61,7 +61,7 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
 
       {/* Health Metrics */}
       {latest && (
-        <div className="grid grid-cols-4 gap-3 mb-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
           <MetricCard label="Battery" value={`${latest.batteryPercent}%`} warn={hasAlert('battery_low') || hasAlert('battery_critical')} />
           <MetricCard label="Temp" value={`${latest.temperatureCelsius.toFixed(1)}C`} warn={hasAlert('temperature_high') || hasAlert('temperature_critical')} />
           <MetricCard label="RAM" value={`${latest.ramAvailableMb}MB`} warn={hasAlert('ram_low')} />
@@ -75,7 +75,7 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
 
       {/* Spark Charts */}
       {chartData.length > 1 && (
-        <div className="grid grid-cols-3 gap-3 mb-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
           <SparkChart data={chartData} dataKey="battery" label="Battery %" color="#10b981" />
           <SparkChart data={chartData} dataKey="temp" label="Temp C" color="#f59e0b" />
           <SparkChart data={chartData} dataKey="ram" label="RAM MB" color="#3b82f6" />
@@ -117,7 +117,7 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
       )}
 
       {/* Actions */}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <ActionButton
           label="Screenshot"
           loading={actionLoading === 'screenshot'}
@@ -210,7 +210,7 @@ function ActionButton({
     <button
       onClick={onClick}
       disabled={loading}
-      className="rounded bg-zinc-800 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-700 disabled:opacity-50"
+      className="rounded bg-zinc-800 px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-700 disabled:opacity-50 min-h-[44px]"
     >
       {loading ? '...' : label}
     </button>
@@ -239,13 +239,13 @@ function ConfirmableAction({
       <div className="flex gap-1">
         <button
           onClick={() => onConfirm(action)}
-          className="rounded bg-red-600 px-2 py-1 text-xs text-white hover:bg-red-500"
+          className="rounded bg-red-600 px-2 py-2 text-xs text-white hover:bg-red-500 min-h-[44px]"
         >
           Confirmar
         </button>
         <button
           onClick={onCancel}
-          className="rounded bg-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-600"
+          className="rounded bg-zinc-700 px-2 py-2 text-xs text-zinc-300 hover:bg-zinc-600 min-h-[44px]"
         >
           Cancelar
         </button>
