@@ -1,4 +1,6 @@
+import { useEffect, useState } from 'react'
 import type { Alert } from '../types'
+import { formatRelativeTime } from '../utils/time'
 
 interface AlertPanelProps {
   alerts: Alert[]
@@ -12,6 +14,14 @@ const severityOrder: Record<string, number> = {
 }
 
 export function AlertPanel({ alerts }: AlertPanelProps) {
+  // Tick counter to force re-render every 30s for relative timestamps
+  const [, setTick] = useState(0)
+
+  useEffect(() => {
+    const interval = setInterval(() => setTick((t) => t + 1), 30_000)
+    return () => clearInterval(interval)
+  }, [])
+
   if (alerts.length === 0) {
     return (
       <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
@@ -31,9 +41,9 @@ export function AlertPanel({ alerts }: AlertPanelProps) {
           <SeverityBadge severity={alert.severity} />
           <div className="min-w-0 flex-1">
             <p className="text-sm text-zinc-200 truncate">{alert.message}</p>
-            <p className="text-xs text-zinc-500">
+            <p className="text-xs text-zinc-500" title={new Date(alert.createdAt).toLocaleString()}>
               {alert.deviceSerial.slice(0, 12)} &middot;{' '}
-              {new Date(alert.createdAt).toLocaleTimeString()}
+              {formatRelativeTime(alert.createdAt)}
             </p>
           </div>
         </div>

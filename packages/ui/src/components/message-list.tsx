@@ -1,4 +1,6 @@
+import { useEffect, useState } from 'react'
 import type { Message } from '../types'
+import { formatRelativeTime } from '../utils/time'
 
 const statusStyles: Record<string, string> = {
   queued: 'text-zinc-400 bg-zinc-800',
@@ -9,6 +11,14 @@ const statusStyles: Record<string, string> = {
 }
 
 export function MessageList({ messages }: { messages: Message[] }) {
+  // Tick counter to force re-render every 30s for relative timestamps
+  const [, setTick] = useState(0)
+
+  useEffect(() => {
+    const interval = setInterval(() => setTick((t) => t + 1), 30_000)
+    return () => clearInterval(interval)
+  }, [])
+
   if (messages.length === 0) {
     return <p className="text-zinc-500 text-sm">No messages in queue.</p>
   }
@@ -38,8 +48,8 @@ export function MessageList({ messages }: { messages: Message[] }) {
                 </span>
               </td>
               <td className="py-2 pr-4 text-zinc-500">{msg.priority}</td>
-              <td className="py-2 text-xs text-zinc-500">
-                {new Date(msg.createdAt).toLocaleTimeString()}
+              <td className="py-2 text-xs text-zinc-500" title={new Date(msg.createdAt).toLocaleString()}>
+                {formatRelativeTime(msg.createdAt)}
               </td>
             </tr>
           ))}
