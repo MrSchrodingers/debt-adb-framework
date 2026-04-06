@@ -29,6 +29,27 @@ export function registerDeviceRoutes(
     return reply.type('image/png').send(png)
   })
 
+  // Keep device awake — disable screen lock + timeout
+  server.post('/api/v1/devices/:serial/keep-awake', async (request, reply) => {
+    const { serial } = request.params as { serial: string }
+    const commands = [
+      { cmd: 'settings put system screen_off_timeout 2147483647', label: 'screen_timeout' },
+      { cmd: 'svc power stayon usb', label: 'stay_awake_usb' },
+      { cmd: 'locksettings set-disabled true', label: 'lock_disabled' },
+      { cmd: 'input keyevent KEYCODE_WAKEUP', label: 'wake_screen' },
+      { cmd: 'input swipe 540 1400 540 400 300', label: 'swipe_unlock' },
+    ]
+    const results: Record<string, string> = {}
+    for (const { cmd, label } of commands) {
+      try {
+        results[label] = await adb.shell(serial, cmd) || 'ok'
+      } catch (err) {
+        results[label] = `error: ${(err as Error).message}`
+      }
+    }
+    return reply.send({ serial, applied: results })
+  })
+
   // Live screen — screenshot as base64 for embedding
   server.get('/api/v1/devices/:serial/screen', async (request, reply) => {
     const { serial } = request.params as { serial: string }

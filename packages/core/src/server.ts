@@ -280,6 +280,23 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     return reply.send({ api_key: newKey })
   })
 
+  // Auto-configure new devices on connect: disable screen lock + keep awake
+  emitter.on('device:connected', (data) => {
+    const { serial } = data
+    server.log.info({ serial }, 'New device connected — applying keep-awake settings')
+    const commands = [
+      'settings put system screen_off_timeout 2147483647',
+      'svc power stayon usb',
+      'locksettings set-disabled true',
+      'input keyevent KEYCODE_WAKEUP',
+    ]
+    for (const cmd of commands) {
+      adb.shell(serial, cmd).catch((err) => {
+        server.log.warn({ serial, cmd, err: (err as Error).message }, 'Keep-awake command failed')
+      })
+    }
+  })
+
   // Device discovery polling (5s) — managed by DeviceManager
   deviceManager.startPolling(5_000)
 

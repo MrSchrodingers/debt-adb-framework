@@ -79,9 +79,11 @@ export class WaAccountMapper {
 
     for (const pkg of WA_PACKAGES) {
       try {
+        // Use escaped quotes compatible with adbkit shell transport
+        const where = `account_type=\\'${pkg}\\'`
         const output = await this.adb.shell(
           serial,
-          `content query --uri content://com.android.contacts/raw_contacts --where "account_type='${pkg}'" --projection sync1 --user ${profileId}`,
+          `content query --uri content://com.android.contacts/raw_contacts --where "${where}" --projection sync1 --user ${profileId}`,
         )
         // Format: Row: 0 sync1=554391938235@s.whatsapp.net
         const match = output.match(/sync1=(\d+)@s\.whatsapp\.net/)

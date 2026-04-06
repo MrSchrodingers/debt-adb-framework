@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts'
-import { X, Camera, RotateCcw, RefreshCw, Battery, Thermometer, MemoryStick, HardDrive, Phone } from 'lucide-react'
+import { X, Camera, RotateCcw, RefreshCw, Battery, Thermometer, MemoryStick, HardDrive, Phone, Sun } from 'lucide-react'
 import { CORE_URL } from '../config'
 import type { Alert, DeviceRecord, HealthSnapshot, WhatsAppAccount } from '../types'
 
@@ -121,6 +121,19 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
 
         {/* Actions */}
         <div className="flex items-center gap-2 pt-2 border-t border-zinc-800/40">
+          <ActionBtn
+            icon={Sun}
+            label="Keep Awake"
+            loading={actionLoading === 'keep-awake'}
+            onClick={async () => {
+              setActionLoading('keep-awake')
+              try {
+                await fetch(`${CORE_URL}/api/v1/devices/${device.serial}/keep-awake`, { method: 'POST' })
+              } finally {
+                setActionLoading(null)
+              }
+            }}
+          />
           <ActionBtn
             icon={Camera}
             label="Screenshot"
