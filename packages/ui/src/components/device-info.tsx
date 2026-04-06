@@ -4,9 +4,10 @@ import { CORE_URL } from '../config'
 
 interface DeviceInfoProps {
   serial: string
+  profileId?: number | null
 }
 
-export function DeviceInfo({ serial }: DeviceInfoProps) {
+export function DeviceInfo({ serial, profileId }: DeviceInfoProps) {
   const [info, setInfo] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
 

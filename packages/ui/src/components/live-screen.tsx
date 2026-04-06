@@ -4,9 +4,10 @@ import { CORE_URL } from '../config'
 
 interface LiveScreenProps {
   serial: string
+  profileId?: number | null
 }
 
-export function LiveScreen({ serial }: LiveScreenProps) {
+export function LiveScreen({ serial, profileId }: LiveScreenProps) {
   const [image, setImage] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(false)

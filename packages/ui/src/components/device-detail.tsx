@@ -10,21 +10,25 @@ interface DeviceDetailProps {
   accounts: WhatsAppAccount[]
   alerts: Alert[]
   onClose: () => void
+  onProfileSelect?: (profileId: number | null) => void
+  activeProfileId?: number | null
 }
 
-export function DeviceDetail({ device, health, accounts, alerts, onClose }: DeviceDetailProps) {
+export function DeviceDetail({ device, health, accounts, alerts, onClose, onProfileSelect, activeProfileId }: DeviceDetailProps) {
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [confirmAction, setConfirmAction] = useState<string | null>(null)
   const [actionResult, setActionResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const [hygienizeSteps, setHygienizeSteps] = useState<string[]>([])
   const [hygienizeProgress, setHygienizeProgress] = useState(0)
+  const selectedProfileId = activeProfileId ?? null
+  const setSelectedProfileId = (id: number | null) => onProfileSelect?.(id)
 
   interface ProfileInfo {
     id: number
     name: string
     running: boolean
-    whatsapp: { installed: boolean; phone: string | null }
-    whatsappBusiness: { installed: boolean; phone: string | null }
+    whatsapp: { installed: boolean; phone: string | null; active?: boolean }
+    whatsappBusiness: { installed: boolean; phone: string | null; active?: boolean }
   }
   const [profiles, setProfiles] = useState<ProfileInfo[]>([])
 
@@ -82,6 +86,33 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
             <p className="text-xs text-zinc-500 font-mono">{device.serial}</p>
           </div>
         </div>
+
+        {/* Profile Selector */}
+        {profiles.length > 0 && (
+          <div className="flex items-center gap-1">
+            {profiles.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => setSelectedProfileId(selectedProfileId === p.id ? null : p.id)}
+                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors border ${
+                  selectedProfileId === p.id
+                    ? 'bg-blue-500/10 text-blue-400 border-blue-500/30'
+                    : 'bg-zinc-800/60 text-zinc-400 border-zinc-700/40 hover:text-zinc-200 hover:bg-zinc-800'
+                }`}
+                title={`${p.name}${p.whatsapp.phone ? ` — WA ${p.whatsapp.phone}` : ''}`}
+              >
+                <div className={`h-1.5 w-1.5 rounded-full ${p.running ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
+                <span>P{p.id}</span>
+                {p.whatsapp.phone && (
+                  <span className="text-emerald-400 font-mono text-xs hidden sm:inline">
+                    {p.whatsapp.phone.slice(-4)}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+
         <button
           onClick={onClose}
           className="rounded-lg p-1.5 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"

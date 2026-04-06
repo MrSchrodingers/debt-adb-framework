@@ -25,6 +25,7 @@ export function App() {
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [connected, setConnected] = useState(false)
   const [selectedSerial, setSelectedSerial] = useState<string | null>(null)
+  const [selectedProfileId, setSelectedProfileId] = useState<number | null>(null)
   const [detailHealth, setDetailHealth] = useState<HealthSnapshot[]>([])
   const [detailAccounts, setDetailAccounts] = useState<WhatsAppAccount[]>([])
   const [detailAlerts, setDetailAlerts] = useState<Alert[]>([])
@@ -250,15 +251,17 @@ export function App() {
                     health={detailHealth}
                     accounts={detailAccounts}
                     alerts={detailAlerts}
-                    onClose={() => setSelectedSerial(null)}
+                    onClose={() => { setSelectedSerial(null); setSelectedProfileId(null) }}
+                    activeProfileId={selectedProfileId}
+                    onProfileSelect={setSelectedProfileId}
                   />
 
                   <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                    <LiveScreen serial={selectedDevice.serial} />
-                    <DeviceInfo serial={selectedDevice.serial} />
+                    <LiveScreen serial={selectedDevice.serial} profileId={selectedProfileId} />
+                    <DeviceInfo serial={selectedDevice.serial} profileId={selectedProfileId} />
                   </div>
 
-                  <ShellTerminal serial={selectedDevice.serial} />
+                  <ShellTerminal serial={selectedDevice.serial} profileId={selectedProfileId} />
                 </>
               )}
 

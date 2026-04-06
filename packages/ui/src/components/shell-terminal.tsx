@@ -4,6 +4,7 @@ import { CORE_URL } from '../config'
 
 interface ShellTerminalProps {
   serial: string
+  profileId?: number | null
 }
 
 interface HistoryEntry {
@@ -13,7 +14,7 @@ interface HistoryEntry {
   timestamp: string
 }
 
-export function ShellTerminal({ serial }: ShellTerminalProps) {
+export function ShellTerminal({ serial, profileId }: ShellTerminalProps) {
   const [command, setCommand] = useState('')
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [running, setRunning] = useState(false)
@@ -91,13 +92,20 @@ export function ShellTerminal({ serial }: ShellTerminalProps) {
     }
   }
 
+  const userFlag = profileId != null ? ` --user ${profileId}` : ''
   const shortcuts = [
     { label: 'getprop ro.build.version.release', cmd: 'getprop ro.build.version.release' },
     { label: 'dumpsys battery', cmd: 'dumpsys battery' },
     { label: 'ps -A | grep whatsapp', cmd: 'ps -A | grep whatsapp' },
     { label: 'df -h /data', cmd: 'df -h /data' },
-    { label: 'logcat -d -s WhatsApp', cmd: 'logcat -d -s WhatsApp | tail -20' },
-    { label: 'ip addr', cmd: 'ip addr show wlan0' },
+    ...(profileId != null ? [
+      { label: `WA logs (P${profileId})`, cmd: `logcat -d -s WhatsApp | grep u${profileId}_ | tail -20` },
+      { label: `pm list (P${profileId})`, cmd: `pm list packages${userFlag} | grep whatsapp` },
+      { label: `am start WA (P${profileId})`, cmd: `am start${userFlag} -n com.whatsapp/com.whatsapp.Main` },
+    ] : [
+      { label: 'logcat WA', cmd: 'logcat -d -s WhatsApp | tail -20' },
+      { label: 'ip addr', cmd: 'ip addr show wlan0' },
+    ]),
   ]
 
   return (
@@ -106,6 +114,11 @@ export function ShellTerminal({ serial }: ShellTerminalProps) {
         <div className="flex items-center gap-2">
           <Terminal className="h-4 w-4 text-emerald-400" />
           <h3 className="text-sm font-medium text-zinc-300">Terminal ADB</h3>
+          {profileId != null && (
+            <span className="rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/30 px-2 py-0.5 text-xs font-medium">
+              P{profileId}
+            </span>
+          )}
           <span className="text-xs text-zinc-600 font-mono">{serial.slice(0, 12)}</span>
         </div>
         <button
