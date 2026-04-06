@@ -44,8 +44,8 @@ describe('WaAccountMapper', () => {
       fakeShell.mockImplementation(async (_serial: string, cmd: string) => {
         if (cmd.includes('pm list packages --user 0') && cmd.includes('whatsapp'))
           return 'package:com.whatsapp'
-        if (cmd.includes('shared_prefs') && cmd.includes('user 0'))
-          return '<map><string name="registration_jid">5543968350100@s.whatsapp.net</string></map>'
+        if (cmd.includes('content query') && cmd.includes("account_type='com.whatsapp'") && cmd.includes('--user 0'))
+          return 'Row: 0 sync1=5543968350100@s.whatsapp.net'
         return ''
       })
 
@@ -61,10 +61,10 @@ describe('WaAccountMapper', () => {
       fakeShell.mockImplementation(async (_serial: string, cmd: string) => {
         if (cmd.includes('pm list packages --user 0') && cmd.includes('whatsapp'))
           return 'package:com.whatsapp\npackage:com.whatsapp.w4b'
-        if (cmd.includes('com.whatsapp_preferences_light') && cmd.includes('user 0'))
-          return '<map><string name="registration_jid">5543968350100@s.whatsapp.net</string></map>'
-        if (cmd.includes('com.whatsapp.w4b') && cmd.includes('user 0'))
-          return '<map><string name="registration_jid">5543968350101@s.whatsapp.net</string></map>'
+        if (cmd.includes('content query') && cmd.includes("account_type='com.whatsapp'") && !cmd.includes('w4b') && cmd.includes('--user 0'))
+          return 'Row: 0 sync1=5543968350100@s.whatsapp.net'
+        if (cmd.includes('content query') && cmd.includes("account_type='com.whatsapp.w4b'") && cmd.includes('--user 0'))
+          return 'Row: 0 sync1=5543968350101@s.whatsapp.net'
         return ''
       })
 
@@ -83,8 +83,8 @@ describe('WaAccountMapper', () => {
         if (userMatch) profilesSeen.add(userMatch[1])
         if (cmd.includes('pm list packages') && cmd.includes('--user 10'))
           return 'package:com.whatsapp'
-        if (cmd.includes('shared_prefs') && cmd.includes('user 10'))
-          return '<map><string name="registration_jid">5543968350095@s.whatsapp.net</string></map>'
+        if (cmd.includes('content query') && cmd.includes("account_type='com.whatsapp'") && cmd.includes('--user 10'))
+          return 'Row: 0 sync1=5543968350095@s.whatsapp.net'
         return ''
       })
 
@@ -100,8 +100,8 @@ describe('WaAccountMapper', () => {
       fakeShell.mockImplementation(async (_serial: string, cmd: string) => {
         if (cmd.includes('pm list packages --user 0') && cmd.includes('whatsapp'))
           return 'package:com.whatsapp'
-        if (cmd.includes('shared_prefs') && cmd.includes('user 0'))
-          return '<map><string name="registration_jid">5543968350100@s.whatsapp.net</string></map>'
+        if (cmd.includes('content query') && cmd.includes("account_type='com.whatsapp'") && cmd.includes('--user 0'))
+          return 'Row: 0 sync1=5543968350100@s.whatsapp.net'
         return ''
       })
 

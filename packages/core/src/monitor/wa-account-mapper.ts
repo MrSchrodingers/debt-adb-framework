@@ -43,19 +43,12 @@ export class WaAccountMapper {
           (WA_PACKAGES as readonly string[]).includes(pkg),
         )
 
-      for (const pkg of installed) {
-        let phoneNumber: string | null = null
-        try {
-          const xml = await this.adb.shell(
-            serial,
-            `run-as ${pkg} --user ${profileId} cat shared_prefs/${PREFS_FILE[pkg]}`,
-          )
-          const match = xml.match(/registration_jid[^>]*>(\d+)@/)
-          phoneNumber = match ? match[1] : null
-        } catch {
-          // Permission denied or file not found — continue with null phone
-        }
+      // Extract phone numbers via contacts content provider (works without root)
+      const phonesByType = await this.extractPhoneNumbers(serial, profileId)
 
+      for (const pkg of installed) {
+        const accountType = pkg // com.whatsapp or com.whatsapp.w4b
+        const phoneNumber = phonesByType[accountType] ?? null
         accounts.push({ deviceSerial: serial, profileId, packageName: pkg, phoneNumber })
       }
     }
@@ -76,6 +69,43 @@ export class WaAccountMapper {
       .prepare('SELECT * FROM whatsapp_accounts WHERE phone_number = ?')
       .get(phoneNumber) as Record<string, unknown> | undefined
     return row ? rowToAccount(row) : null
+  }
+
+  private async extractPhoneNumbers(
+    serial: string,
+    profileId: number,
+  ): Promise<Record<string, string>> {
+    const result: Record<string, string> = {}
+
+    for (const pkg of WA_PACKAGES) {
+      try {
+        const output = await this.adb.shell(
+          serial,
+          `content query --uri content://com.android.contacts/raw_contacts --where "account_type='${pkg}'" --projection sync1 --user ${profileId}`,
+        )
+        // Format: Row: 0 sync1=554391938235@s.whatsapp.net
+        const match = output.match(/sync1=(\d+)@s\.whatsapp\.net/)
+        if (match) {
+          result[pkg] = match[1]
+        }
+      } catch {
+        // Content provider not available for this user — try run-as fallback
+        try {
+          const xml = await this.adb.shell(
+            serial,
+            `run-as ${pkg} --user ${profileId} cat shared_prefs/${PREFS_FILE[pkg]}`,
+          )
+          const match = xml.match(/registration_jid[^>]*>(\d+)@/)
+          if (match) {
+            result[pkg] = match[1]
+          }
+        } catch {
+          // Both methods failed — continue with no phone number
+        }
+      }
+    }
+
+    return result
   }
 
   private upsertAccounts(serial: string, accounts: WhatsAppAccount[]): void {
