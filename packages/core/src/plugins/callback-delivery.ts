@@ -8,12 +8,73 @@ type FetchFn = (url: string, init: RequestInit) => Promise<Response>
 
 const MAX_RETRIES = 3
 
+/** Delays in ms before each attempt: attempt 1 = 0 (immediate), attempt 2 = 5s, attempt 3 = 15s */
+const BACKOFF_DELAYS_MS = [0, 5_000, 15_000] as const
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve()
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 export class CallbackDelivery {
+  // Cached prepared statements — initialized lazily on first use
+  private stmtListFailed: Database.Statement | null = null
+  private stmtGetFailed: Database.Statement | null = null
+  private stmtDeleteFailed: Database.Statement | null = null
+  private stmtUpdateFailedAttempts: Database.Statement | null = null
+  private stmtInsertFailed: Database.Statement | null = null
+
   constructor(
     private db: Database.Database,
     private registry: PluginRegistry,
     private fetchFn: FetchFn,
   ) {}
+
+  private getStmtListFailed(): Database.Statement {
+    if (!this.stmtListFailed) {
+      this.stmtListFailed = this.db.prepare(
+        'SELECT * FROM failed_callbacks ORDER BY created_at DESC',
+      )
+    }
+    return this.stmtListFailed
+  }
+
+  private getStmtGetFailed(): Database.Statement {
+    if (!this.stmtGetFailed) {
+      this.stmtGetFailed = this.db.prepare(
+        'SELECT * FROM failed_callbacks WHERE id = ?',
+      )
+    }
+    return this.stmtGetFailed
+  }
+
+  private getStmtDeleteFailed(): Database.Statement {
+    if (!this.stmtDeleteFailed) {
+      this.stmtDeleteFailed = this.db.prepare(
+        'DELETE FROM failed_callbacks WHERE id = ?',
+      )
+    }
+    return this.stmtDeleteFailed
+  }
+
+  private getStmtUpdateFailedAttempts(): Database.Statement {
+    if (!this.stmtUpdateFailedAttempts) {
+      this.stmtUpdateFailedAttempts = this.db.prepare(
+        "UPDATE failed_callbacks SET attempts = attempts + 1, last_attempt_at = datetime('now') WHERE id = ?",
+      )
+    }
+    return this.stmtUpdateFailedAttempts
+  }
+
+  private getStmtInsertFailed(): Database.Statement {
+    if (!this.stmtInsertFailed) {
+      this.stmtInsertFailed = this.db.prepare(`
+        INSERT INTO failed_callbacks (id, plugin_name, message_id, callback_type, payload, webhook_url, attempts, last_error)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+    }
+    return this.stmtInsertFailed
+  }
 
   async sendResultCallback(pluginName: string, messageId: string, payload: ResultCallback): Promise<void> {
     if (!pluginName) return
@@ -31,15 +92,11 @@ export class CallbackDelivery {
   }
 
   listFailedCallbacks(): FailedCallbackRecord[] {
-    return this.db.prepare(
-      'SELECT * FROM failed_callbacks ORDER BY created_at DESC',
-    ).all() as FailedCallbackRecord[]
+    return this.getStmtListFailed().all() as FailedCallbackRecord[]
   }
 
   async retryFailedCallback(failedId: string): Promise<void> {
-    const record = this.db.prepare(
-      'SELECT * FROM failed_callbacks WHERE id = ?',
-    ).get(failedId) as FailedCallbackRecord | undefined
+    const record = this.getStmtGetFailed().get(failedId) as FailedCallbackRecord | undefined
 
     if (!record) throw new Error(`Failed callback not found: ${failedId}`)
 
@@ -59,12 +116,10 @@ export class CallbackDelivery {
         body,
       })
       if (response.ok) {
-        this.db.prepare('DELETE FROM failed_callbacks WHERE id = ?').run(failedId)
+        this.getStmtDeleteFailed().run(failedId)
       }
     } catch {
-      this.db.prepare(
-        "UPDATE failed_callbacks SET attempts = attempts + 1, last_attempt_at = datetime('now') WHERE id = ?",
-      ).run(failedId)
+      this.getStmtUpdateFailedAttempts().run(failedId)
     }
   }
 
@@ -82,6 +137,9 @@ export class CallbackDelivery {
     let lastError = ''
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      const delay = BACKOFF_DELAYS_MS[attempt - 1] ?? 0
+      await sleep(delay)
+
       try {
         const response = await this.fetchFn(plugin.webhook_url, {
           method: 'POST',
@@ -99,10 +157,7 @@ export class CallbackDelivery {
     }
 
     // All retries failed — persist to failed_callbacks
-    this.db.prepare(`
-      INSERT INTO failed_callbacks (id, plugin_name, message_id, callback_type, payload, webhook_url, attempts, last_error)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
+    this.getStmtInsertFailed().run(
       nanoid(),
       pluginName,
       messageId,

@@ -6,12 +6,14 @@ import { MessageQueue } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
 import { SendEngine } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
-import { registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes } from './api/index.js'
+import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes } from './api/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
 import { SessionManager, WebhookHandler, MessageHistory } from './waha/index.js'
 import { createWahaHttpClient } from './waha/waha-http-client.js'
 import { createChatwootHttpClient, ManagedSessions, InboxAutomation } from './chatwoot/index.js'
 import { PluginRegistry, PluginEventBus, CallbackDelivery, PluginLoader } from './plugins/index.js'
+import { buildLoggerConfig } from './config/logger.js'
+import { GracefulShutdown } from './config/graceful-shutdown.js'
 import { OralsinPlugin } from './plugins/oralsin-plugin.js'
 import type { DispatchEventName } from './events/index.js'
 import type { DispatchPlugin } from './plugins/types.js'
@@ -23,18 +25,19 @@ export interface DispatchCore {
   adb: AdbBridge
   engine: SendEngine
   emitter: DispatchEmitter
+  shutdown: GracefulShutdown
 }
 
 export async function createServer(port = Number(process.env.PORT) || 7890): Promise<DispatchCore> {
+  const loggerConfig = buildLoggerConfig(process.env.NODE_ENV, process.env.LOG_FILE)
   const server = Fastify({
-    logger: {
-      transport: {
-        target: 'pino-pretty',
-        options: { colorize: true },
-      },
-    },
+    logger: loggerConfig,
   })
-  await server.register(cors)
+  const corsOrigins = buildCorsOrigins(process.env.DISPATCH_ALLOWED_ORIGINS)
+  await server.register(cors, { origin: corsOrigins })
+
+  // API Auth — must be registered before routes
+  registerApiAuth(server, process.env.DISPATCH_API_KEY)
 
   const db = new Database(process.env.DB_PATH || 'dispatch.db')
   db.pragma('journal_mode = WAL')
@@ -390,23 +393,9 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     messageHistory.cleanup(retentionDays)
   }, 3_600_000)
 
-  server.addHook('onClose', async () => {
-    await pluginLoader.destroyAll()
-    pluginEventBus.destroy()
-    deviceManager.stop()
-    sessionManager?.stop()
-    clearInterval(healthInterval)
-    clearInterval(accountInterval)
-    clearInterval(healthCleanupInterval)
-    clearInterval(historyCleanupInterval)
-    clearInterval(cleanupInterval)
-    clearInterval(workerInterval)
-    db.close()
-  })
-
   await server.listen({ port, host: '0.0.0.0' })
 
-  const io = new SocketIOServer(server.server, { cors: { origin: '*' } })
+  const io = new SocketIOServer(server.server, { cors: { origin: corsOrigins } })
 
   const events: DispatchEventName[] = [
     'message:queued', 'message:sending', 'message:sent', 'message:failed',
@@ -417,5 +406,43 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     emitter.on(event, (data) => io.emit(event, data))
   }
 
-  return { server, io, queue, adb, engine, emitter }
+  // ── Graceful Shutdown ──
+  const shutdown = new GracefulShutdown(server.log)
+
+  shutdown.addHandler('plugins', async () => {
+    await pluginLoader.destroyAll()
+    pluginEventBus.destroy()
+  })
+
+  shutdown.addHandler('intervals', async () => {
+    deviceManager.stop()
+    sessionManager?.stop()
+    clearInterval(healthInterval)
+    clearInterval(accountInterval)
+    clearInterval(healthCleanupInterval)
+    clearInterval(historyCleanupInterval)
+    clearInterval(cleanupInterval)
+    clearInterval(workerInterval)
+  })
+
+  shutdown.addHandler('stale-locks', async () => {
+    const cleaned = queue.cleanStaleLocks()
+    if (cleaned > 0) {
+      server.log.info({ cleaned }, 'Cleaned stale locks during shutdown')
+    }
+  })
+
+  shutdown.addHandler('socket.io', async () => {
+    io.close()
+  })
+
+  shutdown.addHandler('database', async () => {
+    db.close()
+  })
+
+  server.addHook('onClose', async () => {
+    await shutdown.execute()
+  })
+
+  return { server, io, queue, adb, engine, emitter, shutdown }
 }

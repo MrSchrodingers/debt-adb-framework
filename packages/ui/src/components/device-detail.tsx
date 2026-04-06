@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts'
 import { X, Camera, RotateCcw, RefreshCw, Battery, Thermometer, MemoryStick, HardDrive, Phone, Sun } from 'lucide-react'
-import { CORE_URL } from '../config'
+import { CORE_URL, authHeaders } from '../config'
 import type { Alert, DeviceRecord, HealthSnapshot, WhatsAppAccount } from '../types'
 
 interface DeviceDetailProps {
@@ -27,7 +27,7 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
         action === 'reboot'
           ? `${CORE_URL}/api/v1/monitor/devices/${device.serial}/reboot`
           : `${CORE_URL}/api/v1/monitor/devices/${device.serial}/restart-whatsapp`
-      const res = await fetch(url, { method: 'POST' })
+      const res = await fetch(url, { method: 'POST', headers: authHeaders() })
       if (!res.ok) {
         const err = await res.json()
         alert(err.error || 'Action failed')
@@ -128,7 +128,7 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
             onClick={async () => {
               setActionLoading('keep-awake')
               try {
-                await fetch(`${CORE_URL}/api/v1/devices/${device.serial}/keep-awake`, { method: 'POST' })
+                await fetch(`${CORE_URL}/api/v1/devices/${device.serial}/keep-awake`, { method: 'POST', headers: authHeaders() })
               } finally {
                 setActionLoading(null)
               }
@@ -141,7 +141,7 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
             onClick={async () => {
               setActionLoading('screenshot')
               try {
-                const res = await fetch(`${CORE_URL}/api/v1/devices/${device.serial}/screenshot`, { method: 'POST' })
+                const res = await fetch(`${CORE_URL}/api/v1/devices/${device.serial}/screenshot`, { method: 'POST', headers: authHeaders() })
                 if (res.ok) {
                   const blob = await res.blob()
                   window.open(URL.createObjectURL(blob))
