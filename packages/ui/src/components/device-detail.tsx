@@ -141,30 +141,43 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose, onProf
               >
                 {actionLoading === 'switch-user' ? 'Trocando...' : `Trocar p/ P${selectedProfileId}`}
               </button>
-              <button
-                onClick={async () => {
-                  setActionLoading('scan-number')
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault()
+                  const input = (e.currentTarget.elements.namedItem('phone') as HTMLInputElement)?.value?.trim()
+                  if (!input || !selectedProfileId) return
                   try {
-                    const res = await fetch(`${CORE_URL}/api/v1/devices/${device.serial}/profiles/${selectedProfileId}/scan-number`, { method: 'POST', headers: authHeaders() })
-                    const data = await res.json()
-                    if (data.phone) {
-                      setActionResult({ type: 'success', message: `P${selectedProfileId}: ${data.phone}` })
-                    } else {
-                      setActionResult({ type: 'error', message: `Nao encontrou numero no P${selectedProfileId}` })
+                    const res = await fetch(`${CORE_URL}/api/v1/devices/${device.serial}/profiles/${selectedProfileId}/phone`, {
+                      method: 'PUT',
+                      headers: authHeaders({ 'Content-Type': 'application/json' }),
+                      body: JSON.stringify({ phone: input }),
+                    })
+                    if (res.ok) {
+                      setActionResult({ type: 'success', message: `P${selectedProfileId}: ${input} salvo` })
+                      fetchProfiles()
+                      input && ((e.currentTarget.elements.namedItem('phone') as HTMLInputElement).value = '')
                     }
-                    fetchProfiles()
                   } catch {
-                    setActionResult({ type: 'error', message: 'Falha no scan' })
-                  } finally {
-                    setActionLoading(null)
-                    setTimeout(() => setActionResult(null), 8000)
+                    setActionResult({ type: 'error', message: 'Falha ao salvar' })
                   }
+                  setTimeout(() => setActionResult(null), 5000)
                 }}
-                disabled={actionLoading === 'scan-number'}
-                className="rounded-lg bg-amber-600 hover:bg-amber-500 px-3 py-2 text-xs font-medium text-white disabled:opacity-50 transition-colors"
+                className="flex items-center gap-1.5"
               >
-                {actionLoading === 'scan-number' ? 'Escaneando...' : 'Scan Numero'}
-              </button>
+                <input
+                  name="phone"
+                  type="text"
+                  placeholder="Numero WA (ex: 5543991938235)"
+                  defaultValue={profiles.find(p => p.id === selectedProfileId)?.whatsapp.phone ?? ''}
+                  className="rounded-lg bg-zinc-800 border border-zinc-700/40 px-2.5 py-1.5 text-xs font-mono text-zinc-200 w-44 focus:outline-none focus:border-blue-500/50"
+                />
+                <button
+                  type="submit"
+                  className="rounded-lg bg-emerald-600 hover:bg-emerald-500 px-3 py-1.5 text-xs font-medium text-white transition-colors"
+                >
+                  Salvar
+                </button>
+              </form>
               <button
                 onClick={() => setSelectedProfileId(null)}
                 className="text-xs text-zinc-600 hover:text-zinc-400 px-2 py-1"

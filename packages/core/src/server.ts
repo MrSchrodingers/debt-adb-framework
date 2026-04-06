@@ -122,6 +122,23 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   registerAuditRoutes(server, db)
   registerBulkActionRoutes(server, adb)
 
+  // Manual phone number mapping for profiles
+  server.put('/api/v1/devices/:serial/profiles/:profileId/phone', async (request, reply) => {
+    const { serial, profileId } = request.params as { serial: string; profileId: string }
+    const body = request.body as { phone: string; package?: string }
+    if (!body?.phone) return reply.status(400).send({ error: 'phone is required' })
+    const pkg = body.package ?? 'com.whatsapp'
+    const uid = Number(profileId)
+    db.prepare(`
+      INSERT INTO whatsapp_accounts (device_serial, profile_id, package_name, phone_number, updated_at)
+      VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      ON CONFLICT(device_serial, profile_id, package_name) DO UPDATE SET
+        phone_number = excluded.phone_number, updated_at = excluded.updated_at
+    `).run(serial, uid, pkg, body.phone)
+    server.log.info({ serial, profileId: uid, phone: body.phone }, 'Phone number set manually')
+    return reply.send({ serial, profileId: uid, phone: body.phone })
+  })
+
   let workerRunning = false
 
   server.post('/api/v1/messages/:id/send', async (request, reply) => {
