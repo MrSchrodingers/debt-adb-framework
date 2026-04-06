@@ -9,6 +9,9 @@ import { SendForm } from './components/send-form'
 import { SessionManager } from './components/session-manager'
 import { StatsBar } from './components/stats-bar'
 import { Sidebar } from './components/sidebar'
+import { LiveScreen } from './components/live-screen'
+import { ShellTerminal } from './components/shell-terminal'
+import { DeviceInfo } from './components/device-info'
 import type { DeviceRecord, HealthSnapshot, WhatsAppAccount, Alert, Message } from './types'
 
 type Tab = 'devices' | 'queue' | 'sessions'
@@ -177,13 +180,22 @@ export function App() {
               />
 
               {selectedDevice && (
-                <DeviceDetail
-                  device={selectedDevice}
-                  health={detailHealth}
-                  accounts={detailAccounts}
-                  alerts={detailAlerts}
-                  onClose={() => setSelectedSerial(null)}
-                />
+                <>
+                  <DeviceDetail
+                    device={selectedDevice}
+                    health={detailHealth}
+                    accounts={detailAccounts}
+                    alerts={detailAlerts}
+                    onClose={() => setSelectedSerial(null)}
+                  />
+
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                    <LiveScreen serial={selectedDevice.serial} />
+                    <DeviceInfo serial={selectedDevice.serial} />
+                  </div>
+
+                  <ShellTerminal serial={selectedDevice.serial} />
+                </>
               )}
 
               {alerts.length > 0 && <AlertPanel alerts={alerts} />}
