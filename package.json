@@ -3,14 +3,18 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev:core": "turbo run dev --filter=@dispatch/core",
-    "dev:ui": "turbo run dev --filter=@dispatch/ui",
-    "dev:electron": "turbo run dev --filter=@dispatch/electron",
+    "dev": "concurrently -n core,ui -c green,blue \"pnpm dev:core\" \"pnpm dev:ui\"",
+    "dev:all": "concurrently -n core,ui,electron -c green,blue,magenta \"pnpm dev:core\" \"pnpm dev:ui\" \"sleep 5 && pnpm dev:electron\"",
+    "dev:core": "npx tsx watch packages/core/src/main.ts",
+    "dev:ui": "cd packages/ui && npx vite --host 0.0.0.0",
+    "dev:electron": "cd packages/electron && pnpm dev",
     "build": "turbo run build",
     "test": "turbo run test",
     "lint": "turbo run lint"
   },
   "devDependencies": {
+    "concurrently": "^9.2.1",
+    "tsx": "^4.21.0",
     "turbo": "^2.5.0"
   },
   "engines": {
@@ -18,6 +22,10 @@
   },
   "packageManager": "pnpm@10.20.0",
   "pnpm": {
-    "onlyBuiltDependencies": ["better-sqlite3", "electron", "esbuild"]
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "electron",
+      "esbuild"
+    ]
   }
 }
