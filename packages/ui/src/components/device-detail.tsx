@@ -121,12 +121,57 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose, onProf
             </button>
           ))}
           {selectedProfileId !== null && (
-            <button
-              onClick={() => setSelectedProfileId(null)}
-              className="text-xs text-zinc-600 hover:text-zinc-400 px-2 py-1"
-            >
-              Limpar
-            </button>
+            <>
+              <button
+                onClick={async () => {
+                  setActionLoading('switch-user')
+                  try {
+                    await fetch(`${CORE_URL}/api/v1/devices/${device.serial}/switch-user/${selectedProfileId}`, { method: 'POST', headers: authHeaders() })
+                    setActionResult({ type: 'success', message: `Trocado para P${selectedProfileId}` })
+                    fetchProfiles()
+                  } catch {
+                    setActionResult({ type: 'error', message: 'Falha ao trocar user' })
+                  } finally {
+                    setActionLoading(null)
+                    setTimeout(() => setActionResult(null), 5000)
+                  }
+                }}
+                disabled={actionLoading === 'switch-user'}
+                className="rounded-lg bg-blue-600 hover:bg-blue-500 px-3 py-2 text-xs font-medium text-white disabled:opacity-50 transition-colors"
+              >
+                {actionLoading === 'switch-user' ? 'Trocando...' : `Trocar p/ P${selectedProfileId}`}
+              </button>
+              <button
+                onClick={async () => {
+                  setActionLoading('scan-number')
+                  try {
+                    const res = await fetch(`${CORE_URL}/api/v1/devices/${device.serial}/profiles/${selectedProfileId}/scan-number`, { method: 'POST', headers: authHeaders() })
+                    const data = await res.json()
+                    if (data.phone) {
+                      setActionResult({ type: 'success', message: `P${selectedProfileId}: ${data.phone}` })
+                    } else {
+                      setActionResult({ type: 'error', message: `Nao encontrou numero no P${selectedProfileId}` })
+                    }
+                    fetchProfiles()
+                  } catch {
+                    setActionResult({ type: 'error', message: 'Falha no scan' })
+                  } finally {
+                    setActionLoading(null)
+                    setTimeout(() => setActionResult(null), 8000)
+                  }
+                }}
+                disabled={actionLoading === 'scan-number'}
+                className="rounded-lg bg-amber-600 hover:bg-amber-500 px-3 py-2 text-xs font-medium text-white disabled:opacity-50 transition-colors"
+              >
+                {actionLoading === 'scan-number' ? 'Escaneando...' : 'Scan Numero'}
+              </button>
+              <button
+                onClick={() => setSelectedProfileId(null)}
+                className="text-xs text-zinc-600 hover:text-zinc-400 px-2 py-1"
+              >
+                Limpar
+              </button>
+            </>
           )}
         </div>
       )}
