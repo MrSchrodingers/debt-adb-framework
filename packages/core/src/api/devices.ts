@@ -1,5 +1,10 @@
 import type { FastifyInstance } from 'fastify'
+import { z } from 'zod'
 import type { AdbBridge } from '../adb/index.js'
+import { RateLimiter } from './rate-limiter.js'
+
+const shellRateLimiter = new RateLimiter({ maxRequests: 10, windowMs: 60_000 })
+const shellSchema = z.object({ command: z.string().min(1).max(4096) })
 
 export function registerDeviceRoutes(
   server: FastifyInstance,
@@ -57,21 +62,37 @@ export function registerDeviceRoutes(
     return reply.send({ image: `data:image/png;base64,${png.toString('base64')}` })
   })
 
-  // ADB Shell — execute command
+  // ADB Shell — execute command (rate limited + audit logged)
   server.post('/api/v1/devices/:serial/shell', async (request, reply) => {
-    const { command } = request.body as { command: string }
-    if (!command || typeof command !== 'string') {
-      return reply.status(400).send({ error: 'Command required' })
+    const { serial } = request.params as { serial: string }
+    const ip = request.ip
+
+    // Rate limiting: 10 requests per minute per IP
+    if (!shellRateLimiter.isAllowed(ip)) {
+      return reply.status(429).send({
+        error: 'Rate limit exceeded. Max 10 shell requests per minute.',
+        remaining: shellRateLimiter.remaining(ip),
+        retryAfterSeconds: 60,
+      })
     }
-    // Sanitize: only allow safe characters
-    if (!/^[\w\s\-./|:='"()@{}\[\],*?<>&;$#!%^+~`]+$/.test(command)) {
-      return reply.status(400).send({ error: 'Invalid characters in command' })
+
+    const parsed = shellSchema.safeParse(request.body)
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Validation failed', details: parsed.error.issues })
     }
+    const { command } = parsed.data
+
+    // Audit logging
+    server.log.info({ event: 'shell:execute', serial, command, ip }, 'Shell command executed')
+
     try {
       const output = await adb.shell(serial, command)
-      return reply.send({ command, output })
+      return reply.send({ serial, command, output })
     } catch (err) {
-      return reply.status(500).send({ error: err instanceof Error ? err.message : 'Shell error' })
+      return reply.status(500).send({
+        error: 'Shell command failed',
+        detail: err instanceof Error ? err.message : String(err),
+      })
     }
   })
 

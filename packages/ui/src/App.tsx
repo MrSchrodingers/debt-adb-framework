@@ -14,9 +14,10 @@ import { LiveScreen } from './components/live-screen'
 import { ShellTerminal } from './components/shell-terminal'
 import { DeviceInfo } from './components/device-info'
 import { ToastContainer, type Toast } from './components/toast'
+import { AuditLog } from './components/audit-log'
 import type { DeviceRecord, HealthSnapshot, WhatsAppAccount, Alert } from './types'
 
-type Tab = 'devices' | 'queue' | 'sessions' | 'metricas'
+type Tab = 'devices' | 'queue' | 'sessions' | 'metricas' | 'auditoria'
 
 export function App() {
   const [devices, setDevices] = useState<DeviceRecord[]>([])
@@ -190,6 +191,8 @@ export function App() {
         <main className="flex-1 overflow-y-auto p-4 lg:p-6">
           {activeTab === 'sessions' ? (
             <SessionManager />
+          ) : activeTab === 'auditoria' ? (
+            <AuditLog />
           ) : activeTab === 'metricas' ? (
             <MetricsDashboard />
           ) : activeTab === 'queue' ? (
