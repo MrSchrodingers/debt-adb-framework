@@ -17,6 +17,19 @@ export interface UpdatePluginParams {
 }
 
 export class PluginRegistry {
+  // Cached prepared statements — initialized lazily after initialize()
+  private stmtRegister!: Database.Statement
+  private stmtGetPlugin!: Database.Statement
+  private stmtListPlugins!: Database.Statement
+  private stmtUpdateWebhookUrl!: Database.Statement
+  private stmtUpdateEvents!: Database.Statement
+  private stmtDisable!: Database.Statement
+  private stmtEnable!: Database.Statement
+  private stmtDelete!: Database.Statement
+  private stmtRotateApiKey!: Database.Statement
+  private stmtSetStatus!: Database.Statement
+  private stmtGetByApiKey!: Database.Statement
+
   constructor(private db: Database.Database) {}
 
   initialize(): void {
@@ -49,10 +62,12 @@ export class PluginRegistry {
       CREATE INDEX IF NOT EXISTS idx_failed_callbacks_plugin
         ON failed_callbacks(plugin_name);
     `)
+
+    this.prepareStatements()
   }
 
-  register(params: RegisterPluginParams): void {
-    this.db.prepare(`
+  private prepareStatements(): void {
+    this.stmtRegister = this.db.prepare(`
       INSERT INTO plugins (name, version, webhook_url, api_key, hmac_secret, events, enabled, status)
       VALUES (?, ?, ?, ?, ?, ?, 1, 'active')
       ON CONFLICT(name) DO UPDATE SET
@@ -60,7 +75,35 @@ export class PluginRegistry {
         webhook_url = excluded.webhook_url,
         events = excluded.events,
         updated_at = datetime('now')
-    `).run(
+    `)
+    this.stmtGetPlugin = this.db.prepare('SELECT * FROM plugins WHERE name = ?')
+    this.stmtListPlugins = this.db.prepare('SELECT * FROM plugins ORDER BY name')
+    this.stmtUpdateWebhookUrl = this.db.prepare(
+      "UPDATE plugins SET webhook_url = ?, updated_at = datetime('now') WHERE name = ?",
+    )
+    this.stmtUpdateEvents = this.db.prepare(
+      "UPDATE plugins SET events = ?, updated_at = datetime('now') WHERE name = ?",
+    )
+    this.stmtDisable = this.db.prepare(
+      "UPDATE plugins SET enabled = 0, status = 'disabled', updated_at = datetime('now') WHERE name = ?",
+    )
+    this.stmtEnable = this.db.prepare(
+      "UPDATE plugins SET enabled = 1, status = 'active', updated_at = datetime('now') WHERE name = ?",
+    )
+    this.stmtDelete = this.db.prepare('DELETE FROM plugins WHERE name = ?')
+    this.stmtRotateApiKey = this.db.prepare(
+      "UPDATE plugins SET api_key = ?, updated_at = datetime('now') WHERE name = ?",
+    )
+    this.stmtSetStatus = this.db.prepare(
+      "UPDATE plugins SET status = ?, updated_at = datetime('now') WHERE name = ?",
+    )
+    this.stmtGetByApiKey = this.db.prepare(
+      'SELECT * FROM plugins WHERE api_key = ? AND enabled = 1',
+    )
+  }
+
+  register(params: RegisterPluginParams): void {
+    this.stmtRegister.run(
       params.name,
       params.version,
       params.webhookUrl,
@@ -71,61 +114,47 @@ export class PluginRegistry {
   }
 
   getPlugin(name: string): PluginRecord | null {
-    const row = this.db.prepare('SELECT * FROM plugins WHERE name = ?').get(name) as PluginRecord | undefined
+    const row = this.stmtGetPlugin.get(name) as PluginRecord | undefined
     return row ?? null
   }
 
   listPlugins(): PluginRecord[] {
-    return this.db.prepare('SELECT * FROM plugins ORDER BY name').all() as PluginRecord[]
+    return this.stmtListPlugins.all() as PluginRecord[]
   }
 
   updatePlugin(name: string, updates: UpdatePluginParams): void {
     if (updates.webhookUrl !== undefined) {
-      this.db.prepare(
-        "UPDATE plugins SET webhook_url = ?, updated_at = datetime('now') WHERE name = ?",
-      ).run(updates.webhookUrl, name)
+      this.stmtUpdateWebhookUrl.run(updates.webhookUrl, name)
     }
     if (updates.events !== undefined) {
-      this.db.prepare(
-        "UPDATE plugins SET events = ?, updated_at = datetime('now') WHERE name = ?",
-      ).run(JSON.stringify(updates.events), name)
+      this.stmtUpdateEvents.run(JSON.stringify(updates.events), name)
     }
   }
 
   disablePlugin(name: string): void {
-    this.db.prepare(
-      "UPDATE plugins SET enabled = 0, status = 'disabled', updated_at = datetime('now') WHERE name = ?",
-    ).run(name)
+    this.stmtDisable.run(name)
   }
 
   enablePlugin(name: string): void {
-    this.db.prepare(
-      "UPDATE plugins SET enabled = 1, status = 'active', updated_at = datetime('now') WHERE name = ?",
-    ).run(name)
+    this.stmtEnable.run(name)
   }
 
   deletePlugin(name: string): void {
-    this.db.prepare('DELETE FROM plugins WHERE name = ?').run(name)
+    this.stmtDelete.run(name)
   }
 
   rotateApiKey(name: string): string {
     const newKey = nanoid(32)
-    this.db.prepare(
-      "UPDATE plugins SET api_key = ?, updated_at = datetime('now') WHERE name = ?",
-    ).run(newKey, name)
+    this.stmtRotateApiKey.run(newKey, name)
     return newKey
   }
 
   setPluginStatus(name: string, status: string): void {
-    this.db.prepare(
-      "UPDATE plugins SET status = ?, updated_at = datetime('now') WHERE name = ?",
-    ).run(status, name)
+    this.stmtSetStatus.run(status, name)
   }
 
   getPluginByApiKey(apiKey: string): PluginRecord | null {
-    const row = this.db.prepare(
-      'SELECT * FROM plugins WHERE api_key = ? AND enabled = 1',
-    ).get(apiKey) as PluginRecord | undefined
+    const row = this.stmtGetByApiKey.get(apiKey) as PluginRecord | undefined
     return row ?? null
   }
 }
