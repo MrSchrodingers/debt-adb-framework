@@ -249,48 +249,64 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose, onProf
             onClick={async () => {
               setActionLoading('hygienize')
               setActionResult(null)
-              setHygienizeSteps([])
-              setHygienizeProgress(0)
+              setHygienizeSteps(['Iniciando higienizacao...'])
+              setHygienizeProgress(5)
 
-              // Simulate progress steps while waiting for the endpoint
-              const stepLabels = [
-                'Configurando tela...', 'Desabilitando lock...', 'Removendo bloatware...',
-                'Desinstalando apps Google...', 'Desinstalando apps Xiaomi...',
-                'Removendo dialer/SMS...', 'Ativando DND...', 'Silenciando notificacoes...',
-                'Parando servicos...',
-              ]
-              let stepIdx = 0
+              // Pulse progress while waiting (endpoint can take 2+ minutes)
+              let elapsed = 0
               const interval = setInterval(() => {
-                if (stepIdx < stepLabels.length) {
-                  setHygienizeSteps(prev => [...prev, stepLabels[stepIdx]])
-                  setHygienizeProgress(Math.round(((stepIdx + 1) / stepLabels.length) * 100))
-                  stepIdx++
-                }
-              }, 1800)
+                elapsed += 3
+                // Slow crawl: never reaches 100%, shows elapsed time
+                const pct = Math.min(90, 5 + elapsed * 0.5)
+                setHygienizeProgress(Math.round(pct))
+                const mins = Math.floor(elapsed / 60)
+                const secs = elapsed % 60
+                const timeStr = mins > 0 ? `${mins}m${secs}s` : `${secs}s`
+                setHygienizeSteps(prev => {
+                  const base = prev.filter(s => !s.startsWith('Aguardando'))
+                  return [...base, `Aguardando resposta... (${timeStr})`]
+                })
+              }, 3000)
 
               try {
-                const res = await fetch(`${CORE_URL}/api/v1/devices/${device.serial}/hygienize`, { method: 'POST', headers: authHeaders() })
+                const controller = new AbortController()
+                const timeout = setTimeout(() => controller.abort(), 300_000) // 5 min max
+                const res = await fetch(`${CORE_URL}/api/v1/devices/${device.serial}/hygienize`, {
+                  method: 'POST', headers: authHeaders(), signal: controller.signal,
+                })
+                clearTimeout(timeout)
                 clearInterval(interval)
                 setHygienizeProgress(100)
-                setHygienizeSteps(prev => [...prev, 'Concluido!'])
 
                 if (res.ok) {
                   const data = await res.json()
-                  const removed = data.bloat?.removed?.length ?? 0
-                  const parts = []
-                  if (data.steps?.screen_timeout_max) parts.push('tela sempre ligada')
-                  if (data.steps?.lock_disabled) parts.push('lock off')
-                  if (removed > 0) parts.push(`${removed} apps removidos`)
-                  if (data.steps?.dnd_total_silence) parts.push('DND ativado')
-                  if (data.steps?.services_stopped) parts.push('servicos parados')
-                  setActionResult({ type: 'success', message: `Higienizado: ${parts.join(', ')}` })
+                  const profileCount = data.profiles?.length ?? 0
+                  const bloatRemoved = data.steps?.bloat_removed ?? '0'
+                  // Parse per_user results
+                  let perUserSummary = ''
+                  try {
+                    const pu = JSON.parse(data.steps?.per_user ?? '{}')
+                    const entries = Object.entries(pu).map(([uid, log]) => `P${uid}: ${log}`)
+                    perUserSummary = entries.join(' | ')
+                  } catch { /* ignore */ }
+                  const finalSteps = [`${profileCount} profiles processados`, `${bloatRemoved} bloat removidos`]
+                  if (data.steps?.switched_back) finalSteps.push(`volta: ${data.steps.switched_back}`)
+                  setHygienizeSteps(prev => [
+                    ...prev.filter(s => !s.startsWith('Aguardando')),
+                    ...finalSteps,
+                    'Concluido!'
+                  ])
+                  setActionResult({ type: 'success', message: perUserSummary || `Higienizado: ${profileCount} profiles` })
                 } else {
                   const err = await res.json().catch(() => null)
+                  setHygienizeSteps(prev => [...prev, `Erro: ${err?.error ?? res.status}`])
                   setActionResult({ type: 'error', message: err?.error ?? 'Falha ao higienizar' })
                 }
-              } catch {
+              } catch (e) {
                 clearInterval(interval)
-                setActionResult({ type: 'error', message: 'Erro de conexao' })
+                const msg = e instanceof Error && e.name === 'AbortError' ? 'Timeout (5min)' : 'Erro de conexao'
+                setHygienizeSteps(prev => [...prev, msg])
+                setActionResult({ type: 'error', message: msg })
               } finally {
                 setActionLoading(null)
                 setTimeout(() => {

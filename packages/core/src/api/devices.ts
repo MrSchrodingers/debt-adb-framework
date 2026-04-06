@@ -55,13 +55,13 @@ export function registerDeviceRoutes(
     return reply.send({ serial, applied: results })
   })
 
-  // Hygienize device — switches to EACH user, applies all settings per-user
+  // Hygienize device — per-user with verified switch + no blind UI automation
+  // Key insight: settings put, pm uninstall, cmd package ALL work via ADB shell
+  // without needing screen unlock. Only switch-user needs verification.
   server.post('/api/v1/devices/:serial/hygienize', async (request, reply) => {
     const { serial } = request.params as { serial: string }
     const steps: Record<string, string> = {}
-    const PIN = '12345'
 
-    // Bloatware list (NEVER remove contacts/providers.contacts/whatsapp)
     const bloatPackages = [
       'com.facebook.appmanager', 'com.facebook.services', 'com.facebook.system',
       'com.amazon.appmanager',
@@ -86,14 +86,14 @@ export function registerDeviceRoutes(
       'com.android.calendar.go', 'com.android.fmradio', 'com.go.browser',
     ]
 
-    // Per-user settings applied after switching to each user
-    const perUserSettings = [
+    // Settings that work via ADB shell WITHOUT needing screen unlock
+    const settingsCommands = [
       'settings put system screen_off_timeout 2147483647',
       'settings put system screen_brightness 255',
-      'settings put system screen_brightness_mode 0', // manual brightness
+      'settings put system screen_brightness_mode 0',
       'svc power stayon usb',
       'locksettings set-disabled true',
-      'settings put global zen_mode 2',              // DND total silence
+      'settings put global zen_mode 2',
       'settings put secure notification_badging 0',
       'settings put system ringtone_volume 0',
       'settings put system notification_sound_volume 0',
@@ -111,45 +111,44 @@ export function registerDeviceRoutes(
     } catch { /* fallback to [0] */ }
     steps.profiles_found = profileIds.join(', ')
 
-    // Process EACH profile: switch → unlock → settings → bloat → ensure WA + contacts
+    // Helper: switch user with polling verification (no blind delays)
+    async function switchAndVerify(uid: number): Promise<boolean> {
+      await adb.shell(serial, `am switch-user ${uid}`)
+      // Poll for up to 10s until user actually switches
+      for (let i = 0; i < 20; i++) {
+        await new Promise(r => setTimeout(r, 500))
+        try {
+          const current = (await adb.shell(serial, 'am get-current-user')).trim()
+          if (current === String(uid)) return true
+        } catch { /* retry */ }
+      }
+      return false
+    }
+
+    // Process each profile
     let totalRemoved = 0
     const perUser: Record<number, string> = {}
-    const blockingActivities = [
-      'GoogleDriveNewUserSetupActivity', 'BackupSettingsActivity',
-      'GdprActivity', 'VerifySmsActivity', 'RegistrationActivity',
-      'UpdateActivity', 'EulaActivity', 'Welcome',
-    ]
 
     for (const uid of profileIds) {
-      const userLog: string[] = []
+      const log: string[] = []
 
-      // Switch to this user
-      try {
-        await adb.shell(serial, `am switch-user ${uid}`)
-        await new Promise(r => setTimeout(r, 3500))
-        // Wake + unlock
-        await adb.shell(serial, 'input keyevent KEYCODE_WAKEUP')
-        await new Promise(r => setTimeout(r, 500))
-        await adb.shell(serial, 'input swipe 540 1400 540 400 300')
-        await new Promise(r => setTimeout(r, 500))
-        await adb.shell(serial, `input text ${PIN}`)
-        await new Promise(r => setTimeout(r, 300))
-        await adb.shell(serial, 'input keyevent KEYCODE_ENTER')
-        await new Promise(r => setTimeout(r, 2000))
-        userLog.push('switched+unlocked')
-      } catch (err) {
-        userLog.push(`switch-fail: ${(err as Error).message}`)
-        perUser[uid] = userLog.join(', ')
+      // Step 1: Switch user (verified)
+      const switched = await switchAndVerify(uid)
+      if (!switched) {
+        log.push('FALHOU: switch-user timeout')
+        perUser[uid] = log.join(', ')
         continue
       }
+      log.push('switch:ok')
 
-      // Apply all settings for this user
-      for (const cmd of perUserSettings) {
-        try { await adb.shell(serial, cmd) } catch { /* ignore */ }
+      // Step 2: Apply settings (NO UI needed — works with locked screen)
+      let settingsOk = 0
+      for (const cmd of settingsCommands) {
+        try { await adb.shell(serial, cmd); settingsOk++ } catch { /* ignore */ }
       }
-      userLog.push('settings-applied')
+      log.push(`settings:${settingsOk}/${settingsCommands.length}`)
 
-      // Uninstall bloatware for this user
+      // Step 3: Remove bloatware (NO UI needed)
       let removed = 0
       for (const pkg of bloatPackages) {
         try {
@@ -158,58 +157,42 @@ export function registerDeviceRoutes(
         } catch { /* skip */ }
       }
       totalRemoved += removed
-      userLog.push(`bloat:${removed}`)
+      log.push(`bloat:${removed}`)
 
-      // Ensure WA + contacts provider installed
+      // Step 4: Ensure essential packages (NO UI needed)
       for (const pkg of ['com.whatsapp', 'com.whatsapp.w4b', 'com.android.contacts', 'com.android.providers.contacts']) {
         try { await adb.shell(serial, `cmd package install-existing --user ${uid} ${pkg}`) } catch { /* ignore */ }
       }
-      userLog.push('wa+contacts-ensured')
+      log.push('pkgs:ensured')
 
-      // Dismiss blocking WA screens
-      try {
-        const activities = await adb.shell(serial, 'dumpsys activity activities | grep topResumedActivity')
-        for (const blocking of blockingActivities) {
-          if (activities.includes(blocking)) {
-            await adb.shell(serial, 'input keyevent KEYCODE_BACK')
-            await new Promise(r => setTimeout(r, 300))
-            await adb.shell(serial, 'input keyevent KEYCODE_BACK')
-            await adb.shell(serial, 'input keyevent KEYCODE_HOME')
-            userLog.push(`dismissed:${blocking}`)
-            break
-          }
-        }
-      } catch { /* ignore */ }
-
-      // Force stop noisy services
+      // Step 5: Force stop noisy services
       for (const svc of ['com.google.android.gms', 'com.google.android.gsf', 'com.google.android.safetycore']) {
         try { await adb.shell(serial, `am force-stop ${svc}`) } catch { /* ignore */ }
       }
 
-      // Go home
-      await adb.shell(serial, 'input keyevent KEYCODE_HOME').catch(() => {})
+      // Step 6: Verify settings actually applied
+      try {
+        const brightness = (await adb.shell(serial, 'settings get system screen_brightness')).trim()
+        const timeout = (await adb.shell(serial, 'settings get system screen_off_timeout')).trim()
+        log.push(`verify:bri=${brightness},timeout=${timeout}`)
+      } catch { log.push('verify:failed') }
 
-      perUser[uid] = userLog.join(', ')
+      perUser[uid] = log.join(', ')
     }
 
     steps.bloat_removed = `${totalRemoved} total`
     steps.per_user = JSON.stringify(perUser)
 
-    // Switch back to user 0
-    try {
-      await adb.shell(serial, 'am switch-user 0')
-      await new Promise(r => setTimeout(r, 3000))
-      await adb.shell(serial, 'input keyevent KEYCODE_WAKEUP')
-      await new Promise(r => setTimeout(r, 500))
-      await adb.shell(serial, 'input swipe 540 1400 540 400 300')
-      await new Promise(r => setTimeout(r, 500))
-      await adb.shell(serial, `input text ${PIN}`)
-      await new Promise(r => setTimeout(r, 300))
-      await adb.shell(serial, 'input keyevent KEYCODE_ENTER')
-      steps.switched_back = 'P0'
-    } catch { steps.switched_back = 'failed' }
+    // Switch back to user 0 (verified)
+    const backedToZero = await switchAndVerify(0)
+    steps.switched_back = backedToZero ? 'P0:ok' : 'P0:failed'
 
-    server.log.info({ serial, profiles: profileIds, totalRemoved, perUser }, 'Device hygienized (per-user with switch)')
+    // Wake screen at the end
+    try {
+      await adb.shell(serial, 'input keyevent KEYCODE_WAKEUP')
+    } catch { /* ignore */ }
+
+    server.log.info({ serial, profiles: profileIds, totalRemoved, perUser }, 'Device hygienized')
 
     return reply.send({ serial, profiles: profileIds, steps })
   })
