@@ -16,6 +16,8 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [confirmAction, setConfirmAction] = useState<string | null>(null)
   const [actionResult, setActionResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+  const [hygienizeSteps, setHygienizeSteps] = useState<string[]>([])
+  const [hygienizeProgress, setHygienizeProgress] = useState(0)
 
   const latest = health[health.length - 1] ?? null
   const hasAlert = (type: string) => alerts.some((a) => a.type === type)
@@ -129,28 +131,55 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
             onClick={async () => {
               setActionLoading('hygienize')
               setActionResult(null)
+              setHygienizeSteps([])
+              setHygienizeProgress(0)
+
+              // Simulate progress steps while waiting for the endpoint
+              const stepLabels = [
+                'Configurando tela...', 'Desabilitando lock...', 'Removendo bloatware...',
+                'Desinstalando apps Google...', 'Desinstalando apps Xiaomi...',
+                'Removendo dialer/SMS...', 'Ativando DND...', 'Silenciando notificacoes...',
+                'Parando servicos...',
+              ]
+              let stepIdx = 0
+              const interval = setInterval(() => {
+                if (stepIdx < stepLabels.length) {
+                  setHygienizeSteps(prev => [...prev, stepLabels[stepIdx]])
+                  setHygienizeProgress(Math.round(((stepIdx + 1) / stepLabels.length) * 100))
+                  stepIdx++
+                }
+              }, 1800)
+
               try {
                 const res = await fetch(`${CORE_URL}/api/v1/devices/${device.serial}/hygienize`, { method: 'POST', headers: authHeaders() })
+                clearInterval(interval)
+                setHygienizeProgress(100)
+                setHygienizeSteps(prev => [...prev, 'Concluido!'])
+
                 if (res.ok) {
                   const data = await res.json()
                   const removed = data.bloat?.removed?.length ?? 0
-                  const steps = data.steps ?? {}
                   const parts = []
-                  if (steps.screen_timeout_max) parts.push('tela sempre ligada')
-                  if (steps.lock_disabled) parts.push('lock off')
+                  if (data.steps?.screen_timeout_max) parts.push('tela sempre ligada')
+                  if (data.steps?.lock_disabled) parts.push('lock off')
                   if (removed > 0) parts.push(`${removed} apps removidos`)
-                  if (steps.dnd_total_silence) parts.push('DND ativado')
-                  if (steps.services_stopped) parts.push('servicos parados')
+                  if (data.steps?.dnd_total_silence) parts.push('DND ativado')
+                  if (data.steps?.services_stopped) parts.push('servicos parados')
                   setActionResult({ type: 'success', message: `Higienizado: ${parts.join(', ')}` })
                 } else {
                   const err = await res.json().catch(() => null)
                   setActionResult({ type: 'error', message: err?.error ?? 'Falha ao higienizar' })
                 }
               } catch {
+                clearInterval(interval)
                 setActionResult({ type: 'error', message: 'Erro de conexao' })
               } finally {
                 setActionLoading(null)
-                setTimeout(() => setActionResult(null), 15000)
+                setTimeout(() => {
+                  setActionResult(null)
+                  setHygienizeSteps([])
+                  setHygienizeProgress(0)
+                }, 15000)
               }
             }}
           />
@@ -202,9 +231,43 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
           )}
         </div>
 
+        {/* Hygienize progress panel */}
+        {(actionLoading === 'hygienize' || hygienizeSteps.length > 0) && (
+          <div className="rounded-lg border border-zinc-700/40 bg-zinc-800/60 p-3 space-y-2 animate-in">
+            {/* Progress bar */}
+            <div className="flex items-center gap-3">
+              <div className="flex-1 h-1.5 rounded-full bg-zinc-700/50 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-emerald-500 transition-all duration-500 ease-out"
+                  style={{ width: `${hygienizeProgress}%` }}
+                />
+              </div>
+              <span className="text-xs font-mono text-zinc-400 w-8 text-right">{hygienizeProgress}%</span>
+            </div>
+            {/* Step log */}
+            <div className="max-h-28 overflow-y-auto space-y-0.5">
+              {hygienizeSteps.map((step, i) => (
+                <div
+                  key={i}
+                  className="flex items-center gap-2 text-xs animate-in"
+                  style={{ animationDelay: `${i * 50}ms` }}
+                >
+                  <span className={i === hygienizeSteps.length - 1 && actionLoading === 'hygienize'
+                    ? 'text-amber-400 animate-pulse'
+                    : 'text-emerald-400'
+                  }>
+                    {i === hygienizeSteps.length - 1 && actionLoading === 'hygienize' ? '...' : '✓'}
+                  </span>
+                  <span className="text-zinc-400">{step}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Action result feedback */}
-        {actionResult && (
-          <div className={`rounded-lg px-3 py-2 text-xs font-medium ${
+        {actionResult && !actionLoading && (
+          <div className={`rounded-lg px-3 py-2 text-xs font-medium transition-all duration-300 animate-in ${
             actionResult.type === 'success'
               ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
               : 'bg-red-500/10 text-red-400 border border-red-500/20'
