@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts'
-import { CORE_URL } from '../config'
+import { CORE_URL, authHeaders } from '../config'
 import type { Alert, DeviceRecord, HealthSnapshot, WhatsAppAccount } from '../types'
 
 interface DeviceDetailProps {
@@ -126,6 +126,7 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
             try {
               const res = await fetch(`${CORE_URL}/api/v1/devices/${device.serial}/screenshot`, {
                 method: 'POST',
+                headers: authHeaders(),
               })
               if (res.ok) {
                 const blob = await res.blob()

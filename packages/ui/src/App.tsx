@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { io, type Socket } from 'socket.io-client'
-import { CORE_URL } from './config'
+import { CORE_URL, authHeaders } from './config'
 import { DeviceGrid } from './components/device-grid'
 import { DeviceDetail } from './components/device-detail'
 import { AlertPanel } from './components/alert-panel'
@@ -21,21 +21,21 @@ export function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'sessions'>('dashboard')
 
   const fetchDevices = useCallback(() => {
-    fetch(`${CORE_URL}/api/v1/monitor/devices`)
+    fetch(`${CORE_URL}/api/v1/monitor/devices`, { headers: authHeaders() })
       .then((r) => r.json())
       .then(setDevices)
       .catch(() => {})
   }, [])
 
   const fetchAlerts = useCallback(() => {
-    fetch(`${CORE_URL}/api/v1/monitor/alerts`)
+    fetch(`${CORE_URL}/api/v1/monitor/alerts`, { headers: authHeaders() })
       .then((r) => r.json())
       .then(setAlerts)
       .catch(() => {})
   }, [])
 
   const fetchDetail = useCallback((serial: string) => {
-    fetch(`${CORE_URL}/api/v1/monitor/devices/${serial}`)
+    fetch(`${CORE_URL}/api/v1/monitor/devices/${serial}`, { headers: authHeaders() })
       .then((r) => r.json())
       .then((data) => {
         setDetailHealth(data.health ?? [])
@@ -50,7 +50,7 @@ export function App() {
     fetchDevices()
     fetchAlerts()
 
-    fetch(`${CORE_URL}/api/v1/messages`)
+    fetch(`${CORE_URL}/api/v1/messages`, { headers: authHeaders() })
       .then((r) => r.json())
       .then(setMessages)
       .catch(() => {})
@@ -69,7 +69,7 @@ export function App() {
     socket.on('disconnect', () => setConnected(false))
 
     socket.on('message:queued', (data: { id: string }) => {
-      fetch(`${CORE_URL}/api/v1/messages/${data.id}`)
+      fetch(`${CORE_URL}/api/v1/messages/${data.id}`, { headers: authHeaders() })
         .then((r) => r.json())
         .then((msg: Message) => {
           setMessages((prev) => [msg, ...prev.filter((m) => m.id !== msg.id)])
@@ -80,7 +80,7 @@ export function App() {
     const statusEvents = ['message:sending', 'message:sent', 'message:failed'] as const
     for (const event of statusEvents) {
       socket.on(event, (data: { id: string }) => {
-        fetch(`${CORE_URL}/api/v1/messages/${data.id}`)
+        fetch(`${CORE_URL}/api/v1/messages/${data.id}`, { headers: authHeaders() })
           .then((r) => r.json())
           .then((msg: Message) => {
             setMessages((prev) => prev.map((m) => (m.id === msg.id ? msg : m)))
@@ -115,7 +115,7 @@ export function App() {
     const idempotencyKey = `ui-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const res = await fetch(`${CORE_URL}/api/v1/messages`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ to, body, idempotencyKey }),
     })
     if (!res.ok) {

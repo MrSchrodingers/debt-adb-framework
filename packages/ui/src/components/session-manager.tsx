@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { CORE_URL } from '../config'
+import { CORE_URL, authHeaders } from '../config'
 
 interface SessionWithStatus {
   sessionName: string
@@ -33,7 +33,7 @@ export function SessionManager() {
 
   const fetchSessions = useCallback(async () => {
     try {
-      const res = await fetch(`${CORE_URL}/api/v1/sessions`)
+      const res = await fetch(`${CORE_URL}/api/v1/sessions`, { headers: authHeaders() })
       if (!res.ok) {
         if (res.status === 503) {
           setError('Session automation not configured. Set WAHA and Chatwoot env vars.')
@@ -73,7 +73,7 @@ export function SessionManager() {
     try {
       const res = await fetch(`${CORE_URL}/api/v1/sessions/managed`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ sessionNames: [...selected] }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -90,6 +90,7 @@ export function SessionManager() {
     try {
       const res = await fetch(`${CORE_URL}/api/v1/sessions/managed/${encodeURIComponent(name)}`, {
         method: 'DELETE',
+        headers: authHeaders(),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       await fetchSessions()
@@ -100,7 +101,7 @@ export function SessionManager() {
 
   const handleShowQr = async (name: string) => {
     try {
-      const res = await fetch(`${CORE_URL}/api/v1/sessions/${encodeURIComponent(name)}/qr`)
+      const res = await fetch(`${CORE_URL}/api/v1/sessions/${encodeURIComponent(name)}/qr`, { headers: authHeaders() })
       if (!res.ok) {
         const data = await res.json()
         throw new Error(data.detail || `HTTP ${res.status}`)
@@ -120,7 +121,7 @@ export function SessionManager() {
 
       const res = await fetch(`${CORE_URL}/api/v1/sessions/${encodeURIComponent(name)}/inbox`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(body),
       })
       if (!res.ok) {
