@@ -40,6 +40,49 @@ async function ensureUserZero(adb: AdbShell, serial: string): Promise<boolean> {
   return switchUserVerified(adb, serial, 0)
 }
 
+/** Check if keyguard (lock screen) is showing */
+async function isScreenLocked(adb: AdbShell, serial: string): Promise<boolean> {
+  try {
+    const out = await adb.shell(serial, 'dumpsys window | grep isKeyguardShowing')
+    return out.includes('true')
+  } catch { return false }
+}
+
+/** Unlock screen: wake + swipe + PIN + verify. Returns true if unlocked. */
+async function unlockScreen(adb: AdbShell, serial: string, pin = '12345'): Promise<boolean> {
+  // Wake
+  await adb.shell(serial, 'input keyevent KEYCODE_WAKEUP')
+  await new Promise(r => setTimeout(r, 800))
+
+  // Check if already unlocked
+  if (!(await isScreenLocked(adb, serial))) return true
+
+  // Swipe up to reveal PIN input
+  await adb.shell(serial, 'input swipe 540 1400 540 400 300')
+  await new Promise(r => setTimeout(r, 800))
+
+  // Enter PIN
+  await adb.shell(serial, `input text ${pin}`)
+  await new Promise(r => setTimeout(r, 300))
+  await adb.shell(serial, 'input keyevent KEYCODE_ENTER')
+  await new Promise(r => setTimeout(r, 2000))
+
+  // Verify unlocked (poll for up to 5s)
+  for (let i = 0; i < 10; i++) {
+    if (!(await isScreenLocked(adb, serial))) return true
+    await new Promise(r => setTimeout(r, 500))
+  }
+  return false
+}
+
+/** Switch user + unlock screen. Full verified flow. */
+async function switchAndUnlock(adb: AdbShell, serial: string, targetUid: number): Promise<{ switched: boolean; unlocked: boolean }> {
+  const switched = await switchUserVerified(adb, serial, targetUid)
+  if (!switched) return { switched: false, unlocked: false }
+  const unlocked = await unlockScreen(adb, serial)
+  return { switched: true, unlocked }
+}
+
 /** Verify a setting was applied by reading it back */
 async function verifySetting(adb: AdbShell, serial: string, namespace: string, key: string, expected: string): Promise<boolean> {
   try {
@@ -316,17 +359,17 @@ export function registerDeviceRoutes(
     })
   })
 
-  // Switch Android user profile (standardized: verified + settings reapplied)
+  // Switch Android user profile (verified switch + unlock + settings)
   server.post('/api/v1/devices/:serial/switch-user/:profileId', async (request, reply) => {
     const { serial, profileId } = request.params as { serial: string; profileId: string }
     const uid = Number(profileId)
 
-    const switched = await switchUserVerified(adb, serial, uid)
+    const { switched, unlocked } = await switchAndUnlock(adb, serial, uid)
     if (!switched) {
       return reply.status(500).send({ error: `Timeout ao trocar para P${uid}` })
     }
 
-    // Re-apply critical settings for this user (no UI needed)
+    // Re-apply critical settings
     for (const cmd of [
       'settings put system screen_off_timeout 2147483647',
       'settings put system screen_brightness 255',
@@ -336,12 +379,9 @@ export function registerDeviceRoutes(
       try { await adb.shell(serial, cmd) } catch { /* ignore */ }
     }
 
-    // Wake screen
-    try { await adb.shell(serial, 'input keyevent KEYCODE_WAKEUP') } catch { /* ignore */ }
-
     const currentUser = await getCurrentUser(adb, serial)
-    server.log.info({ serial, profileId: uid, currentUser }, 'Switched user profile')
-    return reply.send({ serial, profileId: uid, currentUser, verified: currentUser === uid })
+    server.log.info({ serial, profileId: uid, currentUser, unlocked }, 'Switched user profile')
+    return reply.send({ serial, profileId: uid, currentUser, verified: currentUser === uid, unlocked })
   })
 
   // Scan WA number — switches user, opens WA Settings > Profile, reads via UIAutomator
@@ -351,15 +391,15 @@ export function registerDeviceRoutes(
     const uid = Number(profileId)
 
     try {
-      // Switch to target user (verified)
-      const switched = await switchUserVerified(adb, serial, uid)
+      // Switch to target user + unlock (UIAutomator needs screen unlocked)
+      const { switched, unlocked } = await switchAndUnlock(adb, serial, uid)
       if (!switched) {
         return reply.status(500).send({ error: `Timeout ao trocar para P${uid}` })
       }
-
-      // Wake screen (UIAutomator needs screen on)
-      await adb.shell(serial, 'input keyevent KEYCODE_WAKEUP')
-      await new Promise(r => setTimeout(r, 1000))
+      if (!unlocked) {
+        await ensureUserZero(adb, serial)
+        return reply.status(500).send({ error: `Nao conseguiu destravar tela do P${uid}` })
+      }
 
       // Open WA
       await adb.shell(serial, `am start --user ${uid} -n com.whatsapp/com.whatsapp.home.ui.HomeActivity`)
