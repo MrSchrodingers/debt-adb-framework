@@ -11,3 +11,7 @@ dist/
 *.db-wal
 *.db-shm
 .claude/worktrees/
+.pnpm-store/
+.playwright-mcp/
+excalidraw.log
+data/
