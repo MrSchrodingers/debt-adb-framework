@@ -84,9 +84,13 @@ describe('HealthCollector', () => {
         INSERT INTO health_snapshots (serial, battery_percent, temperature_celsius, ram_available_mb, storage_free_bytes, wifi_connected, collected_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `)
-      stmt.run('ABC123', 80, 30.0, 1024, 12000000000, 1, '2026-04-02T10:00:00Z')
-      stmt.run('ABC123', 75, 31.0, 900, 11000000000, 1, '2026-04-02T11:00:00Z')
-      stmt.run('ABC123', 70, 32.0, 800, 10000000000, 1, '2026-04-02T12:00:00Z')
+      const now = new Date()
+      const h1 = new Date(now.getTime() - 3 * 3600_000).toISOString()
+      const h2 = new Date(now.getTime() - 2 * 3600_000).toISOString()
+      const h3 = new Date(now.getTime() - 1 * 3600_000).toISOString()
+      stmt.run('ABC123', 80, 30.0, 1024, 12000000000, 1, h1)
+      stmt.run('ABC123', 75, 31.0, 900, 11000000000, 1, h2)
+      stmt.run('ABC123', 70, 32.0, 800, 10000000000, 1, h3)
 
       const history = collector.getHistory('ABC123', 24)
 
@@ -104,8 +108,11 @@ describe('HealthCollector', () => {
         INSERT INTO health_snapshots (serial, battery_percent, temperature_celsius, ram_available_mb, storage_free_bytes, wifi_connected, collected_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `)
-      stmt.run('ABC123', 80, 30.0, 1024, 12000000000, 1, '2026-03-01T10:00:00Z')
-      stmt.run('ABC123', 75, 31.0, 900, 11000000000, 1, '2026-04-02T12:00:00Z')
+      const now = new Date()
+      const old = new Date(now.getTime() - 48 * 3600_000).toISOString() // 48h ago — outside 24h window
+      const recent = new Date(now.getTime() - 1 * 3600_000).toISOString() // 1h ago — inside 24h window
+      stmt.run('ABC123', 80, 30.0, 1024, 12000000000, 1, old)
+      stmt.run('ABC123', 75, 31.0, 900, 11000000000, 1, recent)
 
       const history = collector.getHistory('ABC123', 24)
 

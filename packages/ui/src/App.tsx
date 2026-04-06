@@ -7,7 +7,11 @@ import { AlertPanel } from './components/alert-panel'
 import { MessageList } from './components/message-list'
 import { SendForm } from './components/send-form'
 import { SessionManager } from './components/session-manager'
+import { StatsBar } from './components/stats-bar'
+import { Sidebar } from './components/sidebar'
 import type { DeviceRecord, HealthSnapshot, WhatsAppAccount, Alert, Message } from './types'
+
+type Tab = 'devices' | 'queue' | 'sessions'
 
 export function App() {
   const [devices, setDevices] = useState<DeviceRecord[]>([])
@@ -18,7 +22,7 @@ export function App() {
   const [detailHealth, setDetailHealth] = useState<HealthSnapshot[]>([])
   const [detailAccounts, setDetailAccounts] = useState<WhatsAppAccount[]>([])
   const [detailAlerts, setDetailAlerts] = useState<Alert[]>([])
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'sessions'>('dashboard')
+  const [activeTab, setActiveTab] = useState<Tab>('devices')
 
   const fetchDevices = useCallback(() => {
     fetch(`${CORE_URL}/api/v1/monitor/devices`)
@@ -45,23 +49,19 @@ export function App() {
       .catch(() => {})
   }, [])
 
-  // Fetch initial data
   useEffect(() => {
     fetchDevices()
     fetchAlerts()
-
     fetch(`${CORE_URL}/api/v1/messages`)
       .then((r) => r.json())
       .then(setMessages)
       .catch(() => {})
   }, [fetchDevices, fetchAlerts])
 
-  // Refresh detail when selection changes
   useEffect(() => {
     if (selectedSerial) fetchDetail(selectedSerial)
   }, [selectedSerial, fetchDetail])
 
-  // Socket.IO real-time updates
   useEffect(() => {
     const socket: Socket = io(CORE_URL)
 
@@ -96,9 +96,7 @@ export function App() {
     })
 
     socket.on('device:health', (data: { serial: string }) => {
-      if (data.serial === selectedSerial) {
-        fetchDetail(data.serial)
-      }
+      if (data.serial === selectedSerial) fetchDetail(data.serial)
     })
 
     socket.on('alert:new', () => {
@@ -106,9 +104,7 @@ export function App() {
       if (selectedSerial) fetchDetail(selectedSerial)
     })
 
-    return () => {
-      socket.disconnect()
-    }
+    return () => { socket.disconnect() }
   }, [fetchDevices, fetchAlerts, fetchDetail, selectedSerial])
 
   const handleSend = useCallback(async (to: string, body: string) => {
@@ -126,53 +122,51 @@ export function App() {
 
   const hasOnlineDevice = devices.some((d) => d.status === 'online')
   const selectedDevice = devices.find((d) => d.serial === selectedSerial) ?? null
+  const onlineCount = devices.filter((d) => d.status === 'online').length
+  const sentToday = messages.filter((m) => m.status === 'sent').length
+  const pendingCount = messages.filter((m) => m.status === 'queued' || m.status === 'locked').length
+  const activeAlertCount = alerts.filter((a) => !a.resolved).length
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 p-6 max-w-6xl mx-auto">
-      <div className="flex items-center gap-3 mb-6">
-        <h1 className="text-xl font-bold">Dispatch</h1>
-        <div className={`h-2 w-2 rounded-full ${connected ? 'bg-emerald-500' : 'bg-red-500'}`} />
-        <span className="text-xs text-zinc-500">{connected ? 'connected' : 'disconnected'}</span>
-        <div className="ml-auto flex items-center gap-3">
-          <div className="flex rounded-lg bg-zinc-900 border border-zinc-800 p-0.5">
-            <button
-              onClick={() => setActiveTab('dashboard')}
-              className={`rounded px-3 py-1 text-xs font-medium transition ${
-                activeTab === 'dashboard'
-                  ? 'bg-zinc-700 text-zinc-100'
-                  : 'text-zinc-500 hover:text-zinc-300'
-              }`}
-            >
-              Dashboard
-            </button>
-            <button
-              onClick={() => setActiveTab('sessions')}
-              className={`rounded px-3 py-1 text-xs font-medium transition ${
-                activeTab === 'sessions'
-                  ? 'bg-zinc-700 text-zinc-100'
-                  : 'text-zinc-500 hover:text-zinc-300'
-              }`}
-            >
-              Sessions
-            </button>
-          </div>
-          <span className="text-xs text-zinc-600">
-            {devices.length} device{devices.length !== 1 ? 's' : ''}
-          </span>
-        </div>
-      </div>
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex">
+      <Sidebar activeTab={activeTab} onTabChange={setActiveTab} alertCount={activeAlertCount} />
 
-      {activeTab === 'sessions' ? (
-        <section>
-          <h2 className="text-sm font-medium text-zinc-400 mb-3">Session Manager</h2>
-          <SessionManager />
-        </section>
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left column: devices + alerts */}
-          <div className="lg:col-span-2 space-y-6">
-            <section>
-              <h2 className="text-sm font-medium text-zinc-400 mb-2">Devices</h2>
+      <div className="flex-1 flex flex-col min-h-screen overflow-hidden">
+        {/* Header */}
+        <header className="flex items-center justify-between px-6 py-4 border-b border-zinc-800/60 bg-zinc-950/80 backdrop-blur-sm sticky top-0 z-10">
+          <div className="flex items-center gap-3">
+            <h1 className="text-lg font-semibold tracking-tight">Dispatch</h1>
+            <span className="text-xs text-zinc-600 font-medium">ADB Orchestrator</span>
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <div className={`h-2 w-2 rounded-full ${connected ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]' : 'bg-red-400 shadow-[0_0_6px_rgba(248,113,113,0.5)]'} transition-colors`} />
+              <span className="text-xs text-zinc-500">{connected ? 'Live' : 'Offline'}</span>
+            </div>
+            <span className="text-xs text-zinc-600 font-mono">{CORE_URL.replace('http://', '')}</span>
+          </div>
+        </header>
+
+        {/* Stats */}
+        <StatsBar
+          deviceCount={devices.length}
+          onlineCount={onlineCount}
+          sentToday={sentToday}
+          pendingCount={pendingCount}
+          alertCount={activeAlertCount}
+        />
+
+        {/* Content */}
+        <main className="flex-1 overflow-y-auto p-6">
+          {activeTab === 'sessions' ? (
+            <SessionManager />
+          ) : activeTab === 'queue' ? (
+            <div className="space-y-6">
+              <SendForm onSend={handleSend} disabled={!hasOnlineDevice} />
+              <MessageList messages={messages} />
+            </div>
+          ) : (
+            <div className="space-y-6">
               <DeviceGrid
                 devices={devices}
                 alerts={alerts}
@@ -181,10 +175,8 @@ export function App() {
                   setSelectedSerial(serial === selectedSerial ? null : serial)
                 }
               />
-            </section>
 
-            {selectedDevice && (
-              <section>
+              {selectedDevice && (
                 <DeviceDetail
                   device={selectedDevice}
                   health={detailHealth}
@@ -192,33 +184,13 @@ export function App() {
                   alerts={detailAlerts}
                   onClose={() => setSelectedSerial(null)}
                 />
-              </section>
-            )}
+              )}
 
-            <section>
-              <h2 className="text-sm font-medium text-zinc-400 mb-2">Send Message</h2>
-              <SendForm onSend={handleSend} disabled={!hasOnlineDevice} />
-            </section>
-
-            <section>
-              <h2 className="text-sm font-medium text-zinc-400 mb-2">
-                Queue ({messages.length})
-              </h2>
-              <MessageList messages={messages} />
-            </section>
-          </div>
-
-          {/* Right column: alerts */}
-          <div>
-            <section>
-              <h2 className="text-sm font-medium text-zinc-400 mb-2">
-                Alerts ({alerts.length})
-              </h2>
-              <AlertPanel alerts={alerts} />
-            </section>
-          </div>
-        </div>
-      )}
+              {alerts.length > 0 && <AlertPanel alerts={alerts} />}
+            </div>
+          )}
+        </main>
+      </div>
     </div>
   )
 }

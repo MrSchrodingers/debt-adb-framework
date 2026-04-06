@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts'
+import { X, Camera, RotateCcw, RefreshCw, Battery, Thermometer, MemoryStick, HardDrive, Phone } from 'lucide-react'
 import { CORE_URL } from '../config'
 import type { Alert, DeviceRecord, HealthSnapshot, WhatsAppAccount } from '../types'
 
@@ -46,149 +47,142 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
   }))
 
   return (
-    <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h3 className="font-medium">
-            {device.brand} {device.model}
-          </h3>
-          <p className="text-xs text-zinc-500 font-mono">{device.serial}</p>
+    <div className="rounded-xl border border-blue-500/30 bg-zinc-900/80 overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-800/40 bg-blue-500/5">
+        <div className="flex items-center gap-3">
+          <div className="h-10 w-10 rounded-xl bg-emerald-500/10 flex items-center justify-center">
+            <Phone className="h-5 w-5 text-emerald-400" />
+          </div>
+          <div>
+            <h3 className="font-medium text-zinc-100">
+              {device.brand} {device.model}
+            </h3>
+            <p className="text-xs text-zinc-500 font-mono">{device.serial}</p>
+          </div>
         </div>
-        <button onClick={onClose} className="text-zinc-500 hover:text-zinc-300 text-sm">
-          Close
+        <button
+          onClick={onClose}
+          className="rounded-lg p-1.5 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+        >
+          <X className="h-4 w-4" />
         </button>
       </div>
 
-      {/* Health Metrics */}
-      {latest && (
-        <div className="grid grid-cols-4 gap-3 mb-4">
-          <MetricCard label="Battery" value={`${latest.batteryPercent}%`} warn={hasAlert('battery_low') || hasAlert('battery_critical')} />
-          <MetricCard label="Temp" value={`${latest.temperatureCelsius.toFixed(1)}C`} warn={hasAlert('temperature_high') || hasAlert('temperature_critical')} />
-          <MetricCard label="RAM" value={`${latest.ramAvailableMb}MB`} warn={hasAlert('ram_low')} />
-          <MetricCard
-            label="Storage"
-            value={`${Math.round(latest.storageFreeBytes / 1_000_000)}MB`}
-            warn={hasAlert('storage_low')}
-          />
-        </div>
-      )}
-
-      {/* Spark Charts */}
-      {chartData.length > 1 && (
-        <div className="grid grid-cols-3 gap-3 mb-4">
-          <SparkChart data={chartData} dataKey="battery" label="Battery %" color="#10b981" />
-          <SparkChart data={chartData} dataKey="temp" label="Temp C" color="#f59e0b" />
-          <SparkChart data={chartData} dataKey="ram" label="RAM MB" color="#3b82f6" />
-        </div>
-      )}
-
-      {/* WA Accounts */}
-      {accounts.length > 0 && (
-        <div className="mb-4">
-          <h4 className="text-xs font-medium text-zinc-400 mb-2">WhatsApp Accounts</h4>
-          <div className="space-y-1">
-            {accounts.map((acc) => (
-              <div
-                key={`${acc.profileId}-${acc.packageName}`}
-                className="flex items-center gap-2 text-xs rounded bg-zinc-800 px-2 py-1"
-              >
-                <span className="text-zinc-400">User {acc.profileId}</span>
-                <span className="text-zinc-500">{acc.packageName === 'com.whatsapp' ? 'WA' : 'WABA'}</span>
-                <span className="ml-auto font-mono text-zinc-300">{acc.phoneNumber ?? 'unknown'}</span>
-              </div>
-            ))}
+      <div className="p-5 space-y-5">
+        {/* Health Metrics */}
+        {latest && (
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <MetricCard icon={Battery} label="Bateria" value={`${latest.batteryPercent}%`} warn={hasAlert('battery_low') || hasAlert('battery_critical')} />
+            <MetricCard icon={Thermometer} label="Temperatura" value={`${latest.temperatureCelsius.toFixed(1)}°C`} warn={hasAlert('temperature_high') || hasAlert('temperature_critical')} />
+            <MetricCard icon={MemoryStick} label="RAM Livre" value={`${latest.ramAvailableMb}MB`} warn={hasAlert('ram_low')} />
+            <MetricCard
+              icon={HardDrive}
+              label="Storage Livre"
+              value={`${(latest.storageFreeBytes / 1_000_000_000).toFixed(1)}GB`}
+              warn={hasAlert('storage_low')}
+            />
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Active Alerts */}
-      {alerts.length > 0 && (
-        <div className="mb-4">
-          <h4 className="text-xs font-medium text-zinc-400 mb-2">Active Alerts</h4>
-          <div className="space-y-1">
-            {alerts.map((a) => (
-              <div key={a.id} className={`text-xs rounded px-2 py-1 ${severityBg(a.severity)}`}>
-                <span className={severityText(a.severity)}>{a.severity}</span>
-                <span className="ml-2 text-zinc-300">{a.message}</span>
-              </div>
-            ))}
+        {/* Spark Charts */}
+        {chartData.length > 1 && (
+          <div className="grid grid-cols-3 gap-3">
+            <SparkChart data={chartData} dataKey="battery" label="Bateria %" color="#10b981" />
+            <SparkChart data={chartData} dataKey="temp" label="Temp °C" color="#f59e0b" />
+            <SparkChart data={chartData} dataKey="ram" label="RAM MB" color="#3b82f6" />
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Actions */}
-      <div className="flex gap-2">
-        <ActionButton
-          label="Screenshot"
-          loading={actionLoading === 'screenshot'}
-          onClick={async () => {
-            setActionLoading('screenshot')
-            try {
-              const res = await fetch(`${CORE_URL}/api/v1/devices/${device.serial}/screenshot`, {
-                method: 'POST',
-              })
-              if (res.ok) {
-                const blob = await res.blob()
-                window.open(URL.createObjectURL(blob))
+        {/* WA Accounts */}
+        {accounts.length > 0 && (
+          <div>
+            <h4 className="text-xs font-medium text-zinc-400 mb-2">Contas WhatsApp</h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {accounts.map((acc) => (
+                <div
+                  key={`${acc.profileId}-${acc.packageName}`}
+                  className="flex items-center gap-3 rounded-lg bg-zinc-800/60 border border-zinc-700/40 px-3 py-2"
+                >
+                  <div className="h-7 w-7 rounded-full bg-emerald-500/10 flex items-center justify-center flex-shrink-0">
+                    <span className="text-xs font-bold text-emerald-400">{acc.profileId}</span>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-zinc-400">
+                      {acc.packageName === 'com.whatsapp' ? 'WhatsApp' : 'WhatsApp Business'}
+                    </p>
+                    <p className="text-sm font-mono text-zinc-200 truncate">{acc.phoneNumber ?? 'N/A'}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="flex items-center gap-2 pt-2 border-t border-zinc-800/40">
+          <ActionBtn
+            icon={Camera}
+            label="Screenshot"
+            loading={actionLoading === 'screenshot'}
+            onClick={async () => {
+              setActionLoading('screenshot')
+              try {
+                const res = await fetch(`${CORE_URL}/api/v1/devices/${device.serial}/screenshot`, { method: 'POST' })
+                if (res.ok) {
+                  const blob = await res.blob()
+                  window.open(URL.createObjectURL(blob))
+                }
+              } finally {
+                setActionLoading(null)
               }
-            } finally {
-              setActionLoading(null)
-            }
-          }}
-        />
-        <ConfirmableAction
-          action="reboot"
-          label="Reboot"
-          confirmAction={confirmAction}
-          actionLoading={actionLoading}
-          onConfirm={executeAction}
-          onRequestConfirm={setConfirmAction}
-          onCancel={() => setConfirmAction(null)}
-        />
-        <ConfirmableAction
-          action="restart-wa"
-          label="Restart WA"
-          confirmAction={confirmAction}
-          actionLoading={actionLoading}
-          onConfirm={executeAction}
-          onRequestConfirm={setConfirmAction}
-          onCancel={() => setConfirmAction(null)}
-        />
+            }}
+          />
+          {confirmAction === 'reboot' ? (
+            <ConfirmButtons
+              onConfirm={() => executeAction('reboot')}
+              onCancel={() => setConfirmAction(null)}
+            />
+          ) : (
+            <ActionBtn icon={RotateCcw} label="Reboot" loading={actionLoading === 'reboot'} onClick={() => setConfirmAction('reboot')} danger />
+          )}
+          {confirmAction === 'restart-wa' ? (
+            <ConfirmButtons
+              onConfirm={() => executeAction('restart-wa')}
+              onCancel={() => setConfirmAction(null)}
+            />
+          ) : (
+            <ActionBtn icon={RefreshCw} label="Restart WA" loading={actionLoading === 'restart-wa'} onClick={() => setConfirmAction('restart-wa')} danger />
+          )}
+        </div>
       </div>
     </div>
   )
 }
 
-function MetricCard({ label, value, warn }: { label: string; value: string; warn: boolean }) {
+function MetricCard({ icon: Icon, label, value, warn }: { icon: typeof Battery; label: string; value: string; warn: boolean }) {
   return (
-    <div className={`rounded p-2 text-center ${warn ? 'bg-amber-500/10' : 'bg-zinc-800'}`}>
-      <p className="text-xs text-zinc-500">{label}</p>
-      <p className={`text-sm font-medium ${warn ? 'text-amber-400' : 'text-zinc-200'}`}>{value}</p>
+    <div className={`rounded-lg p-3 flex items-center gap-3 ${warn ? 'bg-amber-500/10 border border-amber-500/20' : 'bg-zinc-800/60 border border-zinc-700/30'}`}>
+      <Icon className={`h-4 w-4 flex-shrink-0 ${warn ? 'text-amber-400' : 'text-zinc-500'}`} />
+      <div>
+        <p className="text-xs text-zinc-500">{label}</p>
+        <p className={`text-sm font-semibold ${warn ? 'text-amber-400' : 'text-zinc-200'}`}>{value}</p>
+      </div>
     </div>
   )
 }
 
-function SparkChart({
-  data,
-  dataKey,
-  label,
-  color,
-}: {
-  data: Record<string, unknown>[]
-  dataKey: string
-  label: string
-  color: string
-}) {
+function SparkChart({ data, dataKey, label, color }: { data: Record<string, unknown>[]; dataKey: string; label: string; color: string }) {
   return (
-    <div className="rounded bg-zinc-800 p-2">
+    <div className="rounded-lg bg-zinc-800/60 border border-zinc-700/30 p-3">
       <p className="text-xs text-zinc-500 mb-1">{label}</p>
-      <ResponsiveContainer width="100%" height={60}>
+      <ResponsiveContainer width="100%" height={50}>
         <LineChart data={data}>
           <Line type="monotone" dataKey={dataKey} stroke={color} strokeWidth={1.5} dot={false} />
           <XAxis dataKey="time" hide />
           <YAxis hide />
           <Tooltip
-            contentStyle={{ background: '#18181b', border: '1px solid #3f3f46', fontSize: 11 }}
+            contentStyle={{ background: '#18181b', border: '1px solid #3f3f46', fontSize: 11, borderRadius: 8 }}
             labelStyle={{ color: '#a1a1aa' }}
           />
         </LineChart>
@@ -197,78 +191,32 @@ function SparkChart({
   )
 }
 
-function ActionButton({
-  label,
-  loading,
-  onClick,
-}: {
-  label: string
-  loading: boolean
-  onClick: () => void
-}) {
+function ActionBtn({ icon: Icon, label, loading, onClick, danger }: { icon: typeof Camera; label: string; loading: boolean; onClick: () => void; danger?: boolean }) {
   return (
     <button
       onClick={onClick}
       disabled={loading}
-      className="rounded bg-zinc-800 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-700 disabled:opacity-50"
+      className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium transition-colors disabled:opacity-50 ${
+        danger
+          ? 'bg-zinc-800 text-zinc-400 hover:bg-red-500/10 hover:text-red-400 border border-zinc-700/40'
+          : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700/40'
+      }`}
     >
+      <Icon className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
       {loading ? '...' : label}
     </button>
   )
 }
 
-function ConfirmableAction({
-  action,
-  label,
-  confirmAction,
-  actionLoading,
-  onConfirm,
-  onRequestConfirm,
-  onCancel,
-}: {
-  action: string
-  label: string
-  confirmAction: string | null
-  actionLoading: string | null
-  onConfirm: (action: string) => void
-  onRequestConfirm: (action: string) => void
-  onCancel: () => void
-}) {
-  if (confirmAction === action) {
-    return (
-      <div className="flex gap-1">
-        <button
-          onClick={() => onConfirm(action)}
-          className="rounded bg-red-600 px-2 py-1 text-xs text-white hover:bg-red-500"
-        >
-          Confirmar
-        </button>
-        <button
-          onClick={onCancel}
-          className="rounded bg-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-600"
-        >
-          Cancelar
-        </button>
-      </div>
-    )
-  }
+function ConfirmButtons({ onConfirm, onCancel }: { onConfirm: () => void; onCancel: () => void }) {
   return (
-    <ActionButton
-      label={label}
-      loading={actionLoading === action}
-      onClick={() => onRequestConfirm(action)}
-    />
+    <div className="flex gap-1">
+      <button onClick={onConfirm} className="rounded-lg bg-red-600 px-3 py-2 text-xs font-medium text-white hover:bg-red-500">
+        Confirmar
+      </button>
+      <button onClick={onCancel} className="rounded-lg bg-zinc-700 px-3 py-2 text-xs font-medium text-zinc-300 hover:bg-zinc-600">
+        Cancelar
+      </button>
+    </div>
   )
-}
-
-function severityBg(s: Alert['severity']) {
-  if (s === 'critical') return 'bg-red-500/10'
-  if (s === 'high') return 'bg-amber-500/10'
-  return 'bg-zinc-800'
-}
-
-function severityText(s: Alert['severity']) {
-  if (s === 'critical') return 'text-red-400 font-medium'
-  if (s === 'high') return 'text-amber-400 font-medium'
-  return 'text-zinc-400'
 }
