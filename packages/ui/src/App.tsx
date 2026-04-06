@@ -7,6 +7,7 @@ import { AlertPanel } from './components/alert-panel'
 import { MessageList } from './components/message-list'
 import { SendForm } from './components/send-form'
 import { SessionManager } from './components/session-manager'
+import { ToastContainer, type Toast } from './components/toast'
 import type { DeviceRecord, HealthSnapshot, WhatsAppAccount, Alert, Message } from './types'
 
 export function App() {
@@ -19,6 +20,25 @@ export function App() {
   const [detailAccounts, setDetailAccounts] = useState<WhatsAppAccount[]>([])
   const [detailAlerts, setDetailAlerts] = useState<Alert[]>([])
   const [activeTab, setActiveTab] = useState<'dashboard' | 'sessions'>('dashboard')
+  const [toasts, setToasts] = useState<Toast[]>([])
+
+  const addToast = useCallback((type: Toast['type'], message: string) => {
+    const toast: Toast = {
+      id: `toast-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      type,
+      message,
+      timestamp: Date.now(),
+    }
+    setToasts((prev) => {
+      const next = [...prev, toast]
+      // Keep only the most recent entries to prevent unbounded growth
+      return next.length > 10 ? next.slice(-10) : next
+    })
+  }, [])
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id))
+  }, [])
 
   const fetchDevices = useCallback(() => {
     fetch(`${CORE_URL}/api/v1/monitor/devices`)
@@ -84,6 +104,11 @@ export function App() {
           .then((r) => r.json())
           .then((msg: Message) => {
             setMessages((prev) => prev.map((m) => (m.id === msg.id ? msg : m)))
+            if (event === 'message:sent') {
+              addToast('success', `Mensagem enviada para ${msg.to}`)
+            } else if (event === 'message:failed') {
+              addToast('error', `Falha ao enviar para ${msg.to}`)
+            }
           })
           .catch(() => {})
       })
@@ -101,15 +126,16 @@ export function App() {
       }
     })
 
-    socket.on('alert:new', () => {
+    socket.on('alert:new', (data: { message?: string }) => {
       fetchAlerts()
       if (selectedSerial) fetchDetail(selectedSerial)
+      addToast('warning', `Alerta: ${data.message ?? 'novo alerta detectado'}`)
     })
 
     return () => {
       socket.disconnect()
     }
-  }, [fetchDevices, fetchAlerts, fetchDetail, selectedSerial])
+  }, [fetchDevices, fetchAlerts, fetchDetail, selectedSerial, addToast])
 
   const handleSend = useCallback(async (to: string, body: string) => {
     const idempotencyKey = `ui-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -219,6 +245,8 @@ export function App() {
           </div>
         </div>
       )}
+
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   )
 }
