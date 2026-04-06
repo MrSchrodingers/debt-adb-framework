@@ -320,8 +320,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     }
   }, 30_000)
 
-  // WA account mapping (every 5 minutes) — per-device error isolation
-  const accountInterval = setInterval(async () => {
+  // WA account mapping — run on device connect + every 5 minutes
+  const mapAllAccounts = async () => {
     for (const device of deviceManager.getDevices()) {
       if (device.status !== 'online') continue
       try {
@@ -330,6 +330,12 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         server.log.error({ err, serial: device.serial }, 'WA account mapping failed for device')
       }
     }
+  }
+  emitter.on('device:connected', () => {
+    setTimeout(() => { void mapAllAccounts() }, 3000) // 3s after connect for device to stabilize
+  })
+  const accountInterval = setInterval(async () => {
+    await mapAllAccounts()
   }, 300_000)
 
   // Health data cleanup (hourly, removes > 7 days)
