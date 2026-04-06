@@ -87,32 +87,6 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose, onProf
           </div>
         </div>
 
-        {/* Profile Selector */}
-        {profiles.length > 0 && (
-          <div className="flex items-center gap-1">
-            {profiles.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => setSelectedProfileId(selectedProfileId === p.id ? null : p.id)}
-                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors border ${
-                  selectedProfileId === p.id
-                    ? 'bg-blue-500/10 text-blue-400 border-blue-500/30'
-                    : 'bg-zinc-800/60 text-zinc-400 border-zinc-700/40 hover:text-zinc-200 hover:bg-zinc-800'
-                }`}
-                title={`${p.name}${p.whatsapp.phone ? ` — WA ${p.whatsapp.phone}` : ''}`}
-              >
-                <div className={`h-1.5 w-1.5 rounded-full ${p.running ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
-                <span>P{p.id}</span>
-                {p.whatsapp.phone && (
-                  <span className="text-emerald-400 font-mono text-xs hidden sm:inline">
-                    {p.whatsapp.phone.slice(-4)}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-        )}
-
         <button
           onClick={onClose}
           className="rounded-lg p-1.5 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
@@ -120,6 +94,42 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose, onProf
           <X className="h-4 w-4" />
         </button>
       </div>
+
+      {/* Profile Selector Bar */}
+      {profiles.length > 0 && (
+        <div className="px-5 py-3 border-b border-zinc-800/40 flex items-center gap-2 flex-wrap bg-zinc-900/40">
+          <span className="text-xs text-zinc-500 font-medium mr-1">Profiles:</span>
+          {profiles.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => setSelectedProfileId(selectedProfileId === p.id ? null : p.id)}
+              className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium transition-colors border min-h-[36px] ${
+                selectedProfileId === p.id
+                  ? 'bg-blue-500/10 text-blue-400 border-blue-500/30 shadow-[0_0_10px_rgba(59,130,246,0.1)]'
+                  : 'bg-zinc-800/60 text-zinc-400 border-zinc-700/40 hover:text-zinc-200 hover:bg-zinc-800'
+              }`}
+              title={p.name}
+            >
+              <div className={`h-2 w-2 rounded-full ${p.running ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
+              <span>P{p.id}</span>
+              <span className="text-zinc-500">{p.name}</span>
+              {p.whatsapp.phone ? (
+                <span className="font-mono text-emerald-400">{p.whatsapp.phone}</span>
+              ) : p.whatsapp.installed ? (
+                <span className="text-amber-400 italic">sem num.</span>
+              ) : null}
+            </button>
+          ))}
+          {selectedProfileId !== null && (
+            <button
+              onClick={() => setSelectedProfileId(null)}
+              className="text-xs text-zinc-600 hover:text-zinc-400 px-2 py-1"
+            >
+              Limpar
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="p-5 space-y-5">
         {/* Health Metrics */}
