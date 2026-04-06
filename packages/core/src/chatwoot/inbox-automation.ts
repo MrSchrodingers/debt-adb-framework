@@ -43,6 +43,33 @@ export class InboxAutomation {
       const session = await this.wahaClient.getSession(sessionName)
       const phone = extractPhone(session)
 
+      // Check if inbox already exists in Chatwoot
+      const existingInboxes = await this.chatwootClient.listInboxes()
+      const existingInbox = existingInboxes.find(
+        (i) => i.name === sessionName || i.name.includes(phone ?? '__no_match__'),
+      )
+      if (existingInbox) {
+        // Link existing inbox instead of creating duplicate
+        const managed = this.managedSessions.get(sessionName)
+        if (managed) {
+          this.managedSessions.updateChatwootInboxId(sessionName, existingInbox.id)
+        } else {
+          this.managedSessions.add({
+            sessionName,
+            phoneNumber: phone ?? '',
+            deviceSerial: null,
+            profileId: null,
+            chatwootInboxId: existingInbox.id,
+          })
+        }
+        return {
+          sessionName,
+          chatwootInboxId: existingInbox.id,
+          chatwootInboxName: existingInbox.name,
+          success: true,
+        }
+      }
+
       const inboxName = options?.inboxName ?? `Dispatch — ${phone ?? sessionName}`
       const inbox = await this.chatwootClient.createInbox(inboxName)
 
@@ -78,19 +105,27 @@ export class InboxAutomation {
   }
 
   async listSessionsWithStatus(): Promise<SessionWithStatus[]> {
-    const [wahaSessions, managedMap] = await Promise.all([
+    const [wahaSessions, managedMap, chatwootInboxes] = await Promise.all([
       this.wahaClient.listSessions(),
       Promise.resolve(this.managedSessions.listAllAsMap()),
+      this.chatwootClient.listInboxes().catch(() => [] as { id: number; name: string }[]),
     ])
+
+    // Build map of session name → inbox ID from Chatwoot
+    const inboxByName = new Map<string, number>()
+    for (const inbox of chatwootInboxes) {
+      inboxByName.set(inbox.name, inbox.id)
+    }
 
     return wahaSessions.map((ws) => {
       const managed = managedMap.get(ws.name)
+      const chatwootInboxId = managed?.chatwootInboxId ?? inboxByName.get(ws.name) ?? null
       return {
         sessionName: ws.name,
         wahaStatus: ws.status,
         phoneNumber: extractPhone(ws),
         managed: managed?.managed ?? false,
-        chatwootInboxId: managed?.chatwootInboxId ?? null,
+        chatwootInboxId,
       }
     })
   }

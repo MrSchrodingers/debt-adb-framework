@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "concurrently -n core,ui -c green,blue \"pnpm dev:core\" \"pnpm dev:ui\"",
     "dev:all": "concurrently -n core,ui,electron -c green,blue,magenta \"pnpm dev:core\" \"pnpm dev:ui\" \"sleep 5 && pnpm dev:electron\"",
-    "dev:core": "npx tsx watch packages/core/src/main.ts",
+    "dev:core": "npx tsx packages/core/src/main.ts",
     "dev:ui": "cd packages/ui && npx vite --host 0.0.0.0",
     "dev:electron": "cd packages/electron && pnpm dev",
     "build": "turbo run build",
