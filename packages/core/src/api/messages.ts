@@ -46,10 +46,35 @@ export function registerMessageRoutes(
   })
 
   server.get('/api/v1/messages', async (request, reply) => {
-    const { status } = request.query as { status?: string }
-    if (status && !VALID_STATUSES.includes(status as MessageStatus)) {
+    const query = request.query as {
+      status?: string
+      limit?: string
+      offset?: string
+      pluginName?: string
+      phone?: string
+      dateFrom?: string
+      dateTo?: string
+    }
+
+    if (query.status && !VALID_STATUSES.includes(query.status as MessageStatus)) {
       return reply.status(400).send({ error: `Invalid status. Must be one of: ${VALID_STATUSES.join(', ')}` })
     }
-    return queue.list(status as MessageStatus | undefined)
+
+    // If any pagination/filter param is present, use paginated method
+    const hasPagination = query.limit || query.offset || query.pluginName || query.phone || query.dateFrom || query.dateTo
+    if (hasPagination) {
+      return queue.listPaginated({
+        limit: query.limit ? Number(query.limit) : undefined,
+        offset: query.offset ? Number(query.offset) : undefined,
+        status: query.status,
+        pluginName: query.pluginName,
+        phone: query.phone,
+        dateFrom: query.dateFrom,
+        dateTo: query.dateTo,
+      })
+    }
+
+    // Legacy: return flat array for backward compatibility
+    return queue.list(query.status as MessageStatus | undefined)
   })
 }

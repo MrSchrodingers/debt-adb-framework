@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import { nanoid } from 'nanoid'
-import type { EnqueueParams, Message, MessageStatus } from './types.js'
+import type { EnqueueParams, Message, MessageStatus, PaginatedFilters, PaginatedResult } from './types.js'
 
 export class MessageQueue {
   constructor(private db: Database.Database) {}
@@ -208,6 +208,54 @@ export class MessageQueue {
     const params = status ? [status, limit] : [limit]
     const rows = this.db.prepare(query).all(...params) as Record<string, unknown>[]
     return rows.map(row => this.rowToMessage(row))
+  }
+
+  listPaginated(filters: PaginatedFilters): PaginatedResult {
+    const conditions: string[] = []
+    const params: unknown[] = []
+
+    if (filters.status) {
+      conditions.push('status = ?')
+      params.push(filters.status)
+    }
+
+    if (filters.pluginName) {
+      conditions.push('plugin_name = ?')
+      params.push(filters.pluginName)
+    }
+
+    if (filters.phone) {
+      conditions.push('to_number LIKE ?')
+      params.push(`%${filters.phone}%`)
+    }
+
+    if (filters.dateFrom) {
+      conditions.push('created_at >= ?')
+      params.push(`${filters.dateFrom}T00:00:00.000Z`)
+    }
+
+    if (filters.dateTo) {
+      conditions.push('created_at <= ?')
+      params.push(`${filters.dateTo}T23:59:59.999Z`)
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+
+    const countRow = this.db.prepare(
+      `SELECT COUNT(*) AS total FROM messages ${where}`,
+    ).get(...params) as { total: number }
+
+    const limit = filters.limit ?? 50
+    const offset = filters.offset ?? 0
+
+    const rows = this.db.prepare(
+      `SELECT * FROM messages ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+    ).all(...params, limit, offset) as Record<string, unknown>[]
+
+    return {
+      data: rows.map(row => this.rowToMessage(row)),
+      total: countRow.total,
+    }
   }
 
   getById(id: string): Message | null {
