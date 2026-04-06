@@ -1,8 +1,8 @@
 # Development Progress — DEBT ADB Framework
 
-> **Last updated**: 2026-04-06T12:00:00-03:00
-> **Current phase**: Improvement Plan (16 work items across 4 tracks)
-> **Next action**: Execute Onda 1 items in parallel (see plans/improvement-plan.md)
+> **Last updated**: 2026-04-06T14:45:00-03:00
+> **Current phase**: ALL 8 PHASES APPROVED
+> **Next action**: Production deployment planning
 > **Plan**: `plans/improvement-plan.md` — 4 tracks (Dashboard, Debt, UX, Hardening)
 > **Tech docs**: `docs/tech/` — schema, API ref, UI patterns, conventions
 
@@ -15,9 +15,9 @@
 | 3 | Send Engine Robusto + Anti-Ban | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
 | 4 | WAHA Listener Passivo | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
 | 5 | Session Management + Inbox Automation | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
-| 6 | Dashboard Operacional | `READY` | — | — | — |
+| 6 | Dashboard Operacional | `APPROVED` | 2026-04-06 | 2026-04-06 | — |
 | 7 | Plugin System + Plugin Oralsin | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
-| 8 | Multi-Profile + Hardening + Docker | `BLOCKED` | — | — | Phase 3, 6 |
+| 8 | Multi-Profile + Hardening + Docker | `APPROVED` | 2026-04-06 | 2026-04-06 | — |
 
 ### Status Legend
 - `READY` — Dependencies met, can start
@@ -46,6 +46,8 @@
 | 4 | 2026-04-02 | Claude Opus 4.6 + Matheus | 10/10 criteria verified, 188 tests (43 new), 17 grill decisions, 7 commits, simplify fixed 6 findings, review fixed 2 criticals + 4 importants. Shared WAHA Plus GoWS, HMAC SHA-512, webhook-first, 90-day retention |
 | 5 | 2026-04-02 | Claude Opus 4.6 + Matheus | 8/8 criteria verified, 231 tests (43 new), 12 grill decisions, 6 commits, simplify fixed 8 findings. Scope redefined: WAHA native handles bridge, Dispatch manages sessions + inbox automation. Shared http-utils, N+1 fix |
 | 7 | 2026-04-02 | Claude Opus 4.6 + Matheus | 8/8 criteria verified, 276 tests (45 new), 18 grill decisions, 8 commits, simplify fixed 9 findings. Hub-Spoke plugin model, PluginContext sandbox, 4 contracts with real JSON, batch enqueue, HMAC callback, correlation fix. E2E: plugin enqueue → ADB send on POCO Serenity |
+| 6 | 2026-04-06 | Claude Opus 4.6 + Matheus | 22/22 criteria verified, 354 tests (78 new). Improvement plan: 16 items across 4 tracks (Dashboard, Debt, UX, Hardening). Pagination+filters, Recharts metrics, audit log with timeline+CSV, responsive sidebar, toast notifications, relative timestamps |
+| 8 | 2026-04-06 | Claude Opus 4.6 + Matheus | 14/14 hardening criteria verified, 354 tests. API auth (X-API-Key), CORS restricted, pino-roll log rotation, graceful shutdown, shell rate limiting, multi-device worker with health-score selection. Deferred: multi-profile, Docker, encryption |
 
 ## Phase 7 Grill Progress
 

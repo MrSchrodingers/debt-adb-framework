@@ -398,6 +398,13 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     messageHistory.cleanup(retentionDays)
   }, 3_600_000)
 
+  // ── Graceful Shutdown (must register hook BEFORE listen) ──
+  const shutdown = new GracefulShutdown(server.log)
+
+  server.addHook('onClose', async () => {
+    await shutdown.execute()
+  })
+
   await server.listen({ port, host: '0.0.0.0' })
 
   const io = new SocketIOServer(server.server, { cors: { origin: corsOrigins } })
@@ -411,9 +418,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     emitter.on(event, (data) => io.emit(event, data))
   }
 
-  // ── Graceful Shutdown ──
-  const shutdown = new GracefulShutdown(server.log)
-
+  // Register shutdown handlers (after listen, handlers don't use addHook)
   shutdown.addHandler('plugins', async () => {
     await pluginLoader.destroyAll()
     pluginEventBus.destroy()
@@ -443,10 +448,6 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   shutdown.addHandler('database', async () => {
     db.close()
-  })
-
-  server.addHook('onClose', async () => {
-    await shutdown.execute()
   })
 
   return { server, io, queue, adb, engine, emitter, shutdown }
