@@ -55,6 +55,62 @@ export function registerDeviceRoutes(
     return reply.send({ serial, applied: results })
   })
 
+  // Hygienize device — keep-awake + disable bloatware
+  server.post('/api/v1/devices/:serial/hygienize', async (request, reply) => {
+    const { serial } = request.params as { serial: string }
+    const results: Record<string, string> = {}
+
+    // Step 1: Keep awake
+    const awakeCommands = [
+      { cmd: 'settings put system screen_off_timeout 2147483647', label: 'screen_timeout' },
+      { cmd: 'svc power stayon usb', label: 'stay_awake_usb' },
+      { cmd: 'locksettings set-disabled true', label: 'lock_disabled' },
+      { cmd: 'input keyevent KEYCODE_WAKEUP', label: 'wake_screen' },
+    ]
+    for (const { cmd, label } of awakeCommands) {
+      try {
+        results[label] = await adb.shell(serial, cmd) || 'ok'
+      } catch (err) {
+        results[label] = `error: ${(err as Error).message}`
+      }
+    }
+
+    // Step 2: Disable bloatware
+    const bloatPackages = [
+      'com.facebook.appmanager', 'com.facebook.services', 'com.facebook.system',
+      'com.amazon.appmanager',
+      'com.google.android.apps.youtube.music', 'com.google.android.apps.maps',
+      'com.google.android.apps.photosgo', 'com.google.android.apps.walletnfcrel',
+      'com.miui.android.fashiongallery', 'com.miui.gameCenter.overlay',
+      'com.miui.calculator.go', 'com.android.calendar.go',
+    ]
+    const disabled: string[] = []
+    const skipped: string[] = []
+    for (const pkg of bloatPackages) {
+      try {
+        const out = await adb.shell(serial, `pm disable-user --user 0 ${pkg}`)
+        if (out.includes('disabled')) {
+          disabled.push(pkg)
+        } else {
+          skipped.push(pkg)
+        }
+      } catch {
+        skipped.push(pkg)
+      }
+    }
+
+    results.bloat_disabled = `${disabled.length} packages`
+    results.bloat_skipped = `${skipped.length} packages`
+
+    server.log.info({ serial, disabled: disabled.length, skipped: skipped.length }, 'Device hygienized')
+
+    return reply.send({
+      serial,
+      applied: results,
+      bloat: { disabled, skipped },
+    })
+  })
+
   // Live screen — screenshot as base64 for embedding
   server.get('/api/v1/devices/:serial/screen', async (request, reply) => {
     const { serial } = request.params as { serial: string }

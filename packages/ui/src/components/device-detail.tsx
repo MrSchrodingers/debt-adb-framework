@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts'
-import { X, Camera, RotateCcw, RefreshCw, Battery, Thermometer, MemoryStick, HardDrive, Phone, Sun } from 'lucide-react'
+import { X, Camera, RotateCcw, RefreshCw, Battery, Thermometer, MemoryStick, HardDrive, Phone, Sun, Sparkles } from 'lucide-react'
 import { CORE_URL, authHeaders } from '../config'
 import type { Alert, DeviceRecord, HealthSnapshot, WhatsAppAccount } from '../types'
 
@@ -120,7 +120,20 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
         )}
 
         {/* Actions */}
-        <div className="flex items-center gap-2 pt-2 border-t border-zinc-800/40">
+        <div className="flex items-center gap-2 pt-2 border-t border-zinc-800/40 flex-wrap">
+          <ActionBtn
+            icon={Sparkles}
+            label="Higienizar"
+            loading={actionLoading === 'hygienize'}
+            onClick={async () => {
+              setActionLoading('hygienize')
+              try {
+                await fetch(`${CORE_URL}/api/v1/devices/${device.serial}/hygienize`, { method: 'POST', headers: authHeaders() })
+              } finally {
+                setActionLoading(null)
+              }
+            }}
+          />
           <ActionBtn
             icon={Sun}
             label="Keep Awake"
