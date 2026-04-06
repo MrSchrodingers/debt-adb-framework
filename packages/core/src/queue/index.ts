@@ -1,2 +1,2 @@
 export { MessageQueue } from './message-queue.js'
-export type { EnqueueParams, Message, MessageStatus } from './types.js'
+export type { EnqueueParams, Message, MessageStatus, PaginatedFilters, PaginatedResult } from './types.js'

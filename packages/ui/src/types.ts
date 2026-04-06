@@ -12,11 +12,13 @@ export interface Message {
   idempotencyKey: string
   priority: number
   senderNumber: string | null
-  status: 'queued' | 'locked' | 'sending' | 'sent' | 'failed'
+  status: 'queued' | 'locked' | 'sending' | 'sent' | 'failed' | 'permanently_failed' | 'waiting_device'
   lockedBy: string | null
   lockedAt: string | null
   createdAt: string
   updatedAt: string
+  pluginName: string | null
+  correlationId: string | null
 }
 
 export interface DeviceRecord {

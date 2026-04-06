@@ -40,3 +40,18 @@ export type MessageStatus =
   | 'failed'
   | 'permanently_failed'
   | 'waiting_device'
+
+export interface PaginatedFilters {
+  limit?: number
+  offset?: number
+  status?: string
+  pluginName?: string
+  phone?: string
+  dateFrom?: string
+  dateTo?: string
+}
+
+export interface PaginatedResult {
+  data: Message[]
+  total: number
+}

@@ -6,7 +6,7 @@ import { MessageQueue } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
 import { SendEngine } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
-import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes } from './api/index.js'
+import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes } from './api/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
 import { SessionManager, WebhookHandler, MessageHistory } from './waha/index.js'
 import { createWahaHttpClient } from './waha/waha-http-client.js'
@@ -116,6 +116,9 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   // Session management routes (Phase 5)
   registerSessionRoutes(server, { inboxAutomation, managedSessions })
+
+  // Metrics routes (Phase 6)
+  registerMetricsRoutes(server, db)
 
   let workerRunning = false
 

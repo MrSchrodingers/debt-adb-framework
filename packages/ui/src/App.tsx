@@ -7,18 +7,18 @@ import { AlertPanel } from './components/alert-panel'
 import { MessageList } from './components/message-list'
 import { SendForm } from './components/send-form'
 import { SessionManager } from './components/session-manager'
+import { MetricsDashboard } from './components/metrics-dashboard'
 import { StatsBar } from './components/stats-bar'
 import { Sidebar } from './components/sidebar'
 import { LiveScreen } from './components/live-screen'
 import { ShellTerminal } from './components/shell-terminal'
 import { DeviceInfo } from './components/device-info'
-import type { DeviceRecord, HealthSnapshot, WhatsAppAccount, Alert, Message } from './types'
+import type { DeviceRecord, HealthSnapshot, WhatsAppAccount, Alert } from './types'
 
-type Tab = 'devices' | 'queue' | 'sessions'
+type Tab = 'devices' | 'queue' | 'sessions' | 'metricas'
 
 export function App() {
   const [devices, setDevices] = useState<DeviceRecord[]>([])
-  const [messages, setMessages] = useState<Message[]>([])
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [connected, setConnected] = useState(false)
   const [selectedSerial, setSelectedSerial] = useState<string | null>(null)
@@ -26,6 +26,7 @@ export function App() {
   const [detailAccounts, setDetailAccounts] = useState<WhatsAppAccount[]>([])
   const [detailAlerts, setDetailAlerts] = useState<Alert[]>([])
   const [activeTab, setActiveTab] = useState<Tab>('devices')
+  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   const fetchDevices = useCallback(() => {
     fetch(`${CORE_URL}/api/v1/monitor/devices`, { headers: authHeaders() })
@@ -55,10 +56,6 @@ export function App() {
   useEffect(() => {
     fetchDevices()
     fetchAlerts()
-    fetch(`${CORE_URL}/api/v1/messages`, { headers: authHeaders() })
-      .then((r) => r.json())
-      .then(setMessages)
-      .catch(() => {})
   }, [fetchDevices, fetchAlerts])
 
   useEffect(() => {
@@ -70,27 +67,6 @@ export function App() {
 
     socket.on('connect', () => setConnected(true))
     socket.on('disconnect', () => setConnected(false))
-
-    socket.on('message:queued', (data: { id: string }) => {
-      fetch(`${CORE_URL}/api/v1/messages/${data.id}`, { headers: authHeaders() })
-        .then((r) => r.json())
-        .then((msg: Message) => {
-          setMessages((prev) => [msg, ...prev.filter((m) => m.id !== msg.id)])
-        })
-        .catch(() => {})
-    })
-
-    const statusEvents = ['message:sending', 'message:sent', 'message:failed'] as const
-    for (const event of statusEvents) {
-      socket.on(event, (data: { id: string }) => {
-        fetch(`${CORE_URL}/api/v1/messages/${data.id}`, { headers: authHeaders() })
-          .then((r) => r.json())
-          .then((msg: Message) => {
-            setMessages((prev) => prev.map((m) => (m.id === msg.id ? msg : m)))
-          })
-          .catch(() => {})
-      })
-    }
 
     socket.on('device:connected', () => fetchDevices())
     socket.on('device:disconnected', () => {
@@ -126,17 +102,40 @@ export function App() {
   const hasOnlineDevice = devices.some((d) => d.status === 'online')
   const selectedDevice = devices.find((d) => d.serial === selectedSerial) ?? null
   const onlineCount = devices.filter((d) => d.status === 'online').length
-  const sentToday = messages.filter((m) => m.status === 'sent').length
-  const pendingCount = messages.filter((m) => m.status === 'queued' || m.status === 'locked').length
   const activeAlertCount = alerts.filter((a) => !a.resolved).length
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex">
-      <Sidebar activeTab={activeTab} onTabChange={setActiveTab} alertCount={activeAlertCount} />
+      <Sidebar
+        activeTab={activeTab}
+        onTabChange={(tab: Tab) => {
+          setActiveTab(tab)
+          setSidebarOpen(false)
+        }}
+        connected={connected}
+        deviceCount={devices.length}
+        mobileOpen={sidebarOpen}
+        onMobileClose={() => setSidebarOpen(false)}
+        alertCount={activeAlertCount}
+      />
 
       <div className="flex-1 flex flex-col min-h-screen overflow-hidden">
-        {/* Header */}
-        <header className="flex items-center justify-between px-6 py-4 border-b border-zinc-800/60 bg-zinc-950/80 backdrop-blur-sm sticky top-0 z-10">
+        {/* Mobile header */}
+        <div className="lg:hidden flex items-center gap-3 p-4 border-b border-zinc-800">
+          <button
+            onClick={() => setSidebarOpen(true)}
+            className="rounded-lg bg-zinc-800 border border-zinc-700/40 p-2 min-h-[44px] min-w-[44px] flex items-center justify-center"
+          >
+            <svg className="h-5 w-5 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+          <h1 className="text-lg font-bold">Dispatch</h1>
+          <div className={`h-2 w-2 rounded-full ${connected ? 'bg-emerald-500' : 'bg-red-500'}`} />
+        </div>
+
+        {/* Desktop header */}
+        <header className="hidden lg:flex items-center justify-between px-6 py-4 border-b border-zinc-800/60 bg-zinc-950/80 backdrop-blur-sm sticky top-0 z-10">
           <div className="flex items-center gap-3">
             <h1 className="text-lg font-semibold tracking-tight">Dispatch</h1>
             <span className="text-xs text-zinc-600 font-medium">ADB Orchestrator</span>
@@ -154,19 +153,21 @@ export function App() {
         <StatsBar
           deviceCount={devices.length}
           onlineCount={onlineCount}
-          sentToday={sentToday}
-          pendingCount={pendingCount}
+          sentToday={0}
+          pendingCount={0}
           alertCount={activeAlertCount}
         />
 
         {/* Content */}
-        <main className="flex-1 overflow-y-auto p-6">
+        <main className="flex-1 overflow-y-auto p-4 lg:p-6">
           {activeTab === 'sessions' ? (
             <SessionManager />
+          ) : activeTab === 'metricas' ? (
+            <MetricsDashboard />
           ) : activeTab === 'queue' ? (
             <div className="space-y-6">
               <SendForm onSend={handleSend} disabled={!hasOnlineDevice} />
-              <MessageList messages={messages} />
+              <MessageList />
             </div>
           ) : (
             <div className="space-y-6">
