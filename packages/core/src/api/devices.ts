@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import type { AdbBridge } from '../adb/index.js'
-import { RateLimiter } from './rate-limiter.js'
+import { IpRateLimiter } from './rate-limiter.js'
 
-const shellRateLimiter = new RateLimiter({ maxRequests: 10, windowMs: 60_000 })
+const shellRateLimiter = new IpRateLimiter({ maxRequests: 10, windowMs: 60_000 })
 const shellSchema = z.object({ command: z.string().min(1).max(4096) })
 
 export function registerDeviceRoutes(

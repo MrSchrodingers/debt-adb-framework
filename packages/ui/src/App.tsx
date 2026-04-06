@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { io, type Socket } from 'socket.io-client'
 import { CORE_URL, authHeaders } from './config'
 import { DeviceGrid } from './components/device-grid'
@@ -82,6 +82,9 @@ export function App() {
     if (selectedSerial) fetchDetail(selectedSerial)
   }, [selectedSerial, fetchDetail])
 
+  const selectedSerialRef = useRef(selectedSerial)
+  selectedSerialRef.current = selectedSerial
+
   useEffect(() => {
     const socket: Socket = io(CORE_URL)
 
@@ -103,17 +106,17 @@ export function App() {
     })
 
     socket.on('device:health', (data: { serial: string }) => {
-      if (data.serial === selectedSerial) fetchDetail(data.serial)
+      if (data.serial === selectedSerialRef.current) fetchDetail(data.serial)
     })
 
     socket.on('alert:new', (data: { message?: string }) => {
       fetchAlerts()
-      if (selectedSerial) fetchDetail(selectedSerial)
+      if (selectedSerialRef.current) fetchDetail(selectedSerialRef.current)
       addToast('warning', `Alerta: ${data.message ?? 'novo alerta detectado'}`)
     })
 
     return () => { socket.disconnect() }
-  }, [fetchDevices, fetchAlerts, fetchDetail, selectedSerial, addToast])
+  }, [fetchDevices, fetchAlerts, fetchDetail, addToast])
 
   const handleSend = useCallback(async (to: string, body: string, contactName?: string) => {
     const idempotencyKey = `ui-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import { CheckCircle, XCircle, AlertTriangle, X } from 'lucide-react'
 
 export interface Toast {
@@ -77,14 +77,6 @@ interface ToastContainerProps {
 }
 
 export function ToastContainer({ toasts, onDismiss }: ToastContainerProps) {
-  const handleDismiss = useCallback(
-    (id: string) => {
-      onDismiss(id)
-    },
-    [onDismiss],
-  )
-
-  // Show only the last MAX_VISIBLE toasts
   const visible = toasts.slice(-MAX_VISIBLE)
 
   if (visible.length === 0) return null
@@ -92,7 +84,7 @@ export function ToastContainer({ toasts, onDismiss }: ToastContainerProps) {
   return (
     <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-2 w-96 max-w-[calc(100vw-3rem)]">
       {visible.map((toast) => (
-        <ToastItem key={toast.id} toast={toast} onDismiss={handleDismiss} />
+        <ToastItem key={toast.id} toast={toast} onDismiss={onDismiss} />
       ))}
     </div>
   )

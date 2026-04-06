@@ -91,7 +91,7 @@ function exportToCsv(items: AuditItem[]): void {
 export function AuditLog() {
   const [items, setItems] = useState<AuditItem[]>([])
   const [total, setTotal] = useState(0)
-  const [limit] = useState(50)
+  const limit = 50
   const [offset, setOffset] = useState(0)
   const [loading, setLoading] = useState(false)
 

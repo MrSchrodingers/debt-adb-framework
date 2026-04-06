@@ -1,6 +1,5 @@
 import { z } from 'zod'
 import type { FastifyInstance } from 'fastify'
-import type { DeviceManager } from '../monitor/device-manager.js'
 
 const VALID_ACTIONS = ['keep-awake', 'screenshot', 'reboot'] as const
 type BulkAction = (typeof VALID_ACTIONS)[number]
@@ -13,11 +12,6 @@ const bulkActionSchema = z.object({
 interface AdbAdapter {
   shell: (serial: string, command: string) => Promise<string>
   screenshot: (serial: string) => Promise<Buffer>
-}
-
-interface BulkActionDeps {
-  adb: AdbAdapter
-  deviceManager: DeviceManager
 }
 
 interface BulkActionResult {
@@ -55,9 +49,8 @@ async function executeAction(
 
 export function registerBulkActionRoutes(
   server: FastifyInstance,
-  deps: BulkActionDeps,
+  adb: AdbAdapter,
 ): void {
-  const { adb, deviceManager } = deps
 
   server.post('/api/v1/devices/bulk-action', async (request, reply) => {
     const parsed = bulkActionSchema.safeParse(request.body)

@@ -51,13 +51,6 @@ export class AuditService {
     const limit = params.limit ?? 50
     const offset = params.offset ?? 0
 
-    // Build a UNION query combining messages (queue) and message_history
-    // messages are always "outgoing" (they are ADB send queue entries)
-    const conditions: string[] = []
-    const countConditions: string[] = []
-    const values: unknown[] = []
-    const countValues: unknown[] = []
-
     let unionSql = `
       SELECT
         id,
@@ -216,7 +209,7 @@ export class AuditService {
 
     if (['sending', 'sent', 'failed', 'permanently_failed'].includes(status) && status !== 'locked') {
       events.push({
-        event: status === 'sending' ? 'sending' : (status === 'sent' ? 'sent' : status),
+        event: status,
         timestamp: updatedAt,
         detail: null,
       })

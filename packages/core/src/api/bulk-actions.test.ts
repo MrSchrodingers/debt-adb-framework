@@ -52,7 +52,7 @@ describe('POST /api/v1/devices/bulk-action', () => {
     await deviceManager.poll()
 
     server = Fastify()
-    registerBulkActionRoutes(server, { adb: mockAdb, deviceManager })
+    registerBulkActionRoutes(server, mockAdb)
     await server.ready()
   })
 
@@ -91,7 +91,7 @@ describe('POST /api/v1/devices/bulk-action', () => {
     // Don't re-init (we want existing device rows)
 
     const offlineServer = Fastify()
-    registerBulkActionRoutes(offlineServer, { adb: offlineAdb, deviceManager: offlineDeviceManager })
+    registerBulkActionRoutes(offlineServer, offlineAdb)
     await offlineServer.ready()
 
     // But the device is still in the devices table from initial poll

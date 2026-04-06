@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { RateLimiter } from './rate-limiter.js'
+import { IpRateLimiter } from './rate-limiter.js'
 
-describe('RateLimiter', () => {
-  let limiter: RateLimiter
+describe('IpRateLimiter', () => {
+  let limiter: IpRateLimiter
 
   beforeEach(() => {
-    limiter = new RateLimiter({ maxRequests: 10, windowMs: 60_000 })
+    limiter = new IpRateLimiter({ maxRequests: 10, windowMs: 60_000 })
   })
 
   describe('isAllowed', () => {

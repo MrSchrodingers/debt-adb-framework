@@ -29,13 +29,13 @@ export function computeHealthScore(snapshot: HealthSnapshot): number {
 }
 
 /**
- * Check if a device has an active (unresolved) ban alert.
+ * Get all device serials with active (unresolved) ban alerts in a single query.
  */
-function hasBanAlert(serial: string, db: Database.Database): boolean {
-  const row = db.prepare(
-    "SELECT 1 FROM alerts WHERE device_serial = ? AND type = 'waha_session_banned' AND resolved = 0 LIMIT 1"
-  ).get(serial)
-  return row !== undefined
+function getBannedSerials(db: Database.Database): Set<string> {
+  const rows = db.prepare(
+    "SELECT DISTINCT device_serial FROM alerts WHERE type = 'waha_session_banned' AND resolved = 0"
+  ).all() as Array<{ device_serial: string }>
+  return new Set(rows.map(r => r.device_serial))
 }
 
 /**
@@ -49,17 +49,16 @@ export function selectDevice(
   db: Database.Database,
 ): DeviceRecord | null {
   const onlineDevices = devices.filter(d => d.status === 'online')
+  const bannedSerials = getBannedSerials(db)
 
   let bestDevice: DeviceRecord | null = null
   let bestScore = -Infinity
 
   for (const device of onlineDevices) {
-    // Skip devices without health data
     const snapshot = healthMap.get(device.serial)
     if (!snapshot) continue
 
-    // Skip banned devices
-    if (hasBanAlert(device.serial, db)) continue
+    if (bannedSerials.has(device.serial)) continue
 
     const score = computeHealthScore(snapshot)
     if (score > bestScore) {
