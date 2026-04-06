@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from 'react'
 import { Search, ChevronLeft, ChevronRight } from 'lucide-react'
 import { CORE_URL, authHeaders } from '../config'
 import type { Message } from '../types'
+import { formatRelativeTime } from '../utils/time'
 
 const STATUS_FILTERS = ['all', 'queued', 'sending', 'sent', 'failed'] as const
 type StatusFilter = (typeof STATUS_FILTERS)[number]
@@ -145,8 +146,8 @@ export function MessageList() {
                     {msg.pluginName ?? '-'}
                   </td>
                   <td className="py-2 pr-4 text-zinc-500 hidden md:table-cell">{msg.priority}</td>
-                  <td className="py-2 text-xs text-zinc-500">
-                    {new Date(msg.createdAt).toLocaleTimeString()}
+                  <td className="py-2 text-xs text-zinc-500" title={new Date(msg.createdAt).toLocaleString()}>
+                    {formatRelativeTime(msg.createdAt)}
                   </td>
                 </tr>
               ))}

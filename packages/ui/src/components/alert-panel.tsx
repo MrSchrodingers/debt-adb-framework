@@ -1,5 +1,7 @@
+import { useEffect, useState } from 'react'
 import { AlertTriangle, AlertCircle, Info, CheckCircle } from 'lucide-react'
 import type { Alert } from '../types'
+import { formatRelativeTime } from '../utils/time'
 
 interface AlertPanelProps {
   alerts: Alert[]
@@ -20,6 +22,14 @@ const severityConfig: Record<string, { icon: typeof AlertTriangle; color: string
 }
 
 export function AlertPanel({ alerts }: AlertPanelProps) {
+  // Tick counter to force re-render every 30s for relative timestamps
+  const [, setTick] = useState(0)
+
+  useEffect(() => {
+    const interval = setInterval(() => setTick((t) => t + 1), 30_000)
+    return () => clearInterval(interval)
+  }, [])
+
   if (alerts.length === 0) return null
 
   const sorted = [...alerts].sort(
@@ -49,9 +59,9 @@ export function AlertPanel({ alerts }: AlertPanelProps) {
                 <p className="text-sm text-zinc-200">{alert.message}</p>
                 <div className="flex items-center gap-2 mt-1">
                   <span className="text-xs text-zinc-600 font-mono">{alert.deviceSerial.slice(0, 12)}</span>
-                  <span className="text-xs text-zinc-700">·</span>
-                  <span className="text-xs text-zinc-600">
-                    {new Date(alert.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  <span className="text-xs text-zinc-700">&middot;</span>
+                  <span className="text-xs text-zinc-600" title={new Date(alert.createdAt).toLocaleString()}>
+                    {formatRelativeTime(alert.createdAt)}
                   </span>
                 </div>
               </div>
