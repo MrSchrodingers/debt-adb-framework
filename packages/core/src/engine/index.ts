@@ -1,7 +1,7 @@
 export { SendEngine } from './send-engine.js'
 export type { SendResult } from './send-engine.js'
 export { RateLimiter } from './rate-limiter.js'
-export { Dispatcher } from './dispatcher.js'
+export { Dispatcher, selectDevice, computeHealthScore } from './dispatcher.js'
 export type { DispatchDecision } from './dispatcher.js'
 export { BanDetector } from './ban-detector.js'
 export { RetryManager } from './retry-manager.js'
