@@ -12,6 +12,7 @@ import { SessionManager, WebhookHandler, MessageHistory } from './waha/index.js'
 import { createWahaHttpClient } from './waha/waha-http-client.js'
 import { createChatwootHttpClient, ManagedSessions, InboxAutomation } from './chatwoot/index.js'
 import { PluginRegistry, PluginEventBus, CallbackDelivery, PluginLoader } from './plugins/index.js'
+import { buildLoggerConfig } from './config/logger.js'
 import { OralsinPlugin } from './plugins/oralsin-plugin.js'
 import type { DispatchEventName } from './events/index.js'
 import type { DispatchPlugin } from './plugins/types.js'
@@ -26,13 +27,9 @@ export interface DispatchCore {
 }
 
 export async function createServer(port = Number(process.env.PORT) || 7890): Promise<DispatchCore> {
+  const loggerConfig = buildLoggerConfig(process.env.NODE_ENV, process.env.LOG_FILE)
   const server = Fastify({
-    logger: {
-      transport: {
-        target: 'pino-pretty',
-        options: { colorize: true },
-      },
-    },
+    logger: loggerConfig,
   })
   const corsOrigins = buildCorsOrigins(process.env.DISPATCH_ALLOWED_ORIGINS)
   await server.register(cors, { origin: corsOrigins })
