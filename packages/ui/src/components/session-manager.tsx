@@ -1,4 +1,5 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
+import { Search, Radio, RefreshCw, CheckSquare, Shield, X } from 'lucide-react'
 import { CORE_URL } from '../config'
 
 interface SessionWithStatus {
@@ -136,42 +137,99 @@ export function SessionManager() {
     }
   }
 
+  const [search, setSearch] = useState('')
   const managedCount = sessions.filter((s) => s.managed).length
+  const workingCount = sessions.filter((s) => s.wahaStatus === 'WORKING').length
+  const failedCount = sessions.filter((s) => s.wahaStatus === 'FAILED').length
+  const [statusFilter, setStatusFilter] = useState<string | null>(null)
+
+  const filtered = useMemo(() => {
+    let result = sessions
+    if (search.trim()) {
+      const q = search.toLowerCase()
+      result = result.filter(
+        (s) =>
+          s.sessionName.toLowerCase().includes(q) ||
+          (s.phoneNumber && s.phoneNumber.includes(q)),
+      )
+    }
+    if (statusFilter === 'MANAGED') {
+      result = result.filter((s) => s.managed)
+    } else if (statusFilter) {
+      result = result.filter((s) => s.wahaStatus === statusFilter)
+    }
+    return result
+  }, [sessions, search, statusFilter])
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="text-sm text-zinc-400">
-          {sessions.length} sessions ({managedCount} managed)
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={selectAll}
-            className="rounded bg-zinc-800 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-700"
-          >
-            Select unmanaged
-          </button>
-          <button
-            onClick={handleBulkManage}
-            disabled={selected.size === 0 || loading}
-            className="rounded bg-emerald-700 px-3 py-1 text-xs text-white hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {loading ? 'Setting...' : `Mark managed (${selected.size})`}
-          </button>
+      {/* Search + filters */}
+      <div className="rounded-xl border border-zinc-800/60 bg-zinc-900/60 p-4 space-y-3">
+        <div className="flex items-center gap-3">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-600" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Buscar por nome ou numero..."
+              className="w-full rounded-lg bg-zinc-800/80 pl-10 pr-3 py-2.5 text-sm text-zinc-100 border border-zinc-700/60 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 placeholder:text-zinc-600 transition-colors"
+            />
+            {search && (
+              <button
+                onClick={() => setSearch('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-600 hover:text-zinc-400"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
           <button
             onClick={fetchSessions}
-            className="rounded bg-zinc-800 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-700"
+            className="rounded-lg bg-zinc-800 border border-zinc-700/40 px-3 py-2.5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 transition-colors"
           >
-            Refresh
+            <RefreshCw className="h-4 w-4" />
           </button>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <FilterChip label={`Todas (${sessions.length})`} active={!statusFilter} onClick={() => setStatusFilter(null)} />
+            <FilterChip label={`Working (${workingCount})`} active={statusFilter === 'WORKING'} onClick={() => setStatusFilter(statusFilter === 'WORKING' ? null : 'WORKING')} color="emerald" />
+            <FilterChip label={`Failed (${failedCount})`} active={statusFilter === 'FAILED'} onClick={() => setStatusFilter(statusFilter === 'FAILED' ? null : 'FAILED')} color="red" />
+            <FilterChip label={`Managed (${managedCount})`} active={statusFilter === 'MANAGED'} onClick={() => setStatusFilter(statusFilter === 'MANAGED' ? null : 'MANAGED')} color="blue" />
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={selectAll}
+              className="flex items-center gap-1.5 rounded-lg bg-zinc-800 border border-zinc-700/40 px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 transition-colors"
+            >
+              <CheckSquare className="h-3 w-3" />
+              Selecionar nao gerenciadas
+            </button>
+            <button
+              onClick={handleBulkManage}
+              disabled={selected.size === 0 || loading}
+              className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <Shield className="h-3 w-3" />
+              {loading ? 'Marcando...' : `Marcar managed (${selected.size})`}
+            </button>
+          </div>
+        </div>
+
+        <div className="text-xs text-zinc-600">
+          {filtered.length === sessions.length
+            ? `${sessions.length} sessoes`
+            : `${filtered.length} de ${sessions.length} sessoes`}
         </div>
       </div>
 
       {error && (
-        <div className="rounded bg-red-900/30 border border-red-800 p-3 text-sm text-red-300">
-          {error}
-          <button onClick={() => setError(null)} className="ml-2 text-red-400 hover:text-red-200">
-            dismiss
+        <div className="rounded-xl bg-red-500/10 border border-red-500/20 p-3 text-sm text-red-400 flex items-center justify-between">
+          <span>{error}</span>
+          <button onClick={() => setError(null)} className="text-red-500 hover:text-red-300">
+            <X className="h-4 w-4" />
           </button>
         </div>
       )}
@@ -199,7 +257,7 @@ export function SessionManager() {
 
       {/* Session List */}
       <div className="space-y-2">
-        {sessions.map((session) => (
+        {filtered.map((session) => (
           <div
             key={session.sessionName}
             className={`rounded-lg border bg-zinc-900 p-3 ${
@@ -289,12 +347,43 @@ export function SessionManager() {
           </div>
         ))}
 
-        {sessions.length === 0 && !error && (
-          <div className="text-center text-zinc-500 py-8 text-sm">
-            No WAHA sessions found. Check WAHA API connection.
+        {filtered.length === 0 && !error && (
+          <div className="rounded-xl border border-dashed border-zinc-800 bg-zinc-900/50 p-8 text-center">
+            <Radio className="h-8 w-8 text-zinc-700 mx-auto mb-2" />
+            <p className="text-sm text-zinc-500">
+              {sessions.length === 0
+                ? 'Nenhuma sessao WAHA encontrada'
+                : 'Nenhuma sessao corresponde ao filtro'}
+            </p>
           </div>
         )}
       </div>
     </div>
+  )
+}
+
+function FilterChip({ label, active, onClick, color }: {
+  label: string
+  active: boolean
+  onClick: () => void
+  color?: string
+}) {
+  const colors: Record<string, string> = {
+    emerald: active ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : '',
+    red: active ? 'bg-red-500/10 text-red-400 border-red-500/30' : '',
+    blue: active ? 'bg-blue-500/10 text-blue-400 border-blue-500/30' : '',
+  }
+  const activeClass = color ? colors[color] : (active ? 'bg-zinc-700 text-zinc-200 border-zinc-600' : '')
+  return (
+    <button
+      onClick={onClick}
+      className={`rounded-full px-2.5 py-1 text-xs border transition-colors ${
+        active
+          ? activeClass
+          : 'border-zinc-700/40 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600'
+      }`}
+    >
+      {label}
+    </button>
   )
 }
