@@ -13,6 +13,7 @@ import { createWahaHttpClient } from './waha/waha-http-client.js'
 import { createChatwootHttpClient, ManagedSessions, InboxAutomation } from './chatwoot/index.js'
 import { PluginRegistry, PluginEventBus, CallbackDelivery, PluginLoader } from './plugins/index.js'
 import { buildLoggerConfig } from './config/logger.js'
+import { GracefulShutdown } from './config/graceful-shutdown.js'
 import { OralsinPlugin } from './plugins/oralsin-plugin.js'
 import type { DispatchEventName } from './events/index.js'
 import type { DispatchPlugin } from './plugins/types.js'
@@ -24,6 +25,7 @@ export interface DispatchCore {
   adb: AdbBridge
   engine: SendEngine
   emitter: DispatchEmitter
+  shutdown: GracefulShutdown
 }
 
 export async function createServer(port = Number(process.env.PORT) || 7890): Promise<DispatchCore> {
@@ -368,20 +370,6 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     messageHistory.cleanup(retentionDays)
   }, 3_600_000)
 
-  server.addHook('onClose', async () => {
-    await pluginLoader.destroyAll()
-    pluginEventBus.destroy()
-    deviceManager.stop()
-    sessionManager?.stop()
-    clearInterval(healthInterval)
-    clearInterval(accountInterval)
-    clearInterval(healthCleanupInterval)
-    clearInterval(historyCleanupInterval)
-    clearInterval(cleanupInterval)
-    clearInterval(workerInterval)
-    db.close()
-  })
-
   await server.listen({ port, host: '0.0.0.0' })
 
   const io = new SocketIOServer(server.server, { cors: { origin: corsOrigins } })
@@ -395,5 +383,43 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     emitter.on(event, (data) => io.emit(event, data))
   }
 
-  return { server, io, queue, adb, engine, emitter }
+  // ── Graceful Shutdown ──
+  const shutdown = new GracefulShutdown(server.log)
+
+  shutdown.addHandler('plugins', async () => {
+    await pluginLoader.destroyAll()
+    pluginEventBus.destroy()
+  })
+
+  shutdown.addHandler('intervals', async () => {
+    deviceManager.stop()
+    sessionManager?.stop()
+    clearInterval(healthInterval)
+    clearInterval(accountInterval)
+    clearInterval(healthCleanupInterval)
+    clearInterval(historyCleanupInterval)
+    clearInterval(cleanupInterval)
+    clearInterval(workerInterval)
+  })
+
+  shutdown.addHandler('stale-locks', async () => {
+    const cleaned = queue.cleanStaleLocks()
+    if (cleaned > 0) {
+      server.log.info({ cleaned }, 'Cleaned stale locks during shutdown')
+    }
+  })
+
+  shutdown.addHandler('socket.io', async () => {
+    io.close()
+  })
+
+  shutdown.addHandler('database', async () => {
+    db.close()
+  })
+
+  server.addHook('onClose', async () => {
+    await shutdown.execute()
+  })
+
+  return { server, io, queue, adb, engine, emitter, shutdown }
 }

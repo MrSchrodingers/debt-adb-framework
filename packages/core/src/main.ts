@@ -1,3 +1,7 @@
 import { createServer } from './server.js'
 
-await createServer()
+const core = await createServer()
+
+core.shutdown.installSignalHandlers(async () => {
+  await core.server.close()
+})
