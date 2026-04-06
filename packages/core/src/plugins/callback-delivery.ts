@@ -8,6 +8,14 @@ type FetchFn = (url: string, init: RequestInit) => Promise<Response>
 
 const MAX_RETRIES = 3
 
+/** Delays in ms before each attempt: attempt 1 = 0 (immediate), attempt 2 = 5s, attempt 3 = 15s */
+const BACKOFF_DELAYS_MS = [0, 5_000, 15_000] as const
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve()
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 export class CallbackDelivery {
   constructor(
     private db: Database.Database,
@@ -82,6 +90,9 @@ export class CallbackDelivery {
     let lastError = ''
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      const delay = BACKOFF_DELAYS_MS[attempt - 1] ?? 0
+      await sleep(delay)
+
       try {
         const response = await this.fetchFn(plugin.webhook_url, {
           method: 'POST',

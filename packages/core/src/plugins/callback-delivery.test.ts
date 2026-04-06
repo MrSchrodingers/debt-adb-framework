@@ -148,13 +148,14 @@ describe('CallbackDelivery', () => {
 
   describe('retry logic', () => {
     it('retries 3 times on failure', async () => {
+      vi.useFakeTimers()
       registerOralsin()
       mockFetch
         .mockRejectedValueOnce(new Error('ECONNREFUSED'))
         .mockRejectedValueOnce(new Error('ECONNREFUSED'))
         .mockRejectedValueOnce(new Error('ECONNREFUSED'))
 
-      await delivery.sendResultCallback('oralsin', 'msg-1', {
+      const promise = delivery.sendResultCallback('oralsin', 'msg-1', {
         idempotency_key: 'test-key',
         status: 'sent',
         sent_at: '2026-04-02T15:00:00Z',
@@ -169,17 +170,23 @@ describe('CallbackDelivery', () => {
         },
         error: null,
       })
+      // Advance timers for backoff delays (5s + 15s)
+      await vi.advanceTimersByTimeAsync(5_000)
+      await vi.advanceTimersByTimeAsync(15_000)
+      await promise
 
       expect(mockFetch).toHaveBeenCalledTimes(3)
+      vi.useRealTimers()
     })
 
     it('succeeds on second retry', async () => {
+      vi.useFakeTimers()
       registerOralsin()
       mockFetch
         .mockRejectedValueOnce(new Error('ECONNREFUSED'))
         .mockResolvedValueOnce(new Response('OK', { status: 200 }))
 
-      await delivery.sendResultCallback('oralsin', 'msg-1', {
+      const promise = delivery.sendResultCallback('oralsin', 'msg-1', {
         idempotency_key: 'test-key',
         status: 'sent',
         sent_at: '2026-04-02T15:00:00Z',
@@ -194,15 +201,20 @@ describe('CallbackDelivery', () => {
         },
         error: null,
       })
+      // Advance timer for first backoff (5s before attempt 2)
+      await vi.advanceTimersByTimeAsync(5_000)
+      await promise
 
       expect(mockFetch).toHaveBeenCalledTimes(2)
+      vi.useRealTimers()
     })
 
     it('persists in failed_callbacks after 3 failures', async () => {
+      vi.useFakeTimers()
       registerOralsin()
       mockFetch.mockRejectedValue(new Error('ECONNREFUSED'))
 
-      await delivery.sendResultCallback('oralsin', 'msg-1', {
+      const promise = delivery.sendResultCallback('oralsin', 'msg-1', {
         idempotency_key: 'test-key',
         status: 'sent',
         sent_at: '2026-04-02T15:00:00Z',
@@ -217,6 +229,9 @@ describe('CallbackDelivery', () => {
         },
         error: null,
       })
+      await vi.advanceTimersByTimeAsync(5_000)
+      await vi.advanceTimersByTimeAsync(15_000)
+      await promise
 
       const failed = delivery.listFailedCallbacks()
       expect(failed).toHaveLength(1)
@@ -224,6 +239,52 @@ describe('CallbackDelivery', () => {
       expect(failed[0].message_id).toBe('msg-1')
       expect(failed[0].callback_type).toBe('result')
       expect(failed[0].attempts).toBe(3)
+      vi.useRealTimers()
+    })
+
+    it('applies exponential backoff delays between retries', async () => {
+      vi.useFakeTimers()
+      registerOralsin()
+      mockFetch.mockRejectedValue(new Error('ECONNREFUSED'))
+
+      const promise = delivery.sendResultCallback('oralsin', 'msg-1', {
+        idempotency_key: 'test-key',
+        status: 'sent',
+        sent_at: '2026-04-02T15:00:00Z',
+        delivery: {
+          message_id: null,
+          provider: 'adb',
+          sender_phone: '5537999001122',
+          sender_session: 'oralsin-1-4',
+          pair_used: 'MG-Guaxupé',
+          used_fallback: false,
+          elapsed_ms: 5000,
+        },
+        error: null,
+      })
+
+      // Attempt 1 fires immediately
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+
+      // Before 5s, attempt 2 should NOT have fired
+      await vi.advanceTimersByTimeAsync(4_999)
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+
+      // At 5s, attempt 2 fires
+      await vi.advanceTimersByTimeAsync(1)
+      expect(mockFetch).toHaveBeenCalledTimes(2)
+
+      // Before 15s more, attempt 3 should NOT have fired
+      await vi.advanceTimersByTimeAsync(14_999)
+      expect(mockFetch).toHaveBeenCalledTimes(2)
+
+      // At 15s, attempt 3 fires
+      await vi.advanceTimersByTimeAsync(1)
+      await promise
+      expect(mockFetch).toHaveBeenCalledTimes(3)
+
+      vi.useRealTimers()
     })
   })
 
@@ -312,10 +373,11 @@ describe('CallbackDelivery', () => {
 
   describe('retryFailedCallback', () => {
     it('retries a specific failed callback', async () => {
+      vi.useFakeTimers()
       registerOralsin()
       // First: create a failed callback
       mockFetch.mockRejectedValue(new Error('ECONNREFUSED'))
-      await delivery.sendResultCallback('oralsin', 'msg-1', {
+      const promise = delivery.sendResultCallback('oralsin', 'msg-1', {
         idempotency_key: 'test-key',
         status: 'sent',
         sent_at: '2026-04-02T15:00:00Z',
@@ -330,9 +392,12 @@ describe('CallbackDelivery', () => {
         },
         error: null,
       })
+      await vi.advanceTimersByTimeAsync(20_000)
+      await promise
       mockFetch.mockReset()
+      vi.useRealTimers()
 
-      // Then: retry succeeds
+      // Then: retry succeeds (retryFailedCallback has no backoff)
       mockFetch.mockResolvedValueOnce(new Response('OK', { status: 200 }))
       const failed = delivery.listFailedCallbacks()
       await delivery.retryFailedCallback(failed[0].id)
