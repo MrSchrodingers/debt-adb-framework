@@ -15,6 +15,7 @@ interface DeviceDetailProps {
 export function DeviceDetail({ device, health, accounts, alerts, onClose }: DeviceDetailProps) {
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [confirmAction, setConfirmAction] = useState<string | null>(null)
+  const [actionResult, setActionResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
 
   const latest = health[health.length - 1] ?? null
   const hasAlert = (type: string) => alerts.some((a) => a.type === type)
@@ -127,10 +128,29 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
             loading={actionLoading === 'hygienize'}
             onClick={async () => {
               setActionLoading('hygienize')
+              setActionResult(null)
               try {
-                await fetch(`${CORE_URL}/api/v1/devices/${device.serial}/hygienize`, { method: 'POST', headers: authHeaders() })
+                const res = await fetch(`${CORE_URL}/api/v1/devices/${device.serial}/hygienize`, { method: 'POST', headers: authHeaders() })
+                if (res.ok) {
+                  const data = await res.json()
+                  const removed = data.bloat?.removed?.length ?? 0
+                  const steps = data.steps ?? {}
+                  const parts = []
+                  if (steps.screen_timeout_max) parts.push('tela sempre ligada')
+                  if (steps.lock_disabled) parts.push('lock off')
+                  if (removed > 0) parts.push(`${removed} apps removidos`)
+                  if (steps.dnd_total_silence) parts.push('DND ativado')
+                  if (steps.services_stopped) parts.push('servicos parados')
+                  setActionResult({ type: 'success', message: `Higienizado: ${parts.join(', ')}` })
+                } else {
+                  const err = await res.json().catch(() => null)
+                  setActionResult({ type: 'error', message: err?.error ?? 'Falha ao higienizar' })
+                }
+              } catch {
+                setActionResult({ type: 'error', message: 'Erro de conexao' })
               } finally {
                 setActionLoading(null)
+                setTimeout(() => setActionResult(null), 15000)
               }
             }}
           />
@@ -181,6 +201,17 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
             <ActionBtn icon={RefreshCw} label="Restart WA" loading={actionLoading === 'restart-wa'} onClick={() => setConfirmAction('restart-wa')} danger />
           )}
         </div>
+
+        {/* Action result feedback */}
+        {actionResult && (
+          <div className={`rounded-lg px-3 py-2 text-xs font-medium ${
+            actionResult.type === 'success'
+              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+              : 'bg-red-500/10 text-red-400 border border-red-500/20'
+          }`}>
+            {actionResult.message}
+          </div>
+        )}
       </div>
     </div>
   )
