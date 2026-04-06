@@ -47,6 +47,7 @@ export interface PaginatedFilters {
   status?: string
   pluginName?: string
   phone?: string
+  senderNumber?: string
   dateFrom?: string
   dateTo?: string
 }

@@ -27,10 +27,13 @@ export interface PluginCount {
   count: number
 }
 
-export function getMetricsSummary(db: Database.Database): MetricsSummary {
+export function getMetricsSummary(db: Database.Database, senderNumber?: string): MetricsSummary {
   const todayStart = new Date()
   todayStart.setUTCHours(0, 0, 0, 0)
   const todayIso = todayStart.toISOString()
+
+  const senderClause = senderNumber ? ' AND sender_number = ?' : ''
+  const senderParams = senderNumber ? [todayIso, senderNumber] : [todayIso]
 
   const row = db.prepare(`
     SELECT
@@ -39,8 +42,8 @@ export function getMetricsSummary(db: Database.Database): MetricsSummary {
       COUNT(*) FILTER (WHERE status IN ('failed', 'permanently_failed')) AS failed_count,
       COUNT(*) AS total_today
     FROM messages
-    WHERE created_at >= ?
-  `).get(todayIso) as {
+    WHERE created_at >= ?${senderClause}
+  `).get(...senderParams) as {
     terminal_count: number
     sent_count: number
     failed_count: number
@@ -57,8 +60,8 @@ export function getMetricsSummary(db: Database.Database): MetricsSummary {
       (julianday(updated_at) - julianday(created_at)) * 86400000
     ) AS avg_ms
     FROM messages
-    WHERE status = 'sent' AND created_at >= ?
-  `).get(todayIso) as { avg_ms: number | null }
+    WHERE status = 'sent' AND created_at >= ?${senderClause}
+  `).get(...senderParams) as { avg_ms: number | null }
 
   return {
     successRate: Math.round(successRate * 100) / 100,
@@ -68,8 +71,11 @@ export function getMetricsSummary(db: Database.Database): MetricsSummary {
   }
 }
 
-export function getMetricsHourly(db: Database.Database): HourlyBucket[] {
+export function getMetricsHourly(db: Database.Database, senderNumber?: string): HourlyBucket[] {
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+
+  const senderClause = senderNumber ? ' AND sender_number = ?' : ''
+  const params = senderNumber ? [cutoff, senderNumber] : [cutoff]
 
   const rows = db.prepare(`
     SELECT
@@ -78,9 +84,9 @@ export function getMetricsHourly(db: Database.Database): HourlyBucket[] {
       COUNT(*) FILTER (WHERE status IN ('failed', 'permanently_failed')) AS failed,
       COUNT(*) FILTER (WHERE status = 'queued') AS queued
     FROM messages
-    WHERE created_at >= ?
+    WHERE created_at >= ?${senderClause}
     GROUP BY hour
-  `).all(cutoff) as { hour: number; sent: number; failed: number; queued: number }[]
+  `).all(...params) as { hour: number; sent: number; failed: number; queued: number }[]
 
   // Build full 24-hour array with zeros for missing hours
   const hourMap = new Map<number, HourlyBucket>()
@@ -94,7 +100,10 @@ export function getMetricsHourly(db: Database.Database): HourlyBucket[] {
   return Array.from(hourMap.values()).sort((a, b) => a.hour - b.hour)
 }
 
-export function getMetricsByStatus(db: Database.Database): StatusCounts {
+export function getMetricsByStatus(db: Database.Database, senderNumber?: string): StatusCounts {
+  const senderClause = senderNumber ? 'WHERE sender_number = ?' : ''
+  const params = senderNumber ? [senderNumber] : []
+
   const row = db.prepare(`
     SELECT
       COUNT(*) FILTER (WHERE status = 'queued') AS queued,
@@ -102,7 +111,8 @@ export function getMetricsByStatus(db: Database.Database): StatusCounts {
       COUNT(*) FILTER (WHERE status = 'sent') AS sent,
       COUNT(*) FILTER (WHERE status IN ('failed', 'permanently_failed')) AS failed
     FROM messages
-  `).get() as { queued: number; sending: number; sent: number; failed: number }
+    ${senderClause}
+  `).get(...params) as { queued: number; sending: number; sent: number; failed: number }
 
   return {
     queued: row.queued,
@@ -128,16 +138,19 @@ export function registerMetricsRoutes(
   server: FastifyInstance,
   db: Database.Database,
 ): void {
-  server.get('/api/v1/metrics/summary', async () => {
-    return getMetricsSummary(db)
+  server.get('/api/v1/metrics/summary', async (request) => {
+    const { senderNumber } = request.query as { senderNumber?: string }
+    return getMetricsSummary(db, senderNumber)
   })
 
-  server.get('/api/v1/metrics/hourly', async () => {
-    return getMetricsHourly(db)
+  server.get('/api/v1/metrics/hourly', async (request) => {
+    const { senderNumber } = request.query as { senderNumber?: string }
+    return getMetricsHourly(db, senderNumber)
   })
 
-  server.get('/api/v1/metrics/by-status', async () => {
-    return getMetricsByStatus(db)
+  server.get('/api/v1/metrics/by-status', async (request) => {
+    const { senderNumber } = request.query as { senderNumber?: string }
+    return getMetricsByStatus(db, senderNumber)
   })
 
   server.get('/api/v1/metrics/by-plugin', async () => {

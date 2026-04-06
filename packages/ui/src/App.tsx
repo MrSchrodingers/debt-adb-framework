@@ -15,6 +15,7 @@ import { ShellTerminal } from './components/shell-terminal'
 import { DeviceInfo } from './components/device-info'
 import { ToastContainer, type Toast } from './components/toast'
 import { AuditLog } from './components/audit-log'
+import { DeviceProfileSelector, type DeviceProfileSelection } from './components/device-profile-selector'
 import type { DeviceRecord, HealthSnapshot, WhatsAppAccount, Alert } from './types'
 
 type Tab = 'devices' | 'queue' | 'sessions' | 'metricas' | 'auditoria'
@@ -30,6 +31,11 @@ export function App() {
   const [activeTab, setActiveTab] = useState<Tab>('devices')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [toasts, setToasts] = useState<Toast[]>([])
+  const [dpSelection, setDpSelection] = useState<DeviceProfileSelection>({
+    serial: null,
+    profileId: null,
+    senderNumber: null,
+  })
 
   const addToast = useCallback((type: Toast['type'], message: string) => {
     const toast: Toast = {
@@ -185,8 +191,6 @@ export function App() {
         <StatsBar
           deviceCount={devices.length}
           onlineCount={onlineCount}
-          sentToday={0}
-          pendingCount={0}
           alertCount={activeAlertCount}
         />
 
@@ -195,13 +199,38 @@ export function App() {
           {activeTab === 'sessions' ? (
             <SessionManager />
           ) : activeTab === 'auditoria' ? (
-            <AuditLog />
+            <div className="space-y-4">
+              <div className="flex items-center gap-3">
+                <DeviceProfileSelector
+                  devices={devices}
+                  selection={dpSelection}
+                  onSelect={setDpSelection}
+                />
+              </div>
+              <AuditLog deviceSerial={dpSelection.serial} />
+            </div>
           ) : activeTab === 'metricas' ? (
-            <MetricsDashboard />
+            <div className="space-y-4">
+              <div className="flex items-center gap-3">
+                <DeviceProfileSelector
+                  devices={devices}
+                  selection={dpSelection}
+                  onSelect={setDpSelection}
+                />
+              </div>
+              <MetricsDashboard senderNumber={dpSelection.senderNumber} />
+            </div>
           ) : activeTab === 'queue' ? (
-            <div className="space-y-6">
+            <div className="space-y-4">
+              <div className="flex items-center gap-3">
+                <DeviceProfileSelector
+                  devices={devices}
+                  selection={dpSelection}
+                  onSelect={setDpSelection}
+                />
+              </div>
               <SendForm onSend={handleSend} disabled={!hasOnlineDevice} />
-              <MessageList />
+              <MessageList senderNumber={dpSelection.senderNumber} />
             </div>
           ) : (
             <div className="space-y-6">

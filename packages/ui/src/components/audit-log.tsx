@@ -88,7 +88,11 @@ function exportToCsv(items: AuditItem[]): void {
 
 // ── Component ──
 
-export function AuditLog() {
+interface AuditLogProps {
+  deviceSerial?: string | null
+}
+
+export function AuditLog({ deviceSerial }: AuditLogProps = {}) {
   const [items, setItems] = useState<AuditItem[]>([])
   const [total, setTotal] = useState(0)
   const limit = 50
@@ -118,6 +122,7 @@ export function AuditLog() {
       if (dateTo) params.set('dateTo', dateTo)
       if (status) params.set('status', status)
       if (direction) params.set('direction', direction)
+      if (deviceSerial) params.set('deviceSerial', deviceSerial)
 
       const res = await fetch(`${CORE_URL}/api/v1/audit/messages?${params}`, {
         headers: authHeaders(),
@@ -132,7 +137,7 @@ export function AuditLog() {
     } finally {
       setLoading(false)
     }
-  }, [limit, offset, phone, dateFrom, dateTo, status, direction])
+  }, [limit, offset, phone, dateFrom, dateTo, status, direction, deviceSerial])
 
   useEffect(() => {
     fetchItems()
@@ -141,7 +146,7 @@ export function AuditLog() {
   // Reset offset when filters change
   useEffect(() => {
     setOffset(0)
-  }, [phone, dateFrom, dateTo, status, direction])
+  }, [phone, dateFrom, dateTo, status, direction, deviceSerial])
 
   const fetchTimeline = useCallback(async (id: string) => {
     if (expandedId === id) {

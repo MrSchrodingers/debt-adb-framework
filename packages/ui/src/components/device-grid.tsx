@@ -1,4 +1,5 @@
-import { useState, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import { CheckCircle, AlertTriangle as AlertTriangleIcon } from 'lucide-react'
 import { CORE_URL, authHeaders } from '../config'
 import type { DeviceRecord, Alert } from '../types'
 
@@ -21,11 +22,41 @@ interface DeviceGridProps {
   onSelect: (serial: string) => void
 }
 
+interface ValidationResult {
+  serial: string
+  ready: boolean
+  profiles?: number
+  issues: string[]
+}
+
 export function DeviceGrid({ devices, alerts, selectedSerial, onSelect }: DeviceGridProps) {
   const [checkedSerials, setCheckedSerials] = useState<Set<string>>(new Set())
   const [bulkLoading, setBulkLoading] = useState(false)
   const [bulkResults, setBulkResults] = useState<BulkActionResult[] | null>(null)
   const [confirmReboot, setConfirmReboot] = useState(false)
+  const [validations, setValidations] = useState<Record<string, ValidationResult>>({})
+
+  useEffect(() => {
+    const onlineDevices = devices.filter(d => d.status === 'online')
+    if (onlineDevices.length === 0) return
+
+    const controller = new AbortController()
+    for (const device of onlineDevices) {
+      fetch(`${CORE_URL}/api/v1/devices/${device.serial}/validate`, {
+        headers: authHeaders(),
+        signal: controller.signal,
+      })
+        .then(r => r.ok ? r.json() : null)
+        .then((data: ValidationResult | null) => {
+          if (data) {
+            setValidations(prev => ({ ...prev, [device.serial]: data }))
+          }
+        })
+        .catch(() => { /* aborted or network error */ })
+    }
+
+    return () => controller.abort()
+  }, [devices])
 
   const toggleCheck = useCallback((serial: string, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -90,6 +121,7 @@ export function DeviceGrid({ devices, alerts, selectedSerial, onSelect }: Device
           const hasAlerts = deviceAlerts.length > 0
           const isSelected = selectedSerial === device.serial
           const isChecked = checkedSerials.has(device.serial)
+          const validation = validations[device.serial]
 
           return (
             <button
@@ -143,6 +175,24 @@ export function DeviceGrid({ devices, alerts, selectedSerial, onSelect }: Device
                     }`}
                   >
                     {deviceAlerts.length} alert{deviceAlerts.length > 1 ? 's' : ''}
+                  </span>
+                )}
+                {validation && (
+                  <span
+                    className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs ${
+                      validation.ready
+                        ? 'bg-emerald-500/10 text-emerald-400'
+                        : 'bg-red-500/10 text-red-400'
+                    }`}
+                    title={validation.ready ? 'Pronto para envio' : validation.issues.join(', ')}
+                  >
+                    {validation.ready
+                      ? <CheckCircle className="h-3 w-3" />
+                      : <AlertTriangleIcon className="h-3 w-3" />
+                    }
+                    {validation.profiles && (
+                      <span>{validation.profiles}P</span>
+                    )}
                   </span>
                 )}
               </div>

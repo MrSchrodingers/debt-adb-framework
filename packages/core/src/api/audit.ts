@@ -40,6 +40,7 @@ export interface AuditListParams {
   status?: string
   direction?: 'incoming' | 'outgoing'
   plugin?: string
+  deviceSerial?: string
 }
 
 // ── Service ──
@@ -140,6 +141,15 @@ export class AuditService {
       qValues.push(params.plugin)
       // History entries don't have plugin_name — exclude them when filtering by plugin
       hConditions.push('1 = 0')
+    }
+
+    if (params.deviceSerial) {
+      // Queue messages: locked_by stores the device serial that processed it
+      qConditions.push('locked_by = ?')
+      qValues.push(params.deviceSerial)
+      // History entries: device_serial column
+      hConditions.push('device_serial = ?')
+      hValues.push(params.deviceSerial)
     }
 
     const whereQ = qConditions.length > 0 ? `WHERE ${qConditions.join(' AND ')}` : ''
@@ -281,6 +291,7 @@ const querySchema = z.object({
   status: z.string().optional(),
   direction: z.enum(['incoming', 'outgoing']).optional(),
   plugin: z.string().optional(),
+  deviceSerial: z.string().optional(),
 })
 
 export function registerAuditRoutes(server: FastifyInstance, db: Database.Database): void {

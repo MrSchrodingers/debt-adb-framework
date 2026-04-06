@@ -24,7 +24,11 @@ interface PaginatedResponse {
   total: number
 }
 
-export function MessageList() {
+interface MessageListProps {
+  senderNumber?: string | null
+}
+
+export function MessageList({ senderNumber }: MessageListProps = {}) {
   const [messages, setMessages] = useState<Message[]>([])
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
@@ -44,6 +48,9 @@ export function MessageList() {
       if (phoneSearch.trim()) {
         params.set('phone', phoneSearch.trim())
       }
+      if (senderNumber) {
+        params.set('senderNumber', senderNumber)
+      }
 
       const res = await fetch(`${CORE_URL}/api/v1/messages?${params.toString()}`, { headers: authHeaders() })
       if (!res.ok) return
@@ -56,7 +63,7 @@ export function MessageList() {
     } finally {
       setLoading(false)
     }
-  }, [offset, statusFilter, phoneSearch])
+  }, [offset, statusFilter, phoneSearch, senderNumber])
 
   useEffect(() => {
     fetchMessages()

@@ -43,17 +43,22 @@ const STATUS_COLORS: Record<string, string> = {
 
 const POLL_INTERVAL = 30_000
 
-export function MetricsDashboard() {
+interface MetricsDashboardProps {
+  senderNumber?: string | null
+}
+
+export function MetricsDashboard({ senderNumber }: MetricsDashboardProps = {}) {
   const [summary, setSummary] = useState<MetricsSummary | null>(null)
   const [hourly, setHourly] = useState<HourlyBucket[]>([])
   const [byStatus, setByStatus] = useState<StatusCounts | null>(null)
 
   const fetchAll = useCallback(async () => {
     try {
+      const qs = senderNumber ? `?senderNumber=${encodeURIComponent(senderNumber)}` : ''
       const [summaryRes, hourlyRes, statusRes] = await Promise.all([
-        fetch(`${CORE_URL}/api/v1/metrics/summary`, { headers: authHeaders() }),
-        fetch(`${CORE_URL}/api/v1/metrics/hourly`, { headers: authHeaders() }),
-        fetch(`${CORE_URL}/api/v1/metrics/by-status`, { headers: authHeaders() }),
+        fetch(`${CORE_URL}/api/v1/metrics/summary${qs}`, { headers: authHeaders() }),
+        fetch(`${CORE_URL}/api/v1/metrics/hourly${qs}`, { headers: authHeaders() }),
+        fetch(`${CORE_URL}/api/v1/metrics/by-status${qs}`, { headers: authHeaders() }),
       ])
       if (summaryRes.ok) setSummary(await summaryRes.json())
       if (hourlyRes.ok) setHourly(await hourlyRes.json())
@@ -61,7 +66,7 @@ export function MetricsDashboard() {
     } catch {
       // silently fail
     }
-  }, [])
+  }, [senderNumber])
 
   useEffect(() => {
     fetchAll()

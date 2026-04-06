@@ -229,6 +229,11 @@ export class MessageQueue {
       params.push(`%${filters.phone}%`)
     }
 
+    if (filters.senderNumber) {
+      conditions.push('sender_number = ?')
+      params.push(filters.senderNumber)
+    }
+
     if (filters.dateFrom) {
       conditions.push('created_at >= ?')
       params.push(`${filters.dateFrom}T00:00:00.000Z`)

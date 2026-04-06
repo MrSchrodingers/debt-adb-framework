@@ -57,6 +57,7 @@ export function registerMessageRoutes(
       offset?: string
       pluginName?: string
       phone?: string
+      senderNumber?: string
       dateFrom?: string
       dateTo?: string
     }
@@ -66,7 +67,7 @@ export function registerMessageRoutes(
     }
 
     // If any pagination/filter param is present, use paginated method
-    const hasPagination = query.limit || query.offset || query.pluginName || query.phone || query.dateFrom || query.dateTo
+    const hasPagination = query.limit || query.offset || query.pluginName || query.phone || query.senderNumber || query.dateFrom || query.dateTo
     if (hasPagination) {
       return queue.listPaginated({
         limit: query.limit ? Number(query.limit) : undefined,
@@ -74,6 +75,7 @@ export function registerMessageRoutes(
         status: query.status,
         pluginName: query.pluginName,
         phone: query.phone,
+        senderNumber: query.senderNumber,
         dateFrom: query.dateFrom,
         dateTo: query.dateTo,
       })

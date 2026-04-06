@@ -1,14 +1,58 @@
+import { useState, useEffect, useCallback } from 'react'
 import { Smartphone, Send, Clock, AlertTriangle } from 'lucide-react'
+import { CORE_URL, authHeaders } from '../config'
+
+interface MetricsSummary {
+  successRate: number
+  avgLatencyMs: number
+  totalToday: number
+  totalFailed: number
+}
+
+interface StatusCounts {
+  queued: number
+  sending: number
+  sent: number
+  failed: number
+}
 
 interface StatsBarProps {
   deviceCount: number
   onlineCount: number
-  sentToday: number
-  pendingCount: number
   alertCount: number
 }
 
-export function StatsBar({ deviceCount, onlineCount, sentToday, pendingCount, alertCount }: StatsBarProps) {
+const POLL_INTERVAL = 30_000
+
+export function StatsBar({ deviceCount, onlineCount, alertCount }: StatsBarProps) {
+  const [sentToday, setSentToday] = useState(0)
+  const [pendingCount, setPendingCount] = useState(0)
+
+  const fetchStats = useCallback(async () => {
+    try {
+      const [summaryRes, statusRes] = await Promise.all([
+        fetch(`${CORE_URL}/api/v1/metrics/summary`, { headers: authHeaders() }),
+        fetch(`${CORE_URL}/api/v1/metrics/by-status`, { headers: authHeaders() }),
+      ])
+      if (summaryRes.ok) {
+        const summary: MetricsSummary = await summaryRes.json()
+        setSentToday(summary.totalToday)
+      }
+      if (statusRes.ok) {
+        const status: StatusCounts = await statusRes.json()
+        setPendingCount(status.queued)
+      }
+    } catch {
+      // silently fail
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchStats()
+    const interval = setInterval(fetchStats, POLL_INTERVAL)
+    return () => clearInterval(interval)
+  }, [fetchStats])
+
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 px-6 py-4 border-b border-zinc-800/40">
       <StatCard
@@ -22,7 +66,7 @@ export function StatsBar({ deviceCount, onlineCount, sentToday, pendingCount, al
         icon={Send}
         label="Enviadas"
         value={String(sentToday)}
-        sub="nesta sessao"
+        sub="hoje"
         color="blue"
       />
       <StatCard
