@@ -6,6 +6,56 @@ import { IpRateLimiter } from './rate-limiter.js'
 const shellRateLimiter = new IpRateLimiter({ maxRequests: 10, windowMs: 60_000 })
 const shellSchema = z.object({ command: z.string().min(1).max(4096) })
 
+// ── Shared user-switch utilities (used by hygienize, switch-user, scan-number) ──
+
+interface AdbShell {
+  shell: (serial: string, cmd: string) => Promise<string>
+}
+
+/** Get current foreground Android user ID */
+async function getCurrentUser(adb: AdbShell, serial: string): Promise<number> {
+  const out = (await adb.shell(serial, 'am get-current-user')).trim()
+  return Number(out)
+}
+
+/** Switch to target user with polling verification. Returns true if successful. */
+async function switchUserVerified(adb: AdbShell, serial: string, targetUid: number, timeoutMs = 15_000): Promise<boolean> {
+  const current = await getCurrentUser(adb, serial)
+  if (current === targetUid) return true // already on correct user
+
+  await adb.shell(serial, `am switch-user ${targetUid}`)
+
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 500))
+    try {
+      if (await getCurrentUser(adb, serial) === targetUid) return true
+    } catch { /* retry */ }
+  }
+  return false
+}
+
+/** Ensure device is on user 0. Call at the START and END of any multi-user operation. */
+async function ensureUserZero(adb: AdbShell, serial: string): Promise<boolean> {
+  return switchUserVerified(adb, serial, 0)
+}
+
+/** Verify a setting was applied by reading it back */
+async function verifySetting(adb: AdbShell, serial: string, namespace: string, key: string, expected: string): Promise<boolean> {
+  try {
+    const actual = (await adb.shell(serial, `settings get ${namespace} ${key}`)).trim()
+    return actual === expected
+  } catch { return false }
+}
+
+/** Get list of profile IDs from device */
+async function getProfileIds(adb: AdbShell, serial: string): Promise<number[]> {
+  try {
+    const out = await adb.shell(serial, 'pm list users')
+    return [...out.matchAll(/UserInfo\{(\d+):/g)].map(m => Number(m[1]))
+  } catch { return [0] }
+}
+
 export function registerDeviceRoutes(
   server: FastifyInstance,
   adb: AdbBridge,
@@ -55,12 +105,14 @@ export function registerDeviceRoutes(
     return reply.send({ serial, applied: results })
   })
 
-  // Hygienize device — per-user with verified switch + no blind UI automation
-  // Key insight: settings put, pm uninstall, cmd package ALL work via ADB shell
-  // without needing screen unlock. Only switch-user needs verification.
+  // Hygienize device — standardized: always starts from P0, processes all, returns to P0
   server.post('/api/v1/devices/:serial/hygienize', async (request, reply) => {
     const { serial } = request.params as { serial: string }
     const steps: Record<string, string> = {}
+
+    // STEP 0: Always start from user 0 (standardized entry point)
+    const startedOnZero = await ensureUserZero(adb, serial)
+    steps.initial_state = startedOnZero ? 'P0:ok' : 'P0:forced'
 
     const bloatPackages = [
       'com.facebook.appmanager', 'com.facebook.services', 'com.facebook.system',
@@ -103,27 +155,8 @@ export function registerDeviceRoutes(
     ]
 
     // Discover profiles
-    let profileIds: number[] = [0]
-    try {
-      const usersOutput = await adb.shell(serial, 'pm list users')
-      const matches = [...usersOutput.matchAll(/UserInfo\{(\d+):/g)]
-      profileIds = matches.map(m => Number(m[1]))
-    } catch { /* fallback to [0] */ }
+    const profileIds = await getProfileIds(adb, serial)
     steps.profiles_found = profileIds.join(', ')
-
-    // Helper: switch user with polling verification (no blind delays)
-    async function switchAndVerify(uid: number): Promise<boolean> {
-      await adb.shell(serial, `am switch-user ${uid}`)
-      // Poll for up to 10s until user actually switches
-      for (let i = 0; i < 20; i++) {
-        await new Promise(r => setTimeout(r, 500))
-        try {
-          const current = (await adb.shell(serial, 'am get-current-user')).trim()
-          if (current === String(uid)) return true
-        } catch { /* retry */ }
-      }
-      return false
-    }
 
     // Process each profile
     let totalRemoved = 0
@@ -132,10 +165,10 @@ export function registerDeviceRoutes(
     for (const uid of profileIds) {
       const log: string[] = []
 
-      // Step 1: Switch user (verified)
-      const switched = await switchAndVerify(uid)
+      // Step 1: Switch user (verified with polling)
+      const switched = await switchUserVerified(adb, serial, uid)
       if (!switched) {
-        log.push('FALHOU: switch-user timeout')
+        log.push('FALHOU: switch-user timeout (15s)')
         perUser[uid] = log.join(', ')
         continue
       }
@@ -170,12 +203,11 @@ export function registerDeviceRoutes(
         try { await adb.shell(serial, `am force-stop ${svc}`) } catch { /* ignore */ }
       }
 
-      // Step 6: Verify settings actually applied
-      try {
-        const brightness = (await adb.shell(serial, 'settings get system screen_brightness')).trim()
-        const timeout = (await adb.shell(serial, 'settings get system screen_off_timeout')).trim()
-        log.push(`verify:bri=${brightness},timeout=${timeout}`)
-      } catch { log.push('verify:failed') }
+      // Step 6: Verify critical settings
+      const briOk = await verifySetting(adb, serial, 'system', 'screen_brightness', '255')
+      const toOk = await verifySetting(adb, serial, 'system', 'screen_off_timeout', '2147483647')
+      const dndOk = await verifySetting(adb, serial, 'global', 'zen_mode', '2')
+      log.push(`verify:bri=${briOk ? 'ok' : 'FAIL'},timeout=${toOk ? 'ok' : 'FAIL'},dnd=${dndOk ? 'ok' : 'FAIL'}`)
 
       perUser[uid] = log.join(', ')
     }
@@ -183,9 +215,9 @@ export function registerDeviceRoutes(
     steps.bloat_removed = `${totalRemoved} total`
     steps.per_user = JSON.stringify(perUser)
 
-    // Switch back to user 0 (verified)
-    const backedToZero = await switchAndVerify(0)
-    steps.switched_back = backedToZero ? 'P0:ok' : 'P0:failed'
+    // FINAL: Always return to user 0 (standardized exit)
+    const backedToZero = await ensureUserZero(adb, serial)
+    steps.switched_back = backedToZero ? 'P0:ok' : 'P0:FAILED'
 
     // Wake screen at the end
     try {
@@ -284,86 +316,108 @@ export function registerDeviceRoutes(
     })
   })
 
-  // Switch Android user profile on device
+  // Switch Android user profile (standardized: verified + settings reapplied)
   server.post('/api/v1/devices/:serial/switch-user/:profileId', async (request, reply) => {
     const { serial, profileId } = request.params as { serial: string; profileId: string }
     const uid = Number(profileId)
 
-    try {
-      await adb.shell(serial, `am switch-user ${uid}`)
-      // Wait for switch, then unlock with PIN
-      await new Promise(r => setTimeout(r, 3000))
-      await adb.shell(serial, 'input keyevent KEYCODE_WAKEUP')
-      await new Promise(r => setTimeout(r, 500))
-      await adb.shell(serial, 'input swipe 540 1400 540 400 300')
-      await new Promise(r => setTimeout(r, 500))
-      await adb.shell(serial, 'input text 12345')
-      await new Promise(r => setTimeout(r, 300))
-      await adb.shell(serial, 'input keyevent KEYCODE_ENTER')
-      await new Promise(r => setTimeout(r, 2000))
-      // Re-apply keep-awake for this user
-      await adb.shell(serial, 'settings put system screen_off_timeout 2147483647')
-      await adb.shell(serial, 'svc power stayon usb')
-
-      const currentUser = await adb.shell(serial, 'am get-current-user')
-      server.log.info({ serial, profileId: uid }, 'Switched user profile')
-      return reply.send({ serial, profileId: uid, currentUser: currentUser.trim() })
-    } catch (err) {
-      return reply.status(500).send({ error: `Failed to switch user: ${err instanceof Error ? err.message : String(err)}` })
+    const switched = await switchUserVerified(adb, serial, uid)
+    if (!switched) {
+      return reply.status(500).send({ error: `Timeout ao trocar para P${uid}` })
     }
+
+    // Re-apply critical settings for this user (no UI needed)
+    for (const cmd of [
+      'settings put system screen_off_timeout 2147483647',
+      'settings put system screen_brightness 255',
+      'settings put system screen_brightness_mode 0',
+      'svc power stayon usb',
+    ]) {
+      try { await adb.shell(serial, cmd) } catch { /* ignore */ }
+    }
+
+    // Wake screen
+    try { await adb.shell(serial, 'input keyevent KEYCODE_WAKEUP') } catch { /* ignore */ }
+
+    const currentUser = await getCurrentUser(adb, serial)
+    server.log.info({ serial, profileId: uid, currentUser }, 'Switched user profile')
+    return reply.send({ serial, profileId: uid, currentUser, verified: currentUser === uid })
   })
 
-  // Scan WA number from profile via UIAutomator (switches user, opens WA Settings > Profile)
+  // Scan WA number — switches user, opens WA Settings > Profile, reads via UIAutomator
+  // STANDARDIZED: starts from current user, switches, scans, returns to P0
   server.post('/api/v1/devices/:serial/profiles/:profileId/scan-number', async (request, reply) => {
     const { serial, profileId } = request.params as { serial: string; profileId: string }
     const uid = Number(profileId)
 
     try {
-      // Switch user
-      await adb.shell(serial, `am switch-user ${uid}`)
-      await new Promise(r => setTimeout(r, 3500))
-      // Unlock
+      // Switch to target user (verified)
+      const switched = await switchUserVerified(adb, serial, uid)
+      if (!switched) {
+        return reply.status(500).send({ error: `Timeout ao trocar para P${uid}` })
+      }
+
+      // Wake screen (UIAutomator needs screen on)
       await adb.shell(serial, 'input keyevent KEYCODE_WAKEUP')
-      await new Promise(r => setTimeout(r, 500))
-      await adb.shell(serial, 'input swipe 540 1400 540 400 300')
-      await new Promise(r => setTimeout(r, 500))
-      await adb.shell(serial, 'input text 12345')
-      await new Promise(r => setTimeout(r, 300))
-      await adb.shell(serial, 'input keyevent KEYCODE_ENTER')
-      await new Promise(r => setTimeout(r, 2500))
+      await new Promise(r => setTimeout(r, 1000))
+
       // Open WA
       await adb.shell(serial, `am start --user ${uid} -n com.whatsapp/com.whatsapp.home.ui.HomeActivity`)
       await new Promise(r => setTimeout(r, 3000))
-      // Navigate: Menu > Configuracoes > Perfil
-      await adb.shell(serial, 'input tap 697 120') // 3-dot menu
-      await new Promise(r => setTimeout(r, 1500))
-      await adb.shell(serial, 'input tap 360 910') // Configuracoes
+
+      // Verify WA is in foreground
+      const fg = await adb.shell(serial, 'dumpsys activity activities | grep topResumedActivity').catch(() => '')
+      if (!fg.includes('com.whatsapp')) {
+        // WA didn't open — try force-start
+        await adb.shell(serial, `am start --user ${uid} -n com.whatsapp/.Main`)
+        await new Promise(r => setTimeout(r, 3000))
+      }
+
+      // Navigate: 3-dot menu → Configuracoes → Profile avatar
+      // Use UIAutomator to find elements instead of blind coordinates
+      await adb.shell(serial, 'input tap 697 120') // menu
       await new Promise(r => setTimeout(r, 2000))
-      await adb.shell(serial, 'input tap 180 215') // Profile avatar
+
+      // Find "Configurações" via UIAutomator
+      await adb.shell(serial, 'uiautomator dump /sdcard/_scan_menu.xml')
+      const menuXml = await adb.shell(serial, 'cat /sdcard/_scan_menu.xml')
+      const configMatch = menuXml.match(/text="Configura[^"]*"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/)
+      if (configMatch) {
+        const cx = Math.round((Number(configMatch[1]) + Number(configMatch[3])) / 2)
+        const cy = Math.round((Number(configMatch[2]) + Number(configMatch[4])) / 2)
+        await adb.shell(serial, `input tap ${cx} ${cy}`)
+      } else {
+        await adb.shell(serial, 'input tap 360 910') // fallback
+      }
       await new Promise(r => setTimeout(r, 2000))
-      // Dump UI and extract phone
-      await adb.shell(serial, 'uiautomator dump /sdcard/wa_profile_scan.xml')
-      const xml = await adb.shell(serial, 'cat /sdcard/wa_profile_scan.xml')
+
+      // Tap profile avatar area (top of settings)
+      await adb.shell(serial, 'input tap 180 215')
+      await new Promise(r => setTimeout(r, 2000))
+
+      // Dump UI and extract phone from "Telefone" field
+      await adb.shell(serial, 'uiautomator dump /sdcard/_scan_profile.xml')
+      const xml = await adb.shell(serial, 'cat /sdcard/_scan_profile.xml')
       const phoneMatch = xml.match(/text="\+(\d[\d \-]+)"/)
       const phone = phoneMatch ? phoneMatch[1].replace(/[\s-]/g, '') : null
-      // Navigate back to home
-      await adb.shell(serial, 'input keyevent KEYCODE_BACK')
-      await adb.shell(serial, 'input keyevent KEYCODE_BACK')
-      await adb.shell(serial, 'input keyevent KEYCODE_BACK')
-      await adb.shell(serial, 'input keyevent KEYCODE_HOME')
-      // Re-apply keep-awake
-      await adb.shell(serial, 'settings put system screen_off_timeout 2147483647')
-      await adb.shell(serial, 'svc power stayon usb')
 
-      server.log.info({ serial, profileId: uid, phone }, 'Scanned WA number from profile')
+      // Go home
+      for (let i = 0; i < 4; i++) {
+        await adb.shell(serial, 'input keyevent KEYCODE_BACK').catch(() => {})
+        await new Promise(r => setTimeout(r, 200))
+      }
+      await adb.shell(serial, 'input keyevent KEYCODE_HOME').catch(() => {})
+
+      // Return to user 0 (standardized exit)
+      await ensureUserZero(adb, serial)
+
+      server.log.info({ serial, profileId: uid, phone }, 'Scanned WA number')
       return reply.send({ serial, profileId: uid, phone })
     } catch (err) {
-      // Try to recover
-      try {
-        await adb.shell(serial, 'input keyevent KEYCODE_HOME')
-      } catch { /* ignore */ }
+      // Always try to recover to user 0
+      await ensureUserZero(adb, serial).catch(() => {})
       return reply.status(500).send({
-        error: `Scan failed: ${err instanceof Error ? err.message : String(err)}`,
+        error: `Scan falhou: ${err instanceof Error ? err.message : String(err)}`,
       })
     }
   })
