@@ -6,7 +6,7 @@ import { MessageQueue } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
 import { SendEngine } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
-import { registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes } from './api/index.js'
+import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes } from './api/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
 import { SessionManager, WebhookHandler, MessageHistory } from './waha/index.js'
 import { createWahaHttpClient } from './waha/waha-http-client.js'
@@ -34,7 +34,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       },
     },
   })
-  await server.register(cors)
+  const corsOrigins = buildCorsOrigins(process.env.DISPATCH_ALLOWED_ORIGINS)
+  await server.register(cors, { origin: corsOrigins })
 
   // API Auth — must be registered before routes
   registerApiAuth(server, process.env.DISPATCH_API_KEY)
@@ -386,7 +387,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   await server.listen({ port, host: '0.0.0.0' })
 
-  const io = new SocketIOServer(server.server, { cors: { origin: '*' } })
+  const io = new SocketIOServer(server.server, { cors: { origin: corsOrigins } })
 
   const events: DispatchEventName[] = [
     'message:queued', 'message:sending', 'message:sent', 'message:failed',
