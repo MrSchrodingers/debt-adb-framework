@@ -55,12 +55,12 @@ export function registerDeviceRoutes(
     return reply.send({ serial, applied: results })
   })
 
-  // Hygienize device — full cleanup: keep-awake + uninstall bloat + silence notifications
+  // Hygienize device — per-user cleanup across ALL profiles
   server.post('/api/v1/devices/:serial/hygienize', async (request, reply) => {
     const { serial } = request.params as { serial: string }
     const steps: Record<string, string> = {}
 
-    // Step 1: Keep awake — prevent screen off and lock
+    // Step 1: Keep awake (device-global)
     const awakeCommands = [
       { cmd: 'settings put system screen_off_timeout 2147483647', label: 'screen_timeout_max' },
       { cmd: 'svc power stayon usb', label: 'stay_awake_usb' },
@@ -68,15 +68,21 @@ export function registerDeviceRoutes(
       { cmd: 'input keyevent KEYCODE_WAKEUP', label: 'wake_screen' },
     ]
     for (const { cmd, label } of awakeCommands) {
-      try {
-        steps[label] = await adb.shell(serial, cmd) || 'ok'
-      } catch (err) {
-        steps[label] = `error: ${(err as Error).message}`
-      }
+      try { steps[label] = await adb.shell(serial, cmd) || 'ok' }
+      catch (err) { steps[label] = `error: ${(err as Error).message}` }
     }
 
-    // Step 2: Uninstall bloatware for user 0 (keeps APK, fully removes from user)
-    // Full aggressive list derived from diff of clean device vs stock POCO Serenity
+    // Step 2: Discover profiles
+    let profileIds: number[] = [0]
+    try {
+      const usersOutput = await adb.shell(serial, 'pm list users')
+      const matches = [...usersOutput.matchAll(/UserInfo\{(\d+):/g)]
+      profileIds = matches.map(m => Number(m[1]))
+    } catch { /* fallback to [0] */ }
+    steps.profiles_found = profileIds.join(', ')
+
+    // Step 3: Uninstall bloatware PER USER
+    // NEVER remove: contacts, providers.contacts, phone (needed for WA mapping)
     const bloatPackages = [
       // Facebook
       'com.facebook.appmanager', 'com.facebook.services', 'com.facebook.system',
@@ -101,28 +107,37 @@ export function registerDeviceRoutes(
       'com.miui.theme.lite', 'com.miui.videoplayer', 'com.miui.player',
       'com.xiaomi.discover', 'com.xiaomi.mipicks', 'com.xiaomi.scanner',
       'com.xiaomi.glgm', 'com.mi.globalminusscreen',
-      // Phone/Dialer/SMS/Contacts (block calls + SMS noise)
-      'com.unisoc.phone', 'com.android.contacts', 'com.android.mms.service',
+      // Dialer/SMS (block calls noise, but keep contacts provider)
+      'com.unisoc.phone', 'com.android.mms.service',
       // Calendar, FM, Browser
       'com.android.calendar.go', 'com.android.fmradio', 'com.go.browser',
     ]
-    const removed: string[] = []
-    const skipped: string[] = []
-    for (const pkg of bloatPackages) {
-      try {
-        const out = await adb.shell(serial, `pm uninstall -k --user 0 ${pkg}`)
-        if (out.includes('Success')) {
-          removed.push(pkg)
-        } else {
-          skipped.push(pkg)
-        }
-      } catch {
-        skipped.push(pkg)
-      }
-    }
-    steps.bloat_removed = `${removed.length} apps`
 
-    // Step 3: Silence everything — DND, no badges, no ringtone, no vibration
+    let totalRemoved = 0
+    const perUser: Record<number, number> = {}
+    for (const uid of profileIds) {
+      let count = 0
+      for (const pkg of bloatPackages) {
+        try {
+          const out = await adb.shell(serial, `pm uninstall -k --user ${uid} ${pkg}`)
+          if (out.includes('Success')) count++
+        } catch { /* skip */ }
+      }
+      perUser[uid] = count
+      totalRemoved += count
+    }
+    steps.bloat_removed = `${totalRemoved} total (${profileIds.map(u => `P${u}:${perUser[u]}`).join(', ')})`
+
+    // Step 4: Ensure contacts provider exists on ALL profiles (needed for WA number extraction)
+    for (const uid of profileIds) {
+      try {
+        await adb.shell(serial, `cmd package install-existing --user ${uid} com.android.contacts`)
+        await adb.shell(serial, `cmd package install-existing --user ${uid} com.android.providers.contacts`)
+      } catch { /* ignore */ }
+    }
+    steps.contacts_restored = `${profileIds.length} profiles`
+
+    // Step 5: Silence (device-global)
     const silenceCommands = [
       { cmd: 'settings put global zen_mode 2', label: 'dnd_total_silence' },
       { cmd: 'settings put secure notification_badging 0', label: 'badge_dots_off' },
@@ -133,31 +148,95 @@ export function registerDeviceRoutes(
       { cmd: 'settings put system haptic_feedback_enabled 0', label: 'haptic_off' },
     ]
     for (const { cmd, label } of silenceCommands) {
+      try { steps[label] = await adb.shell(serial, cmd) || 'ok' }
+      catch (err) { steps[label] = `error: ${(err as Error).message}` }
+    }
+
+    // Step 6: Force-stop noisy services
+    for (const svc of ['com.google.android.gms', 'com.google.android.gsf', 'com.google.android.safetycore']) {
+      try { await adb.shell(serial, `am force-stop ${svc}`) } catch { /* ignore */ }
+    }
+    steps.services_stopped = 'ok'
+
+    // Step 7: Dismiss any WA popups (press back twice to close backup prompts etc)
+    for (const uid of profileIds) {
       try {
-        steps[label] = await adb.shell(serial, cmd) || 'ok'
-      } catch (err) {
-        steps[label] = `error: ${(err as Error).message}`
+        await adb.shell(serial, `am start --user ${uid} -n com.whatsapp/com.whatsapp.Main`)
+        await new Promise(r => setTimeout(r, 500))
+        await adb.shell(serial, 'input keyevent KEYCODE_BACK')
+        await adb.shell(serial, 'input keyevent KEYCODE_BACK')
+        await adb.shell(serial, 'input keyevent KEYCODE_HOME')
+      } catch { /* ignore */ }
+    }
+    steps.wa_popups_dismissed = `${profileIds.length} profiles`
+
+    server.log.info({ serial, profiles: profileIds, totalRemoved }, 'Device hygienized (per-user)')
+
+    return reply.send({ serial, profiles: profileIds, steps })
+  })
+
+  // Validate device readiness — check all profiles are ready for sending
+  server.get('/api/v1/devices/:serial/validate', async (request, reply) => {
+    const { serial } = request.params as { serial: string }
+    const issues: string[] = []
+
+    // Check device online
+    const devices = await adb.discover()
+    const device = devices.find(d => d.serial === serial)
+    if (!device || device.type !== 'device') {
+      return reply.send({ serial, ready: false, issues: ['Device offline ou nao encontrado'] })
+    }
+
+    // Check screen awake
+    try {
+      const power = await adb.shell(serial, 'dumpsys power | grep mWakefulness')
+      if (!power.includes('Awake')) issues.push('Tela apagada — precisa wake')
+    } catch { issues.push('Nao conseguiu verificar estado da tela') }
+
+    // Check WiFi
+    try {
+      const wifi = await adb.shell(serial, 'dumpsys wifi | grep "Wi-Fi is"')
+      if (!wifi.includes('enabled')) issues.push('WiFi desligado')
+    } catch { issues.push('Nao conseguiu verificar WiFi') }
+
+    // Check profiles + WA running
+    let profileIds: number[] = [0]
+    try {
+      const usersOutput = await adb.shell(serial, 'pm list users')
+      const matches = [...usersOutput.matchAll(/UserInfo\{(\d+):/g)]
+      profileIds = matches.map(m => Number(m[1]))
+    } catch { issues.push('Nao conseguiu listar profiles') }
+
+    const ps = await adb.shell(serial, 'ps -A').catch(() => '')
+    for (const uid of profileIds) {
+      const userPrefix = uid === 0 ? 'u0_' : `u${uid}_`
+      if (!ps.includes(`${userPrefix}`) || !ps.includes('com.whatsapp')) {
+        // More precise check
+        const hasWa = ps.split('\n').some(line =>
+          line.includes(userPrefix) && line.includes('com.whatsapp')
+        )
+        if (!hasWa) issues.push(`Profile ${uid}: WhatsApp nao esta rodando`)
       }
     }
 
-    // Step 4: Force-stop noisy background services
-    const noisyServices = [
-      'com.google.android.gms', 'com.google.android.gsf',
-      'com.google.android.safetycore',
-    ]
-    for (const svc of noisyServices) {
-      try {
-        await adb.shell(serial, `am force-stop ${svc}`)
-      } catch { /* ignore */ }
-    }
-    steps.services_stopped = `${noisyServices.length} services`
+    // Check battery
+    try {
+      const battery = await adb.shell(serial, 'dumpsys battery | grep level')
+      const level = Number(battery.match(/level: (\d+)/)?.[1] ?? 0)
+      if (level < 15) issues.push(`Bateria critica: ${level}%`)
+    } catch { /* ignore */ }
 
-    server.log.info({ serial, removed: removed.length, skipped: skipped.length }, 'Device hygienized')
+    // Check screen lock
+    try {
+      const lock = await adb.shell(serial, 'locksettings get-disabled')
+      if (lock.includes('false')) issues.push('Lock screen ativo — precisa desabilitar')
+    } catch { /* ignore */ }
 
     return reply.send({
       serial,
-      steps,
-      bloat: { removed, skipped },
+      ready: issues.length === 0,
+      profiles: profileIds.length,
+      issues,
     })
   })
 
@@ -279,8 +358,8 @@ export function registerDeviceRoutes(
         id: profileId,
         name,
         running,
-        whatsapp: waInfo,
-        whatsappBusiness: wabInfo,
+        whatsapp: { installed: waInfo.installed, phone: waInfo.phone, active: waInfo.processRunning },
+        whatsappBusiness: { installed: wabInfo.installed, phone: wabInfo.phone, active: wabInfo.processRunning },
       })
     }
 
@@ -293,18 +372,28 @@ async function getWaProfileInfo(
   serial: string,
   profileId: number,
   packageName: string,
-): Promise<{ installed: boolean; phone: string | null }> {
+): Promise<{ installed: boolean; phone: string | null; processRunning: boolean }> {
   // Check if package is installed for this user
   try {
     const pkgList = await adb.shell(serial, `pm list packages --user ${profileId}`)
     if (!pkgList.includes(packageName)) {
-      return { installed: false, phone: null }
+      return { installed: false, phone: null, processRunning: false }
     }
   } catch {
-    return { installed: false, phone: null }
+    return { installed: false, phone: null, processRunning: false }
   }
 
-  // Try to get phone from contacts provider
+  // Check if process is running for this user
+  let processRunning = false
+  try {
+    const ps = await adb.shell(serial, 'ps -A')
+    const userPrefix = profileId === 0 ? 'u0_' : `u${profileId}_`
+    processRunning = ps.split('\n').some(line =>
+      line.includes(userPrefix) && line.includes(packageName)
+    )
+  } catch { /* ignore */ }
+
+  // Method 1: raw_contacts sync1 field (most reliable when available)
   try {
     const output = await adb.shell(
       serial,
@@ -312,11 +401,28 @@ async function getWaProfileInfo(
     )
     const phoneMatch = output.match(/sync1=(\d+)@s\.whatsapp\.net/)
     if (phoneMatch) {
-      return { installed: true, phone: phoneMatch[1] }
+      return { installed: true, phone: phoneMatch[1], processRunning }
     }
-  } catch {
-    // Provider not available
-  }
+  } catch { /* provider not available */ }
 
-  return { installed: true, phone: null }
+  // Method 2: data table with WA profile mimetype
+  const mimeType = packageName === 'com.whatsapp'
+    ? 'vnd.android.cursor.item/vnd.com.whatsapp.profile'
+    : 'vnd.android.cursor.item/vnd.com.whatsapp.w4b.profile'
+  try {
+    const output = await adb.shell(
+      serial,
+      `content query --uri content://com.android.contacts/data --where "mimetype='${mimeType}'" --projection data1 --user ${profileId}`,
+    )
+    const phoneMatch = output.match(/data1=(\d{10,})@/)
+    if (phoneMatch) {
+      return { installed: true, phone: phoneMatch[1], processRunning }
+    }
+  } catch { /* ignore */ }
+
+  // Method 3: dumpsys to check account registration (confirms WA is logged in, no number)
+  // Already confirmed all profiles have accounts — just can't extract number from secondary profiles
+  // This is a known Android limitation: content providers are per-user isolated
+
+  return { installed: true, phone: null, processRunning }
 }

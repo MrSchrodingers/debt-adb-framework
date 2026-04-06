@@ -360,7 +360,7 @@ function ActionBtn({ icon: Icon, label, loading, onClick, danger }: { icon: type
   )
 }
 
-function ProfileWaSlot({ label, info }: { label: string; info: { installed: boolean; phone: string | null } }) {
+function ProfileWaSlot({ label, info }: { label: string; info: { installed: boolean; phone: string | null; active?: boolean } }) {
   if (!info.installed) {
     return (
       <div className="flex items-center gap-1.5 text-xs text-zinc-600">
@@ -371,6 +371,7 @@ function ProfileWaSlot({ label, info }: { label: string; info: { installed: bool
   }
   return (
     <div className="flex items-center gap-1.5 text-xs">
+      <div className={`h-1.5 w-1.5 rounded-full flex-shrink-0 ${info.active ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
       <span className="font-medium text-zinc-400">{label}</span>
       {info.phone ? (
         <span className="font-mono text-emerald-400">{info.phone}</span>
