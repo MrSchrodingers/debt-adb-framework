@@ -401,44 +401,56 @@ export function registerDeviceRoutes(
         return reply.status(500).send({ error: `Nao conseguiu destravar tela do P${uid}` })
       }
 
+      // Helper: dump UI, find element by pattern, return center coords
+      async function findElement(pattern: RegExp): Promise<{ x: number; y: number } | null> {
+        await adb.shell(serial, 'uiautomator dump /sdcard/_scan.xml')
+        const xml = await adb.shell(serial, 'cat /sdcard/_scan.xml')
+        const match = xml.match(pattern)
+        if (!match) return null
+        // Extract bounds [x1,y1][x2,y2]
+        const boundsMatch = match[0].match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/)
+        if (!boundsMatch) return null
+        return {
+          x: Math.round((Number(boundsMatch[1]) + Number(boundsMatch[3])) / 2),
+          y: Math.round((Number(boundsMatch[2]) + Number(boundsMatch[4])) / 2),
+        }
+      }
+
       // Open WA
       await adb.shell(serial, `am start --user ${uid} -n com.whatsapp/com.whatsapp.home.ui.HomeActivity`)
       await new Promise(r => setTimeout(r, 3000))
 
-      // Verify WA is in foreground
-      const fg = await adb.shell(serial, 'dumpsys activity activities | grep topResumedActivity').catch(() => '')
-      if (!fg.includes('com.whatsapp')) {
-        // WA didn't open — try force-start
-        await adb.shell(serial, `am start --user ${uid} -n com.whatsapp/.Main`)
-        await new Promise(r => setTimeout(r, 3000))
-      }
-
-      // Navigate: 3-dot menu → Configuracoes → Profile avatar
-      // Use UIAutomator to find elements instead of blind coordinates
-      await adb.shell(serial, 'input tap 697 120') // menu
-      await new Promise(r => setTimeout(r, 2000))
-
-      // Find "Configurações" via UIAutomator
-      await adb.shell(serial, 'uiautomator dump /sdcard/_scan_menu.xml')
-      const menuXml = await adb.shell(serial, 'cat /sdcard/_scan_menu.xml')
-      const configMatch = menuXml.match(/text="Configura[^"]*"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/)
-      if (configMatch) {
-        const cx = Math.round((Number(configMatch[1]) + Number(configMatch[3])) / 2)
-        const cy = Math.round((Number(configMatch[2]) + Number(configMatch[4])) / 2)
-        await adb.shell(serial, `input tap ${cx} ${cy}`)
+      // Step 1: Find and tap overflow menu (resource-id: menuitem_overflow)
+      const menuBtn = await findElement(/menuitem_overflow[^>]*bounds="[^"]*"/)
+      if (menuBtn) {
+        await adb.shell(serial, `input tap ${menuBtn.x} ${menuBtn.y}`)
       } else {
-        await adb.shell(serial, 'input tap 360 910') // fallback
+        await adb.shell(serial, 'input tap 680 124') // fallback
       }
       await new Promise(r => setTimeout(r, 2000))
 
-      // Tap profile avatar area (top of settings)
-      await adb.shell(serial, 'input tap 180 215')
+      // Step 2: Find and tap "Configurações"
+      const configBtn = await findElement(/text="Configura[^"]*"[^>]*bounds="[^"]*"/)
+      if (configBtn) {
+        await adb.shell(serial, `input tap ${configBtn.x} ${configBtn.y}`)
+      } else {
+        await adb.shell(serial, 'input tap 500 916') // fallback
+      }
       await new Promise(r => setTimeout(r, 2000))
 
-      // Dump UI and extract phone from "Telefone" field
-      await adb.shell(serial, 'uiautomator dump /sdcard/_scan_profile.xml')
-      const xml = await adb.shell(serial, 'cat /sdcard/_scan_profile.xml')
-      const phoneMatch = xml.match(/text="\+(\d[\d \-]+)"/)
+      // Step 3: Find and tap avatar PHOTO (not name/about — photo opens Profile with phone)
+      const avatarBtn = await findElement(/profile_info_photo[^>]*bounds="[^"]*"/)
+      if (avatarBtn) {
+        await adb.shell(serial, `input tap ${avatarBtn.x} ${avatarBtn.y}`)
+      } else {
+        await adb.shell(serial, 'input tap 96 276') // fallback
+      }
+      await new Promise(r => setTimeout(r, 2000))
+
+      // Step 4: Extract phone number from Profile screen
+      await adb.shell(serial, 'uiautomator dump /sdcard/_scan.xml')
+      const profileXml = await adb.shell(serial, 'cat /sdcard/_scan.xml')
+      const phoneMatch = profileXml.match(/text="\+(\d[\d \-]+)"/)
       const phone = phoneMatch ? phoneMatch[1].replace(/[\s-]/g, '') : null
 
       // Go home
