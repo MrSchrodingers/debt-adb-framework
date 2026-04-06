@@ -365,35 +365,26 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose, onProf
           )}
         </div>
 
-        {/* Hygienize progress panel */}
-        {(actionLoading === 'hygienize' || hygienizeSteps.length > 0) && (
-          <div className="rounded-lg border border-zinc-700/40 bg-zinc-800/60 p-3 space-y-2 animate-in">
-            {/* Progress bar */}
-            <div className="flex items-center gap-3">
-              <div className="flex-1 h-1.5 rounded-full bg-zinc-700/50 overflow-hidden">
-                <div
-                  className="h-full rounded-full bg-emerald-500 transition-all duration-500 ease-out"
-                  style={{ width: `${hygienizeProgress}%` }}
-                />
-              </div>
-              <span className="text-xs font-mono text-zinc-400 w-8 text-right">{hygienizeProgress}%</span>
+        {/* Hygienize progress */}
+        {actionLoading === 'hygienize' && (
+          <div className="rounded-lg border border-zinc-700/40 bg-zinc-800/60 p-3 space-y-2">
+            <div className="h-1 rounded-full bg-zinc-700/50 overflow-hidden">
+              <div className="h-full w-full bg-emerald-500/80 rounded-full animate-shimmer" />
             </div>
-            {/* Step log */}
-            <div className="max-h-28 overflow-y-auto space-y-0.5">
-              {hygienizeSteps.map((step, i) => (
-                <div
-                  key={i}
-                  className="flex items-center gap-2 text-xs animate-in"
-                  style={{ animationDelay: `${i * 50}ms` }}
-                >
-                  <span className={i === hygienizeSteps.length - 1 && actionLoading === 'hygienize'
-                    ? 'text-amber-400 animate-pulse'
-                    : 'text-emerald-400'
-                  }>
-                    {i === hygienizeSteps.length - 1 && actionLoading === 'hygienize' ? '...' : '✓'}
-                  </span>
-                  <span className="text-zinc-400">{step}</span>
-                </div>
+            <p className="text-xs text-zinc-400 animate-pulse">
+              {hygienizeSteps[hygienizeSteps.length - 1] ?? 'Processando...'}
+            </p>
+          </div>
+        )}
+
+        {/* Hygienize result (after completion) */}
+        {!actionLoading && hygienizeSteps.length > 1 && (
+          <div className="rounded-lg border border-zinc-700/40 bg-zinc-800/60 p-3">
+            <div className="flex flex-wrap gap-1.5">
+              {hygienizeSteps.filter(s => !s.startsWith('Aguardando') && !s.startsWith('Iniciando')).map((step, i) => (
+                <span key={i} className="rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 text-xs">
+                  {step}
+                </span>
               ))}
             </div>
           </div>

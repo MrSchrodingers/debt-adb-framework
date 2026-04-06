@@ -145,7 +145,7 @@ export function registerDeviceRoutes(
       'settings put system screen_brightness_mode 0',
       'svc power stayon usb',
       'locksettings set-disabled true',
-      'settings put global zen_mode 2',
+      'cmd notification set_dnd priority',
       'settings put secure notification_badging 0',
       'settings put system ringtone_volume 0',
       'settings put system notification_sound_volume 0',
@@ -206,7 +206,7 @@ export function registerDeviceRoutes(
       // Step 6: Verify critical settings
       const briOk = await verifySetting(adb, serial, 'system', 'screen_brightness', '255')
       const toOk = await verifySetting(adb, serial, 'system', 'screen_off_timeout', '2147483647')
-      const dndOk = await verifySetting(adb, serial, 'global', 'zen_mode', '2')
+      const dndOk = await verifySetting(adb, serial, 'global', 'zen_mode', '1')
       log.push(`verify:bri=${briOk ? 'ok' : 'FAIL'},timeout=${toOk ? 'ok' : 'FAIL'},dnd=${dndOk ? 'ok' : 'FAIL'}`)
 
       perUser[uid] = log.join(', ')

@@ -3,6 +3,7 @@
 @theme {
   --animate-slide-in-right: slide-in-right 0.3s ease-out;
   --animate-in: fade-slide-in 0.25s ease-out both;
+  --animate-shimmer: shimmer 1.5s ease-in-out infinite;
 }
 
 @keyframes slide-in-right {
@@ -13,4 +14,9 @@
 @keyframes fade-slide-in {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
 }
