@@ -1,8 +1,10 @@
 # Development Progress — DEBT ADB Framework
 
-> **Last updated**: 2026-04-02T23:00:00-03:00
-> **Current phase**: 7 — Plugin System + Plugin Oralsin (APPROVED)
-> **Next action**: Start Phase 6 (Dashboard) — only remaining blocker for Phase 8
+> **Last updated**: 2026-04-06T12:00:00-03:00
+> **Current phase**: Improvement Plan (16 work items across 4 tracks)
+> **Next action**: Execute Onda 1 items in parallel (see plans/improvement-plan.md)
+> **Plan**: `plans/improvement-plan.md` — 4 tracks (Dashboard, Debt, UX, Hardening)
+> **Tech docs**: `docs/tech/` — schema, API ref, UI patterns, conventions
 
 ## Phase Status
 
