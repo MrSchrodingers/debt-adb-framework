@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts'
 import { X, Camera, RotateCcw, RefreshCw, Battery, Thermometer, MemoryStick, HardDrive, Phone, Sun, Sparkles } from 'lucide-react'
 import { CORE_URL, authHeaders } from '../config'
@@ -18,6 +18,24 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
   const [actionResult, setActionResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const [hygienizeSteps, setHygienizeSteps] = useState<string[]>([])
   const [hygienizeProgress, setHygienizeProgress] = useState(0)
+
+  interface ProfileInfo {
+    id: number
+    name: string
+    running: boolean
+    whatsapp: { installed: boolean; phone: string | null }
+    whatsappBusiness: { installed: boolean; phone: string | null }
+  }
+  const [profiles, setProfiles] = useState<ProfileInfo[]>([])
+
+  const fetchProfiles = useCallback(() => {
+    fetch(`${CORE_URL}/api/v1/devices/${device.serial}/profiles`, { headers: authHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data?.profiles) setProfiles(data.profiles) })
+      .catch(() => {})
+  }, [device.serial])
+
+  useEffect(() => { fetchProfiles() }, [fetchProfiles])
 
   const latest = health[health.length - 1] ?? null
   const hasAlert = (type: string) => alerts.some((a) => a.type === type)
@@ -97,24 +115,38 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose }: Devi
           </div>
         )}
 
-        {/* WA Accounts */}
-        {accounts.length > 0 && (
+        {/* Android Profiles + WA Accounts */}
+        {profiles.length > 0 && (
           <div>
-            <h4 className="text-xs font-medium text-zinc-400 mb-2">Contas WhatsApp</h4>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {accounts.map((acc) => (
+            <h4 className="text-xs font-medium text-zinc-400 mb-2">
+              Profiles ({profiles.length})
+            </h4>
+            <div className="space-y-2">
+              {profiles.map((profile) => (
                 <div
-                  key={`${acc.profileId}-${acc.packageName}`}
-                  className="flex items-center gap-3 rounded-lg bg-zinc-800/60 border border-zinc-700/40 px-3 py-2"
+                  key={profile.id}
+                  className="rounded-lg bg-zinc-800/60 border border-zinc-700/40 px-3 py-2.5"
                 >
-                  <div className="h-7 w-7 rounded-full bg-emerald-500/10 flex items-center justify-center flex-shrink-0">
-                    <span className="text-xs font-bold text-emerald-400">{acc.profileId}</span>
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <div className={`h-6 w-6 rounded-full flex items-center justify-center flex-shrink-0 ${
+                      profile.running ? 'bg-emerald-500/10' : 'bg-zinc-700/50'
+                    }`}>
+                      <span className={`text-xs font-bold ${profile.running ? 'text-emerald-400' : 'text-zinc-500'}`}>
+                        {profile.id}
+                      </span>
+                    </div>
+                    <span className="text-xs font-medium text-zinc-300">{profile.name}</span>
+                    <span className={`ml-auto rounded-full px-1.5 py-0.5 text-xs ${
+                      profile.running
+                        ? 'bg-emerald-500/10 text-emerald-400'
+                        : 'bg-zinc-700/50 text-zinc-500'
+                    }`}>
+                      {profile.running ? 'ativo' : 'parado'}
+                    </span>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs text-zinc-400">
-                      {acc.packageName === 'com.whatsapp' ? 'WhatsApp' : 'WhatsApp Business'}
-                    </p>
-                    <p className="text-sm font-mono text-zinc-200 truncate">{acc.phoneNumber ?? 'N/A'}</p>
+                  <div className="grid grid-cols-2 gap-1.5 pl-8">
+                    <ProfileWaSlot label="WA" info={profile.whatsapp} />
+                    <ProfileWaSlot label="WAB" info={profile.whatsappBusiness} />
                   </div>
                 </div>
               ))}
@@ -325,6 +357,27 @@ function ActionBtn({ icon: Icon, label, loading, onClick, danger }: { icon: type
       <Icon className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
       {loading ? '...' : label}
     </button>
+  )
+}
+
+function ProfileWaSlot({ label, info }: { label: string; info: { installed: boolean; phone: string | null } }) {
+  if (!info.installed) {
+    return (
+      <div className="flex items-center gap-1.5 text-xs text-zinc-600">
+        <span className="font-medium">{label}</span>
+        <span>—</span>
+      </div>
+    )
+  }
+  return (
+    <div className="flex items-center gap-1.5 text-xs">
+      <span className="font-medium text-zinc-400">{label}</span>
+      {info.phone ? (
+        <span className="font-mono text-emerald-400">{info.phone}</span>
+      ) : (
+        <span className="text-amber-400 italic">sem conta</span>
+      )}
+    </div>
   )
 }
 

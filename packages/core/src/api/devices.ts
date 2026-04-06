@@ -218,9 +218,9 @@ export function registerDeviceRoutes(
       { key: 'screenDensity', cmd: 'wm density | tail -1' },
       { key: 'uptime', cmd: 'uptime -s 2>/dev/null || cat /proc/uptime' },
       { key: 'waVersion', cmd: 'dumpsys package com.whatsapp | grep versionName | head -1' },
-      { key: 'waRunning', cmd: 'pidof com.whatsapp > /dev/null && echo running || echo stopped' },
+      { key: 'waRunning', cmd: 'ps -A | grep -q com.whatsapp && echo running || echo stopped' },
       { key: 'wabVersion', cmd: 'dumpsys package com.whatsapp.w4b | grep versionName | head -1' },
-      { key: 'wabRunning', cmd: 'pidof com.whatsapp.w4b > /dev/null && echo running || echo stopped' },
+      { key: 'wabRunning', cmd: 'ps -A | grep -q com.whatsapp.w4b && echo running || echo stopped' },
     ]
 
     const propResults = await Promise.all(
@@ -242,4 +242,81 @@ export function registerDeviceRoutes(
     }
     return reply.send(info)
   })
+
+  // Device profiles — list Android users with WA account status per profile
+  server.get('/api/v1/devices/:serial/profiles', async (request, reply) => {
+    const { serial } = request.params as { serial: string }
+
+    // Get user list
+    let usersOutput: string
+    try {
+      usersOutput = await adb.shell(serial, 'pm list users')
+    } catch {
+      return reply.status(500).send({ error: 'Failed to list users' })
+    }
+
+    // Parse: UserInfo{0:Main Oralsin 2:4c13} running
+    const profileRegex = /UserInfo\{(\d+):([^:]+):\w+\}\s*(running)?/g
+    const profiles: Array<{
+      id: number
+      name: string
+      running: boolean
+      whatsapp: { installed: boolean; phone: string | null }
+      whatsappBusiness: { installed: boolean; phone: string | null }
+    }> = []
+
+    let match: RegExpExecArray | null
+    while ((match = profileRegex.exec(usersOutput)) !== null) {
+      const profileId = Number(match[1])
+      const name = match[2].trim()
+      const running = match[3] === 'running'
+
+      // Check WA installed + phone for this profile
+      const waInfo = await getWaProfileInfo(adb, serial, profileId, 'com.whatsapp')
+      const wabInfo = await getWaProfileInfo(adb, serial, profileId, 'com.whatsapp.w4b')
+
+      profiles.push({
+        id: profileId,
+        name,
+        running,
+        whatsapp: waInfo,
+        whatsappBusiness: wabInfo,
+      })
+    }
+
+    return reply.send({ serial, profiles })
+  })
+}
+
+async function getWaProfileInfo(
+  adb: { shell: (serial: string, cmd: string) => Promise<string> },
+  serial: string,
+  profileId: number,
+  packageName: string,
+): Promise<{ installed: boolean; phone: string | null }> {
+  // Check if package is installed for this user
+  try {
+    const pkgList = await adb.shell(serial, `pm list packages --user ${profileId}`)
+    if (!pkgList.includes(packageName)) {
+      return { installed: false, phone: null }
+    }
+  } catch {
+    return { installed: false, phone: null }
+  }
+
+  // Try to get phone from contacts provider
+  try {
+    const output = await adb.shell(
+      serial,
+      `content query --uri content://com.android.contacts/raw_contacts --where "account_type='${packageName}'" --projection sync1 --user ${profileId}`,
+    )
+    const phoneMatch = output.match(/sync1=(\d+)@s\.whatsapp\.net/)
+    if (phoneMatch) {
+      return { installed: true, phone: phoneMatch[1] }
+    }
+  } catch {
+    // Provider not available
+  }
+
+  return { installed: true, phone: null }
 }
