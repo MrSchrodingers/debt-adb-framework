@@ -48,24 +48,19 @@ async function isScreenLocked(adb: AdbShell, serial: string): Promise<boolean> {
   } catch { return false }
 }
 
-/** Unlock screen: wake + swipe + PIN + verify. Returns true if unlocked. */
+/** Remove PIN + disable lock + dismiss keyguard. Works via ADB shell without UI. */
 async function unlockScreen(adb: AdbShell, serial: string, pin = '12345'): Promise<boolean> {
-  // Wake
-  await adb.shell(serial, 'input keyevent KEYCODE_WAKEUP')
-  await new Promise(r => setTimeout(r, 800))
-
-  // Check if already unlocked
-  if (!(await isScreenLocked(adb, serial))) return true
-
-  // Swipe up to reveal PIN input
-  await adb.shell(serial, 'input swipe 540 1400 540 400 300')
-  await new Promise(r => setTimeout(r, 800))
-
-  // Enter PIN
-  await adb.shell(serial, `input text ${pin}`)
-  await new Promise(r => setTimeout(r, 300))
-  await adb.shell(serial, 'input keyevent KEYCODE_ENTER')
-  await new Promise(r => setTimeout(r, 2000))
+  // Step 1: Remove PIN credential (works even when locked)
+  try { await adb.shell(serial, `locksettings clear --old ${pin}`) } catch { /* no PIN set */ }
+  // Step 2: Disable lock screen
+  try { await adb.shell(serial, 'locksettings set-disabled true') } catch { /* ignore */ }
+  // Step 3: Wake screen + dismiss keyguard
+  try { await adb.shell(serial, 'input keyevent KEYCODE_POWER') } catch { /* ignore */ }
+  await new Promise(r => setTimeout(r, 500))
+  try { await adb.shell(serial, 'input keyevent KEYCODE_WAKEUP') } catch { /* ignore */ }
+  await new Promise(r => setTimeout(r, 500))
+  try { await adb.shell(serial, 'input keyevent 82') } catch { /* MENU dismisses keyguard */ }
+  await new Promise(r => setTimeout(r, 1500))
 
   // Verify unlocked (poll for up to 5s)
   for (let i = 0; i < 10; i++) {
@@ -183,11 +178,12 @@ export function registerDeviceRoutes(
 
     // Settings that work via ADB shell WITHOUT needing screen unlock
     const settingsCommands = [
+      'locksettings clear --old 12345',    // remove PIN first
+      'locksettings set-disabled true',     // disable lock screen
       'settings put system screen_off_timeout 2147483647',
       'settings put system screen_brightness 255',
       'settings put system screen_brightness_mode 0',
       'svc power stayon usb',
-      'locksettings set-disabled true',
       'cmd notification set_dnd priority',
       'settings put secure notification_badging 0',
       'settings put system ringtone_volume 0',
