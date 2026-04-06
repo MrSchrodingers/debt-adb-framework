@@ -158,17 +158,28 @@ export function registerDeviceRoutes(
     }
     steps.services_stopped = 'ok'
 
-    // Step 7: Dismiss any WA popups (press back twice to close backup prompts etc)
-    for (const uid of profileIds) {
-      try {
-        await adb.shell(serial, `am start --user ${uid} -n com.whatsapp/com.whatsapp.Main`)
-        await new Promise(r => setTimeout(r, 500))
-        await adb.shell(serial, 'input keyevent KEYCODE_BACK')
-        await adb.shell(serial, 'input keyevent KEYCODE_BACK')
-        await adb.shell(serial, 'input keyevent KEYCODE_HOME')
-      } catch { /* ignore */ }
-    }
-    steps.wa_popups_dismissed = `${profileIds.length} profiles`
+    // Step 7: Detect and dismiss blocking WA screens (do NOT open WA — just check and fix)
+    const blockingActivities = [
+      'GoogleDriveNewUserSetupActivity', 'BackupSettingsActivity',
+      'GdprActivity', 'VerifySmsActivity', 'RegistrationActivity',
+      'UpdateActivity', 'EulaActivity', 'Welcome',
+    ]
+    let dismissed = 0
+    try {
+      const activities = await adb.shell(serial, 'dumpsys activity activities | grep -E "topResumedActivity|mResumedActivity"')
+      for (const blocking of blockingActivities) {
+        if (activities.includes(blocking)) {
+          await adb.shell(serial, 'input keyevent KEYCODE_BACK')
+          await new Promise(r => setTimeout(r, 300))
+          await adb.shell(serial, 'input keyevent KEYCODE_BACK')
+          await new Promise(r => setTimeout(r, 300))
+          await adb.shell(serial, 'input keyevent KEYCODE_HOME')
+          dismissed++
+          break
+        }
+      }
+    } catch { /* ignore */ }
+    steps.blocking_screens_dismissed = dismissed > 0 ? `${dismissed} dismissada(s)` : 'nenhuma'
 
     server.log.info({ serial, profiles: profileIds, totalRemoved }, 'Device hygienized (per-user)')
 
@@ -230,6 +241,28 @@ export function registerDeviceRoutes(
     try {
       const lock = await adb.shell(serial, 'locksettings get-disabled')
       if (lock.includes('false')) issues.push('Lock screen ativo — precisa desabilitar')
+    } catch { /* ignore */ }
+
+    // Check for blocking WA screens (backup, update, terms, etc)
+    try {
+      const activities = await adb.shell(serial, 'dumpsys activity activities | grep topResumedActivity')
+      const blockingActivities = [
+        'GoogleDriveNewUserSetupActivity', 'BackupSettingsActivity',
+        'GdprActivity', 'VerifySmsActivity', 'RegistrationActivity',
+        'UpdateActivity', 'EulaActivity', 'Welcome',
+      ]
+      for (const blocking of blockingActivities) {
+        if (activities.includes(blocking)) {
+          issues.push(`Tela bloqueante: ${blocking} — precisa dismissar`)
+          // Auto-fix: press BACK + HOME to dismiss
+          try {
+            await adb.shell(serial, 'input keyevent KEYCODE_BACK')
+            await adb.shell(serial, 'input keyevent KEYCODE_BACK')
+            await adb.shell(serial, 'input keyevent KEYCODE_HOME')
+          } catch { /* ignore */ }
+          break
+        }
+      }
     } catch { /* ignore */ }
 
     return reply.send({
