@@ -110,12 +110,12 @@ export function App() {
     return () => { socket.disconnect() }
   }, [fetchDevices, fetchAlerts, fetchDetail, selectedSerial])
 
-  const handleSend = useCallback(async (to: string, body: string) => {
+  const handleSend = useCallback(async (to: string, body: string, contactName?: string) => {
     const idempotencyKey = `ui-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const res = await fetch(`${CORE_URL}/api/v1/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to, body, idempotencyKey }),
+      body: JSON.stringify({ to, body, idempotencyKey, contactName }),
     })
     if (!res.ok) {
       const err = await res.json()

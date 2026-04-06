@@ -1,13 +1,14 @@
 import { useState } from 'react'
-import { Send, Phone } from 'lucide-react'
+import { Send, Phone, User } from 'lucide-react'
 
 interface SendFormProps {
-  onSend: (to: string, body: string) => Promise<void>
+  onSend: (to: string, body: string, contactName?: string) => Promise<void>
   disabled?: boolean
 }
 
 export function SendForm({ onSend, disabled }: SendFormProps) {
   const [to, setTo] = useState('5543991938235')
+  const [contactName, setContactName] = useState('')
   const [body, setBody] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -20,7 +21,7 @@ export function SendForm({ onSend, disabled }: SendFormProps) {
     setError(null)
     setSuccess(false)
     try {
-      await onSend(to, body)
+      await onSend(to, body, contactName.trim() || undefined)
       setBody('')
       setSuccess(true)
       setTimeout(() => setSuccess(false), 3000)
@@ -36,7 +37,7 @@ export function SendForm({ onSend, disabled }: SendFormProps) {
       <h3 className="text-sm font-medium text-zinc-300 mb-3">Enviar Mensagem</h3>
       <form onSubmit={handleSubmit} className="space-y-3">
         <div className="flex gap-3">
-          <div className="relative w-48">
+          <div className="relative w-44">
             <Phone className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-600" />
             <input
               type="text"
@@ -44,6 +45,17 @@ export function SendForm({ onSend, disabled }: SendFormProps) {
               onChange={(e) => setTo(e.target.value)}
               placeholder="Numero"
               className="w-full rounded-lg bg-zinc-800/80 pl-9 pr-3 py-2.5 text-sm text-zinc-100 border border-zinc-700/60 font-mono focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 transition-colors"
+              disabled={disabled || sending}
+            />
+          </div>
+          <div className="relative w-40">
+            <User className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-600" />
+            <input
+              type="text"
+              value={contactName}
+              onChange={(e) => setContactName(e.target.value)}
+              placeholder="Nome do contato"
+              className="w-full rounded-lg bg-zinc-800/80 pl-9 pr-3 py-2.5 text-sm text-zinc-100 border border-zinc-700/60 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 transition-colors"
               disabled={disabled || sending}
             />
           </div>

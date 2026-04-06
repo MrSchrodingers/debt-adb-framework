@@ -11,6 +11,7 @@ const enqueueSchema = z.object({
   idempotencyKey: z.string().min(1),
   priority: z.number().int().min(1).max(10).optional(),
   senderNumber: z.string().regex(/^\d{10,15}$/).optional(),
+  contactName: z.string().min(1).max(100).optional(),
 })
 
 export function registerMessageRoutes(
@@ -25,6 +26,10 @@ export function registerMessageRoutes(
     }
 
     try {
+      // Pre-register contact name if provided
+      if (parsed.data.contactName) {
+        queue.saveContact(parsed.data.to, parsed.data.contactName)
+      }
       const message = queue.enqueue(parsed.data)
       emitter.emit('message:queued', { id: message.id, to: message.to, priority: message.priority })
       return reply.status(201).send(message)
