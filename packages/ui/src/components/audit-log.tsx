@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { Fragment, useEffect, useState, useCallback } from 'react'
 import { CORE_URL, authHeaders } from '../config'
 
 // ── Types ──
@@ -282,9 +282,8 @@ export function AuditLog() {
               </thead>
               <tbody>
                 {items.map(item => (
-                  <>
+                  <Fragment key={item.id}>
                     <tr
-                      key={item.id}
                       onClick={() => item.source === 'queue' ? fetchTimeline(item.id) : undefined}
                       className={`border-b border-zinc-800/50 transition ${
                         item.source === 'queue' ? 'cursor-pointer hover:bg-zinc-800/40' : ''
@@ -321,7 +320,7 @@ export function AuditLog() {
                         </td>
                       </tr>
                     )}
-                  </>
+                  </Fragment>
                 ))}
               </tbody>
             </table>

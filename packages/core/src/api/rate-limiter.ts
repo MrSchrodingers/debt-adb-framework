@@ -12,8 +12,9 @@ export class IpRateLimiter {
   constructor(config: IpRateLimiterConfig) {
     this.maxRequests = config.maxRequests
     this.windowMs = config.windowMs
-    // Evict stale keys every 5 minutes
+    // Evict stale keys every 5 minutes (unref so it doesn't prevent process exit)
     this.cleanupTimer = setInterval(() => this.evictStale(), 300_000)
+    if (typeof this.cleanupTimer.unref === 'function') this.cleanupTimer.unref()
   }
 
   isAllowed(key: string): boolean {

@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
 
 const PUBLIC_ROUTES = [
@@ -25,7 +26,8 @@ export function registerApiAuth(server: FastifyInstance, apiKey: string | undefi
     if (isPublicRoute(request.url)) return
 
     const providedKey = request.headers['x-api-key'] as string | undefined
-    if (providedKey !== apiKey) {
+    if (!providedKey || providedKey.length !== apiKey.length ||
+        !timingSafeEqual(Buffer.from(providedKey), Buffer.from(apiKey))) {
       return reply.status(401).send({ error: 'Unauthorized' })
     }
   })

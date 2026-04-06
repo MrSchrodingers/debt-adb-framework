@@ -4,7 +4,7 @@ import Database from 'better-sqlite3'
 import { Server as SocketIOServer } from 'socket.io'
 import { MessageQueue } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
-import { SendEngine } from './engine/index.js'
+import { SendEngine, selectDevice } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
 import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes } from './api/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
@@ -308,12 +308,16 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // Device discovery polling (5s) — managed by DeviceManager
   deviceManager.startPolling(5_000)
 
+  // In-memory health map for selectDevice (populated by health interval)
+  const latestHealthMap = new Map<string, import('./monitor/types.js').HealthSnapshot>()
+
   // Health collection polling (30s) — per-device error isolation
   const healthInterval = setInterval(async () => {
     for (const device of deviceManager.getDevices()) {
       if (device.status !== 'online') continue
       try {
         const snapshot = await healthCollector.collect(device.serial)
+        latestHealthMap.set(device.serial, snapshot)
         alertSystem.evaluate(snapshot)
         emitter.emit('device:health', {
           serial: device.serial,
@@ -363,7 +367,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     workerRunning = true
 
     try {
-      const online = deviceManager.getDevices().find(d => d.status === 'online')
+      const online = selectDevice(deviceManager.getDevices(), latestHealthMap, db)
+        ?? deviceManager.getDevices().find(d => d.status === 'online') // fallback before first health poll
       if (!online) return
 
       const message = queue.dequeue(online.serial)
