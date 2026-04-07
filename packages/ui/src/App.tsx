@@ -123,6 +123,14 @@ export function App() {
       addToast('warning', `Alerta: ${data.message ?? 'novo alerta detectado'}`)
     })
 
+    socket.on('message:delivered', (data: { id: string }) => {
+      addToast('info', `Mensagem entregue: ${data.id.slice(0, 8)}...`)
+    })
+
+    socket.on('message:read', (data: { id: string }) => {
+      addToast('info', `Mensagem lida: ${data.id.slice(0, 8)}...`)
+    })
+
     return () => { socket.disconnect() }
   }, [fetchDevices, fetchAlerts, fetchDetail, addToast])
 

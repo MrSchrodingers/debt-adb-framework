@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { io } from 'socket.io-client'
 import { CORE_URL, authHeaders } from '../config'
 import {
   BarChart,
@@ -49,6 +50,16 @@ export function OralsinOverview() {
     fetchOverview()
     const interval = setInterval(fetchOverview, POLL_INTERVAL)
     return () => clearInterval(interval)
+  }, [fetchOverview])
+
+  useEffect(() => {
+    const socket = io(CORE_URL)
+    const refresh = () => fetchOverview()
+    socket.on('message:sent', refresh)
+    socket.on('message:failed', refresh)
+    socket.on('message:delivered', refresh)
+    socket.on('message:read', refresh)
+    return () => { socket.disconnect() }
   }, [fetchOverview])
 
   const hourlyFormatted = (data?.hourly ?? []).map((h) => ({

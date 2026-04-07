@@ -1,9 +1,9 @@
 import { useEffect, useRef } from 'react'
-import { CheckCircle, XCircle, AlertTriangle, X } from 'lucide-react'
+import { CheckCircle, XCircle, AlertTriangle, Info, X } from 'lucide-react'
 
 export interface Toast {
   id: string
-  type: 'success' | 'error' | 'warning'
+  type: 'success' | 'error' | 'warning' | 'info'
   message: string
   timestamp: number
 }
@@ -15,6 +15,7 @@ const iconMap = {
   success: CheckCircle,
   error: XCircle,
   warning: AlertTriangle,
+  info: Info,
 } as const
 
 const styleMap = {
@@ -31,6 +32,11 @@ const styleMap = {
   warning: {
     border: 'border-amber-500/60',
     icon: 'text-amber-400',
+    bg: 'bg-zinc-900/95',
+  },
+  info: {
+    border: 'border-blue-500/60',
+    icon: 'text-blue-400',
     bg: 'bg-zinc-900/95',
   },
 } as const
