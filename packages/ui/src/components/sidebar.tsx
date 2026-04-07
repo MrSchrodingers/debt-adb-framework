@@ -1,6 +1,6 @@
-import { Smartphone, Send, Radio, BarChart3, FileText, X, AlertTriangle } from 'lucide-react'
+import { Smartphone, Send, Radio, BarChart3, FileText, X, AlertTriangle, Puzzle } from 'lucide-react'
 
-type TabId = 'devices' | 'queue' | 'sessions' | 'metricas' | 'auditoria'
+type TabId = 'devices' | 'queue' | 'sessions' | 'metricas' | 'auditoria' | 'plugins'
 
 interface SidebarProps {
   activeTab: TabId
@@ -18,6 +18,7 @@ const NAV_ITEMS: { id: TabId; label: string; icon: typeof Smartphone }[] = [
   { id: 'sessions', label: 'Sessoes', icon: Radio },
   { id: 'metricas', label: 'Metricas', icon: BarChart3 },
   { id: 'auditoria', label: 'Auditoria', icon: FileText },
+  { id: 'plugins', label: 'Plugins', icon: Puzzle },
 ]
 
 export function Sidebar({

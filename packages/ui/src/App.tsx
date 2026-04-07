@@ -16,9 +16,10 @@ import { DeviceInfo } from './components/device-info'
 import { ToastContainer, type Toast } from './components/toast'
 import { AuditLog } from './components/audit-log'
 import { DeviceProfileSelector, type DeviceProfileSelection } from './components/device-profile-selector'
+import { PluginTabs } from './components/plugin-tabs'
 import type { DeviceRecord, HealthSnapshot, WhatsAppAccount, Alert } from './types'
 
-type Tab = 'devices' | 'queue' | 'sessions' | 'metricas' | 'auditoria'
+type Tab = 'devices' | 'queue' | 'sessions' | 'metricas' | 'auditoria' | 'plugins'
 
 export function App() {
   const [devices, setDevices] = useState<DeviceRecord[]>([])
@@ -197,7 +198,9 @@ export function App() {
 
         {/* Content */}
         <main className="flex-1 overflow-y-auto p-4 lg:p-6">
-          {activeTab === 'sessions' ? (
+          {activeTab === 'plugins' ? (
+            <PluginTabs />
+          ) : activeTab === 'sessions' ? (
             <SessionManager />
           ) : activeTab === 'auditoria' ? (
             <div className="space-y-4">
