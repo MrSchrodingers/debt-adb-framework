@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { OralsinOverview } from './oralsin-overview'
+import { OralsinMessages } from './oralsin-messages'
+import { OralsinSenders } from './oralsin-senders'
 
 type SubTab = 'overview' | 'messages' | 'senders' | 'callbacks'
 
@@ -50,22 +52,6 @@ export function PluginTabs() {
       ) : (
         <OralsinCallbacks />
       )}
-    </div>
-  )
-}
-
-function OralsinMessages() {
-  return (
-    <div className="flex items-center justify-center rounded-xl border border-zinc-800/60 bg-zinc-900/60 py-20">
-      <p className="text-zinc-500 text-sm">Mensagens — em breve</p>
-    </div>
-  )
-}
-
-function OralsinSenders() {
-  return (
-    <div className="flex items-center justify-center rounded-xl border border-zinc-800/60 bg-zinc-900/60 py-20">
-      <p className="text-zinc-500 text-sm">Senders — em breve</p>
     </div>
   )
 }
