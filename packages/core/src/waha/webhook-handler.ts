@@ -85,6 +85,7 @@ export class WebhookHandler {
           toNumber,
           historyId: existing.id,
           deduplicated: true,
+          wahaMessageId: msg.id,
         })
         return { processed: true, historyId: existing.id, event: payload.event, deduplicated: true }
       }
@@ -137,13 +138,14 @@ export class WebhookHandler {
 
     if (ack.id) {
       const ackLevel = ack.ack ?? 0
-      const ackNames = ['error', 'pending', 'server', 'device', 'read', 'played']
+      const ackNames: Record<number, string> = { 1: 'server', 2: 'device', 3: 'read', 4: 'played' }
+      const ackTimestamp = new Date((ack.timestamp ?? 0) * 1000).toISOString()
       this.emitter.emit('waha:message_ack', {
         wahaMessageId: ack.id,
         ackLevel,
         ackLevelName: ackNames[ackLevel] ?? 'unknown',
-        deliveredAt: ackLevel >= 3 ? new Date((ack.timestamp ?? 0) * 1000).toISOString() : null,
-        readAt: ackLevel >= 4 ? new Date((ack.timestamp ?? 0) * 1000).toISOString() : null,
+        deliveredAt: ackLevel >= 2 ? ackTimestamp : null,
+        readAt: ackLevel >= 3 ? ackTimestamp : null,
       })
     }
 

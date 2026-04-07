@@ -24,11 +24,15 @@ export class MessageQueue {
         context TEXT,
         waha_message_id TEXT,
         max_retries INTEGER NOT NULL DEFAULT 3,
+        fallback_used INTEGER NOT NULL DEFAULT 0,
+        fallback_provider TEXT,
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       );
       CREATE INDEX IF NOT EXISTS idx_messages_dequeue
         ON messages(status, priority, created_at);
+      CREATE INDEX IF NOT EXISTS idx_messages_sender_number
+        ON messages(sender_number);
 
       CREATE TABLE IF NOT EXISTS contacts (
         phone TEXT PRIMARY KEY,
@@ -301,6 +305,97 @@ export class MessageQueue {
       context: (row.context as string) ?? null,
       wahaMessageId: (row.waha_message_id as string) ?? null,
       maxRetries: (row.max_retries as number) ?? 3,
+      fallbackUsed: (row.fallback_used as number) ?? 0,
+      fallbackProvider: (row.fallback_provider as string) ?? null,
     }
+  }
+
+  dequeueBySender(deviceSerial: string, batchSize = 50): Message[] {
+    const txn = this.db.transaction(() => {
+      // Step 1: Check for high-priority messages (priority < 5)
+      const highPriority = this.db.prepare(`
+        SELECT * FROM messages
+        WHERE status = 'queued' AND priority < 5
+        ORDER BY priority ASC, created_at ASC
+        LIMIT 1
+      `).get() as Record<string, unknown> | undefined
+
+      if (highPriority) {
+        // Lock just the high-priority message
+        const row = this.db.prepare(`
+          UPDATE messages
+          SET status = 'locked',
+              locked_by = ?,
+              locked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          WHERE id = ?
+          RETURNING *
+        `).get(deviceSerial, highPriority.id as string) as Record<string, unknown> | undefined
+        return row ? [this.rowToMessage(row)] : []
+      }
+
+      // Step 2: Find sender group with most pending messages
+      const topSender = this.db.prepare(`
+        SELECT sender_number, COUNT(*) as cnt
+        FROM messages
+        WHERE status = 'queued' AND sender_number IS NOT NULL
+        GROUP BY sender_number
+        ORDER BY cnt DESC
+        LIMIT 1
+      `).get() as { sender_number: string; cnt: number } | undefined
+
+      if (!topSender) {
+        // Fallback: dequeue any single queued message (no sender_number set)
+        const any = this.db.prepare(`
+          UPDATE messages
+          SET status = 'locked',
+              locked_by = ?,
+              locked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          WHERE id = (
+            SELECT id FROM messages WHERE status = 'queued'
+            ORDER BY priority ASC, created_at ASC LIMIT 1
+          )
+          RETURNING *
+        `).get(deviceSerial) as Record<string, unknown> | undefined
+        return any ? [this.rowToMessage(any)] : []
+      }
+
+      // Step 3: Lock batch for that sender
+      const ids = this.db.prepare(`
+        SELECT id FROM messages
+        WHERE status = 'queued' AND sender_number = ?
+        ORDER BY priority ASC, created_at ASC
+        LIMIT ?
+      `).all(topSender.sender_number, batchSize) as { id: string }[]
+
+      if (ids.length === 0) return []
+
+      const placeholders = ids.map(() => '?').join(',')
+      this.db.prepare(`
+        UPDATE messages
+        SET status = 'locked',
+            locked_by = ?,
+            locked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE id IN (${placeholders})
+      `).run(deviceSerial, ...ids.map((r) => r.id))
+
+      // Re-select in order (RETURNING * does not preserve order)
+      const rows = this.db.prepare(`
+        SELECT * FROM messages WHERE id IN (${placeholders})
+        ORDER BY priority ASC, created_at ASC
+      `).all(...ids.map((r) => r.id)) as Record<string, unknown>[]
+
+      return rows.map((row) => this.rowToMessage(row))
+    })
+
+    return txn.immediate()
+  }
+
+  markFallbackUsed(id: string, provider: string): void {
+    this.db.prepare(
+      "UPDATE messages SET fallback_used = 1, fallback_provider = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+    ).run(provider, id)
   }
 }

@@ -30,6 +30,8 @@ export interface Message {
   context: string | null
   wahaMessageId: string | null
   maxRetries: number
+  fallbackUsed: number
+  fallbackProvider: string | null
 }
 
 export type MessageStatus =

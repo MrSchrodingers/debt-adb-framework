@@ -7,8 +7,12 @@
   "exports": {
     ".": "./dist/index.js"
   },
+  "bin": {
+    "dispatch": "dist/cli.js"
+  },
   "scripts": {
     "dev": "tsx watch src/main.ts",
+    "start:headless": "tsx src/cli.ts",
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest"

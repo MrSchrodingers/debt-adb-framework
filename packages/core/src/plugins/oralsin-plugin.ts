@@ -80,27 +80,48 @@ export class OralsinPlugin implements DispatchPlugin {
     const items = Array.isArray(parsed.data) ? parsed.data : [parsed.data]
 
     try {
-      const params: PluginEnqueueParams[] = items.map((item) => ({
-        idempotencyKey: item.idempotency_key,
-        correlationId: item.correlation_id,
-        patient: {
-          phone: item.patient.phone,
-          name: item.patient.name,
-          patientId: item.patient.patient_id,
-        },
-        message: {
-          text: item.message.text,
-          templateId: item.message.template_id,
-        },
-        senders: item.senders,
-        context: item.context,
-        sendOptions: item.send_options
-          ? {
-              maxRetries: item.send_options.max_retries,
-              priority: item.send_options.priority,
-            }
-          : undefined,
-      }))
+      const params: PluginEnqueueParams[] = []
+
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]
+        // Resolve sender via mapping — walk senders[] in order
+        const resolved = this.ctx.resolveSenderChain(item.senders)
+
+        if (!resolved) {
+          return reply.status(422).send({
+            error: 'No sender mapping found for any sender phone number',
+            details: {
+              failed_item_index: i,
+              idempotency_key: item.idempotency_key,
+              attempted_senders: item.senders.map((s: { phone: string }) => s.phone),
+              suggestion: 'Configure sender mapping via POST /api/v1/sender-mapping',
+            },
+          })
+        }
+
+        params.push({
+          idempotencyKey: item.idempotency_key,
+          correlationId: item.correlation_id,
+          patient: {
+            phone: item.patient.phone,
+            name: item.patient.name,
+            patientId: item.patient.patient_id,
+          },
+          message: {
+            text: item.message.text,
+            templateId: item.message.template_id,
+          },
+          senders: item.senders,
+          context: item.context,
+          sendOptions: item.send_options
+            ? {
+                maxRetries: item.send_options.max_retries,
+                priority: item.send_options.priority,
+              }
+            : undefined,
+          resolvedSenderPhone: resolved.mapping.phone_number,
+        })
+      }
 
       const messages = this.ctx.enqueue(params)
 

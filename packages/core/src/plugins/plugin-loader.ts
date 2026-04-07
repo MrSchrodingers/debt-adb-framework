@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3'
 import type { MessageQueue } from '../queue/message-queue.js'
 import type { PluginRegistry } from './plugin-registry.js'
 import type { PluginEventBus } from './plugin-event-bus.js'
+import type { SenderMapping } from '../engine/sender-mapping.js'
 import type {
   DispatchPlugin,
   PluginContext,
@@ -41,6 +42,7 @@ export class PluginLoader {
     private queue: MessageQueue,
     private db: Database.Database,
     logger?: PluginLoggerFactory,
+    private senderMapping?: SenderMapping,
   ) {
     this.loggerFactory = logger ?? {
       child: (bindings) => ({
@@ -105,7 +107,7 @@ export class PluginLoader {
           body: m.message.text,
           idempotencyKey: m.idempotencyKey,
           priority: PRIORITY_MAP[m.sendOptions?.priority ?? 'normal'] ?? 5,
-          senderNumber: m.senders[0]?.phone ?? null,
+          senderNumber: m.resolvedSenderPhone ?? m.senders[0]?.phone ?? null,
           pluginName,
           correlationId: m.correlationId ?? null,
           sendersConfig: JSON.stringify(m.senders),
@@ -144,6 +146,14 @@ export class PluginLoader {
 
       getQueueStats: (): QueueStats => {
         return this.queue.getQueueStats(pluginName)
+      },
+
+      getSenderMapping: (phone: string) => {
+        return this.senderMapping?.getByPhone(phone) ?? null
+      },
+
+      resolveSenderChain: (senders) => {
+        return this.senderMapping?.resolveSenderChain(senders) ?? null
       },
 
       on: (event: DispatchEventName, handler: (data: unknown) => Promise<void>): void => {

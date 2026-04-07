@@ -11,9 +11,11 @@ export interface DispatchEventMap {
   'device:health': { serial: string; batteryPercent: number; temperatureCelsius: number; ramAvailableMb: number; storageFreeBytes: number }
   'alert:new': { id: string; deviceSerial: string; severity: AlertSeverity; type: AlertType; message: string }
   'waha:message_received': { sessionName: string; fromNumber: string; toNumber: string; historyId: string }
-  'waha:message_sent': { sessionName: string; fromNumber: string; toNumber: string; historyId: string; deduplicated: boolean }
+  'waha:message_sent': { sessionName: string; fromNumber: string; toNumber: string; historyId: string; deduplicated: boolean; wahaMessageId?: string }
   'waha:session_status': { sessionName: string; status: string; phoneNumber?: string }
   'waha:message_ack': { wahaMessageId: string; ackLevel: number; ackLevelName: string; deliveredAt: string | null; readAt: string | null }
+  'message:delivered': { id: string; wahaMessageId: string; deliveredAt: string }
+  'message:read': { id: string; wahaMessageId: string; readAt: string }
 }
 
 export type DispatchEventName = keyof DispatchEventMap

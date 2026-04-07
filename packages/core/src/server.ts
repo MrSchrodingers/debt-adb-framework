@@ -4,9 +4,9 @@ import Database from 'better-sqlite3'
 import { Server as SocketIOServer } from 'socket.io'
 import { MessageQueue } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
-import { SendEngine, selectDevice } from './engine/index.js'
+import { SendEngine, selectDevice, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
-import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes } from './api/index.js'
+import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes } from './api/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
 import { SessionManager, WebhookHandler, MessageHistory } from './waha/index.js'
 import { createWahaHttpClient } from './waha/waha-http-client.js'
@@ -102,10 +102,37 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     }
   }
 
+  const serverStartTime = Date.now()
+
   server.get('/api/v1/health', async () => ({
     status: 'ok',
     timestamp: new Date().toISOString(),
   }))
+
+  // DP-6: Comprehensive health endpoint for external monitoring
+  server.get('/healthz', async () => {
+    const devices = deviceManager.getDevices()
+    const onlineDevices = devices.filter((d) => d.status === 'online')
+    const queueStats = queue.getQueueStats()
+    const plugins = pluginRegistry.listPlugins()
+    const pluginStatus: Record<string, string> = {}
+    for (const p of plugins) {
+      pluginStatus[p.name] = p.status
+    }
+
+    return {
+      status: 'healthy',
+      uptime_seconds: Math.floor((Date.now() - serverStartTime) / 1000),
+      devices: { online: onlineDevices.length, total: devices.length },
+      queue: {
+        pending: queueStats.pending,
+        processing: queueStats.processing,
+        failed_last_hour: queueStats.failedLastHour,
+      },
+      plugins: pluginStatus,
+      pid: process.pid,
+    }
+  })
   registerMessageRoutes(server, queue, emitter)
   registerDeviceRoutes(server, adb)
   registerMonitorRoutes(server, { adb, engine, deviceManager, healthCollector, waMapper, alertSystem })
@@ -181,13 +208,26 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     }
   })
 
+  // ── Receipt Tracker (DP-2) ──
+  const receiptTracker = new ReceiptTracker(db, queue, emitter)
+  receiptTracker.initialize()
+
+  // ── Sender Mapping (DP-1) ──
+  const senderMapping = new SenderMapping(db)
+  senderMapping.initialize()
+  registerSenderMappingRoutes(server, senderMapping)
+
+  // ── WAHA Fallback + Account Mutex (DP-3) ──
+  const accountMutex = new AccountMutex()
+  const wahaFallback = new WahaFallback(senderMapping, queue, fetch, process.env.WAHA_API_KEY)
+
   // ── Plugin System (Phase 7) ──
   const pluginRegistry = new PluginRegistry(db)
   pluginRegistry.initialize()
   const pluginEventBus = new PluginEventBus(pluginRegistry, emitter)
   const callbackDelivery = new CallbackDelivery(db, pluginRegistry, fetch)
   const pinoLogger = { child: (bindings: Record<string, unknown>) => ({ info: server.log.info.bind(server.log), warn: server.log.warn.bind(server.log), error: server.log.error.bind(server.log), debug: server.log.debug.bind(server.log) }) }
-  const pluginLoader = new PluginLoader(pluginRegistry, pluginEventBus, queue, db, pinoLogger)
+  const pluginLoader = new PluginLoader(pluginRegistry, pluginEventBus, queue, db, pinoLogger, senderMapping)
 
   // Load plugins from config
   const pluginNames = (process.env.DISPATCH_PLUGINS || '').split(',').map(s => s.trim()).filter(Boolean)
@@ -229,9 +269,27 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   // Plugin callback listeners — only when plugins are configured
   if (pluginNames.length > 0) {
+    // Helper to extract sender session/pair from senders_config JSON
+    const parseSenderInfo = (msg: { senderNumber: string | null; sendersConfig: string | null }) => {
+      let senderSession = ''
+      let pairUsed = ''
+      if (msg.sendersConfig && msg.senderNumber) {
+        try {
+          const senders = JSON.parse(msg.sendersConfig) as Array<{ phone: string; session: string; pair: string }>
+          const match = senders.find((s) => s.phone === msg.senderNumber)
+          if (match) {
+            senderSession = match.session
+            pairUsed = match.pair
+          }
+        } catch { /* malformed JSON — ignore */ }
+      }
+      return { senderSession, pairUsed }
+    }
+
     emitter.on('message:sent', (data) => {
       const msg = queue.getById(data.id)
       if (msg?.pluginName) {
+        const { senderSession, pairUsed } = parseSenderInfo(msg)
         void callbackDelivery.sendResultCallback(msg.pluginName, msg.id, {
           idempotency_key: msg.idempotencyKey,
           correlation_id: msg.correlationId ?? undefined,
@@ -239,14 +297,15 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
           sent_at: data.sentAt,
           delivery: {
             message_id: msg.wahaMessageId,
-            provider: 'adb',
+            provider: msg.fallbackUsed ? 'waha' : 'adb',
             sender_phone: msg.senderNumber ?? '',
-            sender_session: '',
-            pair_used: '',
-            used_fallback: false,
+            sender_session: senderSession,
+            pair_used: pairUsed,
+            used_fallback: msg.fallbackUsed === 1,
             elapsed_ms: data.durationMs,
           },
           error: null,
+          fallback_reason: msg.fallbackUsed ? { original_error: 'adb_failed', original_session: senderSession, quarantined: false } : undefined,
           context: msg.context ? JSON.parse(msg.context) : undefined,
         })
       }
@@ -270,7 +329,94 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         })
       }
     })
+
+    // DP-4: ACK callbacks (delivery receipts)
+    emitter.on('message:delivered', (data) => {
+      const msg = queue.getById(data.id)
+      if (msg?.pluginName) {
+        void callbackDelivery.sendAckCallback(msg.pluginName, msg.id, {
+          idempotency_key: msg.idempotencyKey,
+          message_id: data.id,
+          event: 'ack_update',
+          ack: {
+            level: 2,
+            level_name: 'device',
+            delivered_at: data.deliveredAt,
+            read_at: null,
+          },
+        })
+      }
+    })
+
+    emitter.on('message:read', (data) => {
+      const msg = queue.getById(data.id)
+      if (msg?.pluginName) {
+        void callbackDelivery.sendAckCallback(msg.pluginName, msg.id, {
+          idempotency_key: msg.idempotencyKey,
+          message_id: data.id,
+          event: 'ack_update',
+          ack: {
+            level: 3,
+            level_name: 'read',
+            delivered_at: data.readAt, // Use readAt as best available
+            read_at: data.readAt,
+          },
+        })
+      }
+    })
+
+    // DP-4: Response callback (patient reply captured by WAHA)
+    emitter.on('waha:message_received', (data) => {
+      // Find the most recent outgoing message to this patient
+      const history = messageHistory.query({
+        fromNumber: data.toNumber, // sender that sent to the patient
+        toNumber: data.fromNumber, // patient's number
+        direction: 'outgoing',
+        limit: 1,
+      })
+      if (history.length === 0 || !history[0].messageId) return
+
+      const dispatchMsgId = history[0].messageId
+      const msg = queue.getById(dispatchMsgId)
+      if (!msg?.pluginName) return
+
+      const incomingHistory = messageHistory.query({
+        fromNumber: data.fromNumber,
+        limit: 1,
+      })
+      const replyText = incomingHistory.length > 0 ? (incomingHistory[0].text ?? '') : ''
+
+      void callbackDelivery.sendResponseCallback(msg.pluginName, msg.id, {
+        idempotency_key: msg.idempotencyKey,
+        message_id: msg.id,
+        event: 'patient_response',
+        response: {
+          body: replyText,
+          received_at: new Date().toISOString(),
+          from_number: data.fromNumber,
+          has_media: false,
+        },
+      })
+    })
   }
+
+  // ── DP-2: Receipt Tracking — wire WAHA events to ReceiptTracker ──
+  emitter.on('waha:message_sent', (data) => {
+    // When webhook handler dedup-matches an outgoing message, correlate for receipts
+    if (data.deduplicated && data.wahaMessageId) {
+      receiptTracker.correlateOutgoing({
+        wahaMessageId: data.wahaMessageId,
+        toNumber: data.toNumber,
+        senderNumber: data.fromNumber,
+        timestamp: new Date().toISOString(),
+      })
+    }
+  })
+
+  emitter.on('waha:message_ack', (data) => {
+    const timestamp = data.deliveredAt ?? data.readAt ?? new Date().toISOString()
+    receiptTracker.handleAck(data.wahaMessageId, data.ackLevel, timestamp)
+  })
 
   // Admin routes for plugin management
   server.get('/api/v1/admin/plugins', async (_req, reply) => {
@@ -370,6 +516,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // Health data cleanup (hourly, removes > 7 days)
   const healthCleanupInterval = setInterval(() => {
     healthCollector.cleanup()
+    receiptTracker.cleanup() // DP-2: remove correlations older than 48h
   }, 3_600_000)
 
   const cleanupInterval = setInterval(() => {
@@ -379,34 +526,89 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     }
   }, 30_000)
 
-  const workerInterval = setInterval(async () => {
-    if (workerRunning) return
-    workerRunning = true
+  // DP-5: Helper to process a single message (ADB + WAHA fallback)
+  const processMessage = async (message: import('./queue/types.js').Message, deviceSerial: string) => {
+    let sendSuccess = false
+    let usedFallback = false
 
     try {
-      const online = selectDevice(deviceManager.getDevices(), latestHealthMap, db)
-        ?? deviceManager.getDevices().find(d => d.status === 'online') // fallback before first health poll
-      if (!online) return
+      await engine.send(message, deviceSerial)
+      sendSuccess = true
+    } catch (adbErr) {
+      server.log.warn({ messageId: message.id, err: adbErr }, 'Worker: ADB send failed, attempting WAHA fallback')
 
-      const message = queue.dequeue(online.serial)
-      if (!message) return
+      // Reset status to 'sending' to suppress premature 'failed' callback
+      try { queue.updateStatus(message.id, 'sending') } catch { /* ignore */ }
 
-      server.log.info({ messageId: message.id, device: online.serial }, 'Worker: sending message')
-      await engine.send(message, online.serial)
+      try {
+        const fallbackResult = await wahaFallback.send(message)
+        server.log.info({ messageId: message.id, wahaMessageId: fallbackResult.wahaMessageId }, 'Worker: WAHA fallback succeeded')
+        queue.updateStatus(message.id, 'sent')
+        emitter.emit('message:sent', { id: message.id, sentAt: new Date().toISOString(), durationMs: 0 })
+        sendSuccess = true
+        usedFallback = true
+      } catch (wahaErr) {
+        server.log.error({ messageId: message.id, err: wahaErr }, 'Worker: WAHA fallback also failed')
+        queue.updateStatus(message.id, 'permanently_failed')
+        emitter.emit('message:failed', {
+          id: message.id,
+          error: `ADB and WAHA fallback both failed: ${wahaErr instanceof Error ? wahaErr.message : String(wahaErr)}`,
+        })
+      }
+    }
 
-      // Correlation fix: record ADB send in message_history for WAHA dedup
+    if (sendSuccess) {
       messageHistory.insert({
         messageId: message.id,
         direction: 'outgoing',
         fromNumber: message.senderNumber,
         toNumber: message.to,
         text: message.body,
-        deviceSerial: online.serial,
-        capturedVia: 'adb_send',
+        deviceSerial,
+        capturedVia: usedFallback ? 'waha_webhook' : 'adb_send',
       })
+
+      if (message.senderNumber) {
+        receiptTracker.registerSent({
+          messageId: message.id,
+          toNumber: message.to,
+          senderNumber: message.senderNumber,
+          sentAt: new Date().toISOString(),
+        })
+      }
+    }
+  }
+
+  // DP-5: Worker loop uses sender-grouped dequeue
+  const workerInterval = setInterval(async () => {
+    if (workerRunning) return
+    workerRunning = true
+
+    let releaseMutex: (() => void) | null = null
+
+    try {
+      const online = selectDevice(deviceManager.getDevices(), latestHealthMap, db)
+        ?? deviceManager.getDevices().find(d => d.status === 'online')
+      if (!online) return
+
+      // DP-5: Dequeue batch grouped by sender (minimizes user switches)
+      const batch = queue.dequeueBySender(online.serial)
+      if (batch.length === 0) return
+
+      const senderNumber = batch[0].senderNumber
+      if (senderNumber) {
+        releaseMutex = await accountMutex.acquire(senderNumber)
+      }
+
+      server.log.info({ batchSize: batch.length, senderNumber, device: online.serial }, 'Worker: processing sender batch')
+
+      for (const message of batch) {
+        await processMessage(message, online.serial)
+      }
     } catch (err) {
-      server.log.error({ err }, 'Worker: send failed')
+      server.log.error({ err }, 'Worker: batch processing failed')
     } finally {
+      if (releaseMutex) releaseMutex()
       workerRunning = false
     }
   }, 5_000)
@@ -433,6 +635,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   const events: DispatchEventName[] = [
     'message:queued', 'message:sending', 'message:sent', 'message:failed',
+    'message:delivered', 'message:read',
     'device:connected', 'device:disconnected', 'device:health', 'alert:new',
     'waha:message_received', 'waha:message_sent', 'waha:session_status', 'waha:message_ack',
   ]

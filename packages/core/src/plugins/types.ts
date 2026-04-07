@@ -2,6 +2,7 @@
 // Interfaces only, no implementation
 
 import type { DispatchEventName } from '../events/index.js'
+import type { SenderMappingRecord, ResolvedSender, SenderConfig } from '../engine/sender-mapping.js'
 
 // ── Plugin Interface (what plugins implement) ──
 
@@ -21,6 +22,8 @@ export interface PluginContext {
   enqueue(msgs: PluginEnqueueParams[]): PluginMessage[]
   getMessageStatus(id: string): PluginMessage | null
   getQueueStats(): QueueStats
+  getSenderMapping(phone: string): SenderMappingRecord | null
+  resolveSenderChain(senders: SenderConfig[]): ResolvedSender | null
   on(event: DispatchEventName, handler: (data: unknown) => Promise<void>): void
   registerRoute(method: HttpMethod, path: string, handler: RouteHandler): void
   logger: PluginLogger
@@ -74,14 +77,12 @@ export interface PluginEnqueueParams {
     maxRetries?: number
     priority?: 'normal' | 'high'
   }
+  /** Phone number resolved from sender mapping (set by plugin after resolveSenderChain) */
+  resolvedSenderPhone?: string
 }
 
-export interface SenderConfig {
-  phone: string
-  session: string
-  pair: string
-  role: 'primary' | 'backup' | 'overflow' | 'reserve'
-}
+// Re-exported from engine/sender-mapping.ts (single source of truth)
+export type { SenderConfig } from '../engine/sender-mapping.js'
 
 // ── Plugin Message (core → plugin response) ──
 

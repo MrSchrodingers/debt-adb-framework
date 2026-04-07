@@ -1,0 +1,17 @@
+[Unit]
+Description=Dispatch ADB Framework
+After=network.target
+
+[Service]
+Type=simple
+User=dispatch
+WorkingDirectory=/opt/dispatch
+ExecStart=/usr/bin/node packages/core/dist/cli.js
+Restart=on-failure
+RestartSec=10
+EnvironmentFile=/opt/dispatch/.env
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
