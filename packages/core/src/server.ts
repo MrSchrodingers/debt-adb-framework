@@ -6,7 +6,7 @@ import { MessageQueue } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
 import { SendEngine, selectDevice, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
-import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes } from './api/index.js'
+import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes } from './api/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
 import { SessionManager, WebhookHandler, MessageHistory } from './waha/index.js'
 import { createWahaHttpClient } from './waha/waha-http-client.js'
@@ -149,22 +149,10 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   registerAuditRoutes(server, db)
   registerBulkActionRoutes(server, adb)
 
-  // Manual phone number mapping for profiles
-  server.put('/api/v1/devices/:serial/profiles/:profileId/phone', async (request, reply) => {
-    const { serial, profileId } = request.params as { serial: string; profileId: string }
-    const body = request.body as { phone: string; package?: string }
-    if (!body?.phone) return reply.status(400).send({ error: 'phone is required' })
-    const pkg = body.package ?? 'com.whatsapp'
-    const uid = Number(profileId)
-    db.prepare(`
-      INSERT INTO whatsapp_accounts (device_serial, profile_id, package_name, phone_number, updated_at)
-      VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-      ON CONFLICT(device_serial, profile_id, package_name) DO UPDATE SET
-        phone_number = excluded.phone_number, updated_at = excluded.updated_at
-    `).run(serial, uid, pkg, body.phone)
-    server.log.info({ serial, profileId: uid, phone: body.phone }, 'Phone number set manually')
-    return reply.send({ serial, profileId: uid, phone: body.phone })
-  })
+  // Plugin monitoring routes
+  registerPluginOralsinRoutes(server, db)
+
+  // Manual phone number mapping moved to api/devices.ts
 
   let workerRunning = false
 
