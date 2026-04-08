@@ -22,6 +22,14 @@ export class SendStrategy {
     this.config = { ...DEFAULT_CONFIG, ...config }
   }
 
+  static fromEnv(env: Record<string, string | undefined>): SendStrategy {
+    return new SendStrategy({
+      prefillWeight: Number(env.SEND_STRATEGY_PREFILL_WEIGHT) || undefined,
+      searchWeight: Number(env.SEND_STRATEGY_SEARCH_WEIGHT) || undefined,
+      typingWeight: Number(env.SEND_STRATEGY_TYPING_WEIGHT) || undefined,
+    })
+  }
+
   selectMethod(): ChatOpenMethod {
     const { prefillWeight, searchWeight, typingWeight } = this.config
     const total = prefillWeight + searchWeight + typingWeight

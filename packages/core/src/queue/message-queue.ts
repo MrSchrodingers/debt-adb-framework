@@ -33,6 +33,8 @@ export class MessageQueue {
         ON messages(status, priority, created_at);
       CREATE INDEX IF NOT EXISTS idx_messages_sender_number
         ON messages(sender_number);
+      CREATE INDEX IF NOT EXISTS idx_messages_sender_daily
+        ON messages(sender_number, status, updated_at);
 
       CREATE TABLE IF NOT EXISTS contacts (
         phone TEXT PRIMARY KEY,

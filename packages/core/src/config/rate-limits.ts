@@ -1,4 +1,4 @@
-export interface RateLimitConfig {
+export interface RateLimitGuardConfig {
   /** Max messages per sender per day. Default: 150 */
   maxPerSenderPerDay: number
   /** Delay (ms) before sending to a first-time contact. Default: 45000 (45s) */
@@ -9,7 +9,7 @@ export interface RateLimitConfig {
   jitterRange: number
 }
 
-const DEFAULTS: RateLimitConfig = {
+const DEFAULTS: RateLimitGuardConfig = {
   maxPerSenderPerDay: 150,
   firstContactDelayMs: 45_000,
   recurringContactDelayMs: 15_000,
@@ -17,9 +17,9 @@ const DEFAULTS: RateLimitConfig = {
 }
 
 export class RateLimitGuard {
-  private config: RateLimitConfig
+  private config: RateLimitGuardConfig
 
-  constructor(config?: Partial<RateLimitConfig>) {
+  constructor(config?: Partial<RateLimitGuardConfig>) {
     this.config = { ...DEFAULTS, ...config }
   }
 

@@ -4,7 +4,7 @@ import Database from 'better-sqlite3'
 import { Server as SocketIOServer } from 'socket.io'
 import { MessageQueue } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
-import { SendEngine, selectDevice, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth } from './engine/index.js'
+import { SendEngine, SendStrategy, selectDevice, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
 import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes } from './api/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
@@ -48,7 +48,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   const adb = new AdbBridge()
   const emitter = new DispatchEmitter()
-  const engine = new SendEngine(adb, queue, emitter)
+  const strategy = SendStrategy.fromEnv(process.env as Record<string, string | undefined>)
+  const engine = new SendEngine(adb, queue, emitter, strategy)
 
   const rateLimitGuard = RateLimitGuard.fromEnv(process.env as Record<string, string | undefined>)
   const senderHealth = new SenderHealth({
