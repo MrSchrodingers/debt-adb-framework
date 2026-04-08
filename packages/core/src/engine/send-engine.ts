@@ -53,20 +53,29 @@ export class SendEngine {
 
       const contactRegistered = await this.ensureContact(deviceSerial, phoneDigits)
 
-      // Open chat via wa.me deep link (WhatsApp already running for non-first msgs)
+      // Open chat with message pre-filled via wa.me?text= (official WhatsApp API)
+      // This eliminates typing entirely — text appears in compose field on open
+      const encodedBody = encodeURIComponent(message.body)
+      const deepLink = `https://wa.me/${phoneDigits}?text=${encodedBody}`
+
+      // URL length limit ~2KB. Fall back to typing for very long messages
+      const usePreFill = deepLink.length < 2000
+
       await this.adb.shell(
         deviceSerial,
-        `am start -a android.intent.action.VIEW -d "https://wa.me/${phoneDigits}" -p com.whatsapp`,
+        `am start -a android.intent.action.VIEW -d "${usePreFill ? deepLink : `https://wa.me/${phoneDigits}`}" -p com.whatsapp`,
       )
       await this.delay(isFirstInBatch ? 4000 : 2000)
 
       // Detect and dismiss known WhatsApp dialogs, then verify chat is ready
       const dialogsDismissed = await this.waitForChatReady(deviceSerial)
 
-      // Type message in word chunks (3-5x faster than char-by-char, still natural)
-      await this.typeMessage(deviceSerial, message.body)
+      // Only type if pre-fill wasn't used (very long messages >2KB URL)
+      if (!usePreFill) {
+        await this.typeMessage(deviceSerial, message.body)
+      }
 
-      await this.delay(500)
+      await this.delay(300)
       await this.tapSendButton(deviceSerial)
 
       // Wait for send confirmation
@@ -112,24 +121,15 @@ export class SendEngine {
   }
 
   private async ensureScreenReady(deviceSerial: string): Promise<void> {
-    // Proactively wake the screen — cheap and prevents false negatives after user switch
-    await this.adb.shell(deviceSerial, 'input keyevent KEYCODE_WAKEUP')
+    // Wake + unlock in single batch command (saves 1 round-trip)
+    await this.adb.shell(deviceSerial, 'input keyevent KEYCODE_WAKEUP && sleep 0.3 && input swipe 540 1800 540 800 300')
     await this.delay(500)
-
-    // Dismiss lock screen if present
-    const windowState = await this.adb.shell(deviceSerial, 'dumpsys window')
-    if (/mDreamingLockscreen=true|isStatusBarKeyguard=true|mShowingLockscreen=true/i.test(windowState)) {
-      await this.adb.shell(deviceSerial, 'input swipe 540 1800 540 800 300')
-      await this.delay(1000)
-    }
   }
 
   private async ensureCleanState(deviceSerial: string): Promise<void> {
-    // Force-stop WhatsApp to ensure a fresh start (prevents "Activity not started" issue)
-    await this.adb.shell(deviceSerial, 'am force-stop com.whatsapp')
+    // Force-stop + HOME in single batch command
+    await this.adb.shell(deviceSerial, 'am force-stop com.whatsapp && sleep 0.2 && input keyevent 3')
     await this.delay(300)
-    await this.adb.shell(deviceSerial, 'input keyevent 3') // HOME
-    await this.delay(500)
   }
 
   /** Returns true if a NEW contact was created, false if it already existed */
