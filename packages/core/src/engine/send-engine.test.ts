@@ -108,7 +108,7 @@ describe('SendEngine', () => {
       expect(events).toEqual(['sending', 'sent'])
     })
 
-    it('returns screenshot buffer and duration', async () => {
+    it('returns screenshot buffer, duration, and audit metadata', async () => {
       const msg = enqueueMsg()
       stubShellForSend(mockAdb)
 
@@ -116,6 +116,8 @@ describe('SendEngine', () => {
 
       expect(result.screenshot).toBeInstanceOf(Buffer)
       expect(result.durationMs).toBeGreaterThanOrEqual(0)
+      expect(typeof result.contactRegistered).toBe('boolean')
+      expect(typeof result.dialogsDismissed).toBe('number')
     })
   })
 

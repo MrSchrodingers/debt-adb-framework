@@ -7,6 +7,8 @@ import { escapeForAdbContent } from './contact-utils.js'
 export interface SendResult {
   screenshot: Buffer
   durationMs: number
+  contactRegistered: boolean
+  dialogsDismissed: number
 }
 
 export class SendEngine {
@@ -37,7 +39,7 @@ export class SendEngine {
 
       await this.ensureScreenReady(deviceSerial)
       await this.ensureCleanState(deviceSerial)
-      await this.ensureContact(deviceSerial, message.to)
+      const contactRegistered = await this.ensureContact(deviceSerial, message.to)
 
       // No --user flag needed — worker loop already switched to correct foreground user
       await this.adb.shell(
@@ -47,7 +49,7 @@ export class SendEngine {
       await this.delay(4000)
 
       // Detect and dismiss known WhatsApp dialogs, then verify chat is ready
-      await this.waitForChatReady(deviceSerial)
+      const dialogsDismissed = await this.waitForChatReady(deviceSerial)
 
       for (const char of message.body) {
         if (char === ' ') {
@@ -82,9 +84,12 @@ export class SendEngine {
         id: message.id,
         sentAt: new Date().toISOString(),
         durationMs,
+        deviceSerial,
+        contactRegistered,
+        dialogsDismissed,
       })
 
-      return { screenshot, durationMs }
+      return { screenshot, durationMs, contactRegistered, dialogsDismissed }
     } catch (err) {
       try { this.queue.updateStatus(message.id, 'failed') } catch { /* DB may be closed */ }
       this.emitter.emit('message:failed', {
@@ -121,7 +126,8 @@ export class SendEngine {
     await this.delay(500)
   }
 
-  private async ensureContact(deviceSerial: string, phone: string): Promise<void> {
+  /** Returns true if a NEW contact was created, false if it already existed */
+  private async ensureContact(deviceSerial: string, phone: string): Promise<boolean> {
     // Get name from DB (plugin saves patient.name during enqueue)
     const dbName = this.queue.getContactName(phone)
     const name = dbName ?? `Contato ${phone.slice(-4)}`
@@ -138,7 +144,7 @@ export class SendEngine {
         if (!this.queue.hasContact(phone)) {
           this.queue.saveContact(phone, name)
         }
-        return
+        return false
       }
     } catch {
       // phone_lookup failed — continue to create
@@ -175,6 +181,7 @@ export class SendEngine {
     if (!this.queue.hasContact(phone)) {
       this.queue.saveContact(phone, name)
     }
+    return true
   }
 
   private async dumpUi(deviceSerial: string, maxRetries = 3): Promise<string> {
@@ -236,13 +243,16 @@ export class SendEngine {
     return false
   }
 
-  private async waitForChatReady(deviceSerial: string, maxRetries = 5): Promise<void> {
+  /** Returns number of dialogs dismissed before chat became ready */
+  private async waitForChatReady(deviceSerial: string, maxRetries = 5): Promise<number> {
+    let dismissedCount = 0
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       const xml = await this.dumpUi(deviceSerial)
 
       // Check for known dialogs and dismiss them
       const dismissed = await this.dismissDialogs(deviceSerial, xml)
       if (dismissed) {
+        dismissedCount++
         // Re-dump after dismissal to check for chat input
         await this.delay(1000)
         continue
@@ -253,7 +263,7 @@ export class SendEngine {
         xml.includes('com.whatsapp:id/entry') ||
         xml.includes('com.whatsapp:id/text_entry_view')
       ) {
-        return // Chat is ready
+        return dismissedCount
       }
 
       // Not ready yet — wait and retry

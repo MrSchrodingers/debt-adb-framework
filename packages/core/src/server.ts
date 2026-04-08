@@ -257,6 +257,9 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     })
   }
 
+  // Per-message metadata set by worker loop, consumed by callback listeners
+  const sendMetadata = new Map<string, { profileId: number; userSwitched: boolean }>()
+
   // Plugin callback listeners — only when plugins are configured
   if (pluginNames.length > 0) {
     // Helper to extract sender session/pair from senders_config JSON
@@ -280,6 +283,9 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       const msg = queue.getById(data.id)
       if (msg?.pluginName) {
         const { senderSession, pairUsed } = parseSenderInfo(msg)
+        const meta = sendMetadata.get(data.id)
+        sendMetadata.delete(data.id)
+
         void callbackDelivery.sendResultCallback(msg.pluginName, msg.id, {
           idempotency_key: msg.idempotencyKey,
           correlation_id: msg.correlationId ?? undefined,
@@ -293,6 +299,13 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
             pair_used: pairUsed,
             used_fallback: msg.fallbackUsed === 1,
             elapsed_ms: data.durationMs,
+            device_serial: data.deviceSerial,
+            profile_id: meta?.profileId ?? 0,
+            char_count: msg.body.length,
+            contact_registered: data.contactRegistered,
+            screenshot_url: msg.screenshotPath ? `/api/v1/messages/${msg.id}/screenshot` : null,
+            dialogs_dismissed: data.dialogsDismissed,
+            user_switched: meta?.userSwitched ?? false,
           },
           error: null,
           fallback_reason: msg.fallbackUsed ? { original_error: 'adb_failed', original_session: senderSession, quarantined: false } : undefined,
@@ -534,7 +547,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         const fallbackResult = await wahaFallback.send(message)
         server.log.info({ messageId: message.id, wahaMessageId: fallbackResult.wahaMessageId }, 'Worker: WAHA fallback succeeded')
         queue.updateStatus(message.id, 'sent')
-        emitter.emit('message:sent', { id: message.id, sentAt: new Date().toISOString(), durationMs: 0 })
+        emitter.emit('message:sent', { id: message.id, sentAt: new Date().toISOString(), durationMs: 0, deviceSerial, contactRegistered: false, dialogsDismissed: 0 })
         sendSuccess = true
         usedFallback = true
       } catch (wahaErr) {
@@ -618,8 +631,9 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       // Resolve profileId and switch user ONCE for the entire batch
       const senderProfile = senderNumber ? senderMapping.getByPhone(senderNumber) : null
       const profileId = senderProfile?.profile_id ?? 0
+      const userSwitched = profileId !== currentForegroundUser
 
-      if (profileId !== currentForegroundUser) {
+      if (userSwitched) {
         const switched = await switchToUser(online.serial, profileId)
         if (!switched) {
           server.log.error({ profileId, batchSize: batch.length }, 'Worker: skipping batch — user switch failed')
@@ -631,9 +645,10 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         }
       }
 
-      server.log.info({ batchSize: batch.length, senderNumber, profileId, device: online.serial }, 'Worker: processing sender batch')
+      server.log.info({ batchSize: batch.length, senderNumber, profileId, userSwitched, device: online.serial }, 'Worker: processing sender batch')
 
       for (const message of batch) {
+        sendMetadata.set(message.id, { profileId, userSwitched })
         await processMessage(message, online.serial)
       }
     } catch (err) {

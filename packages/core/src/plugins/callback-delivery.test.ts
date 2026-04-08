@@ -2,7 +2,25 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { CallbackDelivery } from './callback-delivery.js'
 import { PluginRegistry } from './plugin-registry.js'
-import type { ResultCallback, AckCallback, ResponseCallback, FailedCallbackRecord } from './types.js'
+import type { ResultCallback, AckCallback, ResponseCallback, FailedCallbackRecord, DeliveryInfo } from './types.js'
+
+/** Default delivery info with all required audit fields */
+const baseDelivery: DeliveryInfo = {
+  message_id: null,
+  provider: 'adb',
+  sender_phone: '5537999001122',
+  sender_session: 'oralsin-1-4',
+  pair_used: 'MG-Guaxupé',
+  used_fallback: false,
+  elapsed_ms: 5000,
+  device_serial: '9b01005930533036340030832250ac',
+  profile_id: 0,
+  char_count: 120,
+  contact_registered: false,
+  screenshot_url: '/api/v1/messages/msg-1/screenshot',
+  dialogs_dismissed: 0,
+  user_switched: false,
+}
 
 describe('CallbackDelivery', () => {
   let db: Database.Database
@@ -46,13 +64,10 @@ describe('CallbackDelivery', () => {
         status: 'sent',
         sent_at: '2026-04-02T15:48:57.354Z',
         delivery: {
+          ...baseDelivery,
           message_id: 'true_553788165296@c.us_3EB04863460F86E8B5FC44',
-          provider: 'adb',
-          sender_phone: '5537999001122',
-          sender_session: 'oralsin-1-4',
-          pair_used: 'MG-Guaxupé',
-          used_fallback: false,
           elapsed_ms: 29739,
+          contact_registered: true,
         },
         error: null,
         context: { clinic_id: 'uuid-1', schedule_id: 'uuid-2' },
@@ -99,15 +114,7 @@ describe('CallbackDelivery', () => {
         idempotency_key: 'test-key',
         status: 'sent',
         sent_at: '2026-04-02T15:00:00Z',
-        delivery: {
-          message_id: null,
-          provider: 'adb',
-          sender_phone: '5537999001122',
-          sender_session: 'oralsin-1-4',
-          pair_used: 'MG-Guaxupé',
-          used_fallback: false,
-          elapsed_ms: 5000,
-        },
+        delivery: { ...baseDelivery },
         error: null,
       })
 
@@ -127,15 +134,7 @@ describe('CallbackDelivery', () => {
         idempotency_key: 'test-key',
         status: 'sent',
         sent_at: '2026-04-02T15:00:00Z',
-        delivery: {
-          message_id: null,
-          provider: 'adb',
-          sender_phone: '5537999001122',
-          sender_session: 'oralsin-1-4',
-          pair_used: 'MG-Guaxupé',
-          used_fallback: false,
-          elapsed_ms: 5000,
-        },
+        delivery: { ...baseDelivery },
         error: null,
         context,
       })
@@ -160,15 +159,7 @@ describe('CallbackDelivery', () => {
         idempotency_key: 'test-key',
         status: 'sent',
         sent_at: '2026-04-02T15:00:00Z',
-        delivery: {
-          message_id: null,
-          provider: 'adb',
-          sender_phone: '5537999001122',
-          sender_session: 'oralsin-1-4',
-          pair_used: 'MG-Guaxupé',
-          used_fallback: false,
-          elapsed_ms: 5000,
-        },
+        delivery: { ...baseDelivery },
         error: null,
       })
       // Advance timers for backoff delays (5s + 30s + 120s)
@@ -192,15 +183,7 @@ describe('CallbackDelivery', () => {
         idempotency_key: 'test-key',
         status: 'sent',
         sent_at: '2026-04-02T15:00:00Z',
-        delivery: {
-          message_id: null,
-          provider: 'adb',
-          sender_phone: '5537999001122',
-          sender_session: 'oralsin-1-4',
-          pair_used: 'MG-Guaxupé',
-          used_fallback: false,
-          elapsed_ms: 5000,
-        },
+        delivery: { ...baseDelivery },
         error: null,
       })
       // Advance timer for first backoff (5s before attempt 2)
@@ -220,15 +203,7 @@ describe('CallbackDelivery', () => {
         idempotency_key: 'test-key',
         status: 'sent',
         sent_at: '2026-04-02T15:00:00Z',
-        delivery: {
-          message_id: null,
-          provider: 'adb',
-          sender_phone: '5537999001122',
-          sender_session: 'oralsin-1-4',
-          pair_used: 'MG-Guaxupé',
-          used_fallback: false,
-          elapsed_ms: 5000,
-        },
+        delivery: { ...baseDelivery },
         error: null,
       })
       await vi.advanceTimersByTimeAsync(5_000)
@@ -254,15 +229,7 @@ describe('CallbackDelivery', () => {
         idempotency_key: 'test-key',
         status: 'sent',
         sent_at: '2026-04-02T15:00:00Z',
-        delivery: {
-          message_id: null,
-          provider: 'adb',
-          sender_phone: '5537999001122',
-          sender_session: 'oralsin-1-4',
-          pair_used: 'MG-Guaxupé',
-          used_fallback: false,
-          elapsed_ms: 5000,
-        },
+        delivery: { ...baseDelivery },
         error: null,
       })
 
@@ -392,15 +359,7 @@ describe('CallbackDelivery', () => {
         idempotency_key: 'test-key',
         status: 'sent',
         sent_at: '2026-04-02T15:00:00Z',
-        delivery: {
-          message_id: null,
-          provider: 'adb',
-          sender_phone: '5537999001122',
-          sender_session: 'oralsin-1-4',
-          pair_used: 'MG-Guaxupé',
-          used_fallback: false,
-          elapsed_ms: 5000,
-        },
+        delivery: { ...baseDelivery },
         error: null,
       })
       await vi.advanceTimersByTimeAsync(155_000)

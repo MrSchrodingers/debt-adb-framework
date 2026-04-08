@@ -4,7 +4,7 @@ import type { AlertSeverity, AlertType } from '../monitor/types.js'
 export interface DispatchEventMap {
   'message:queued': { id: string; to: string; priority: number }
   'message:sending': { id: string; deviceSerial: string }
-  'message:sent': { id: string; sentAt: string; durationMs: number }
+  'message:sent': { id: string; sentAt: string; durationMs: number; deviceSerial: string; contactRegistered: boolean; dialogsDismissed: number }
   'message:failed': { id: string; error: string }
   'device:connected': { serial: string; brand?: string; model?: string }
   'device:disconnected': { serial: string }
