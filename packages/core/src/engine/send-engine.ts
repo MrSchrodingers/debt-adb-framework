@@ -32,19 +32,20 @@ export class SendEngine {
       this.queue.updateStatus(message.id, 'sending')
       this.emitter.emit('message:sending', { id: message.id, deviceSerial })
 
-      // Validate phone number to prevent shell injection
-      if (!/^\d{10,15}$/.test(message.to)) {
+      // Normalize and validate phone number (accept +55, spaces, hyphens — strip to digits)
+      const phoneDigits = message.to.replace(/[\s\-+()]/g, '')
+      if (!/^\d{10,15}$/.test(phoneDigits)) {
         throw new Error(`Invalid phone number: ${message.to}`)
       }
 
       await this.ensureScreenReady(deviceSerial)
       await this.ensureCleanState(deviceSerial)
-      const contactRegistered = await this.ensureContact(deviceSerial, message.to)
+      const contactRegistered = await this.ensureContact(deviceSerial, phoneDigits)
 
       // No --user flag needed — worker loop already switched to correct foreground user
       await this.adb.shell(
         deviceSerial,
-        `am start -a android.intent.action.VIEW -d "https://wa.me/${message.to}" -p com.whatsapp`,
+        `am start -a android.intent.action.VIEW -d "https://wa.me/${phoneDigits}" -p com.whatsapp`,
       )
       await this.delay(4000)
 

@@ -165,12 +165,11 @@ describe('OralsinPlugin sender resolution', () => {
     )
 
     expect(response.code).toBe(422)
-    const data = response.body as { error: string; details: { attempted_senders: string[]; failed_item_index: number; idempotency_key: string } }
-    expect(data.error).toContain('No sender mapping found')
-    expect(data.details.attempted_senders).toContain('+554396837945')
-    expect(data.details.attempted_senders).toContain('+554396837844')
-    expect(data.details.failed_item_index).toBe(0)
-    expect(data.details.idempotency_key).toBeDefined()
+    const data = response.body as { error: string; rejected: Array<{ index: number; idempotency_key: string; reason: string }> }
+    expect(data.error).toContain('No messages could be enqueued')
+    expect(data.rejected).toHaveLength(1)
+    expect(data.rejected[0].index).toBe(0)
+    expect(data.rejected[0].reason).toContain('+554396837945')
   })
 
   it('populates sender_number on enqueued message', async () => {

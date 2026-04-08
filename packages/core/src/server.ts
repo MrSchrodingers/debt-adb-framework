@@ -664,9 +664,22 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
       server.log.info({ batchSize: batch.length, senderNumber, profileId, userSwitched, device: online.serial }, 'Worker: processing sender batch')
 
-      for (const message of batch) {
+      // Anti-ban: inter-message jitter (30-90s between messages from same sender)
+      const interMessageDelayMs = Number(process.env.INTER_MESSAGE_DELAY_MS) || 45_000
+      const jitterRange = 0.5 // ±50% of base delay
+
+      for (let i = 0; i < batch.length; i++) {
+        const message = batch[i]
         sendMetadata.set(message.id, { profileId, userSwitched, ts: Date.now() })
         await processMessage(message, online.serial)
+
+        // Jitter delay between messages (skip after last message)
+        if (i < batch.length - 1) {
+          const jitter = interMessageDelayMs * (1 + (Math.random() * 2 - 1) * jitterRange)
+          const delayMs = Math.round(Math.max(15_000, jitter))
+          server.log.info({ delayMs, remaining: batch.length - i - 1 }, 'Worker: anti-ban inter-message delay')
+          await new Promise(r => setTimeout(r, delayMs))
+        }
       }
     } catch (err) {
       server.log.error({ err }, 'Worker: batch processing failed')
@@ -693,17 +706,28 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     }
   }, 60_000)
 
-  // Periodic callback retry worker (60s) — retries failed callbacks up to 10 attempts
+  // Periodic callback retry worker (60s) — retries failed callbacks, max 20 per cycle
+  let callbackRetryRunning = false
   const callbackRetryInterval = setInterval(async () => {
+    if (callbackRetryRunning) return
+    callbackRetryRunning = true
+    try {
     const failed = callbackDelivery.listFailedCallbacks()
+    let retried = 0
     for (const cb of failed) {
+      if (retried >= 20) break // Max 20 retries per cycle to prevent storm
       if (cb.attempts < 10) {
         try {
           await callbackDelivery.retryFailedCallback(cb.id)
+          retried++
         } catch (err) {
           server.log.warn({ callbackId: cb.id, err }, 'Callback retry failed')
+          retried++
         }
       }
+    }
+    } finally {
+      callbackRetryRunning = false
     }
   }, 60_000)
 

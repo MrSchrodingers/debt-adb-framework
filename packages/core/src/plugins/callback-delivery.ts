@@ -172,6 +172,7 @@ export class CallbackDelivery {
   }
 
   private sign(body: string, secret: string): string {
+    if (!secret) return ''
     return createHmac('sha256', secret).update(body).digest('hex')
   }
 }
