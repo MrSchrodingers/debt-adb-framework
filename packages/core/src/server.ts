@@ -664,21 +664,21 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
       server.log.info({ batchSize: batch.length, senderNumber, profileId, userSwitched, device: online.serial }, 'Worker: processing sender batch')
 
-      // Anti-ban: inter-message jitter (30-90s between messages from same sender)
-      const interMessageDelayMs = Number(process.env.INTER_MESSAGE_DELAY_MS) || 45_000
-      const jitterRange = 0.5 // ±50% of base delay
+      // Anti-ban jitter between messages (typing simulation IS the main anti-ban)
+      // Default 5s base + random 0-5s = 5-10s between messages
+      // The char-by-char typing already takes ~20-25s per message (human-like pace)
+      const interMessageDelayMs = Number(process.env.INTER_MESSAGE_DELAY_MS) || 5_000
 
       for (let i = 0; i < batch.length; i++) {
         const message = batch[i]
         sendMetadata.set(message.id, { profileId, userSwitched, ts: Date.now() })
         await processMessage(message, online.serial)
 
-        // Jitter delay between messages (skip after last message)
+        // Small jitter between messages (skip after last message)
         if (i < batch.length - 1) {
-          const jitter = interMessageDelayMs * (1 + (Math.random() * 2 - 1) * jitterRange)
-          const delayMs = Math.round(Math.max(15_000, jitter))
-          server.log.info({ delayMs, remaining: batch.length - i - 1 }, 'Worker: anti-ban inter-message delay')
-          await new Promise(r => setTimeout(r, delayMs))
+          const jitter = interMessageDelayMs + Math.round(Math.random() * interMessageDelayMs)
+          server.log.info({ delayMs: jitter, remaining: batch.length - i - 1 }, 'Worker: inter-message jitter')
+          await new Promise(r => setTimeout(r, jitter))
         }
       }
     } catch (err) {
