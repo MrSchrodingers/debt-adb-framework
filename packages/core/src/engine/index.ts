@@ -16,6 +16,7 @@ export type { RetryDecision } from './retry-manager.js'
 export { AutoRecovery } from './auto-recovery.js'
 export { ContactRegistrar } from './contact-registrar.js'
 export type { ContactRegistration } from './contact-registrar.js'
+export { escapeForAdbContent } from './contact-utils.js'
 export type {
   RateLimitConfig,
   RetryConfig,

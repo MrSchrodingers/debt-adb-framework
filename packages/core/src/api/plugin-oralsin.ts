@@ -38,6 +38,7 @@ export interface OralsinMessage {
   wahaMessageId: string | null
   delivered: boolean
   read: boolean
+  screenshotPath: string | null
   createdAt: string
   updatedAt: string
 }
@@ -171,13 +172,28 @@ export function buildOralsinStats(db: Database.Database) {
     }
   }
 
-  function messages(params: { limit?: number; offset?: number } = {}): OralsinMessagesResult {
+  function messages(params: { limit?: number; offset?: number; status?: string } = {}): OralsinMessagesResult {
     const limit = params.limit ?? 50
     const offset = params.offset ?? 0
 
-    const countRow = db.prepare(`
-      SELECT COUNT(*) AS total FROM messages WHERE plugin_name = 'oralsin'
-    `).get() as { total: number }
+    const conditions = ["m.plugin_name = 'oralsin'"]
+    const countConditions = ["plugin_name = 'oralsin'"]
+    const queryParams: unknown[] = []
+    const countParams: unknown[] = []
+
+    if (params.status) {
+      conditions.push('m.status = ?')
+      countConditions.push('status = ?')
+      queryParams.push(params.status)
+      countParams.push(params.status)
+    }
+
+    const where = conditions.join(' AND ')
+    const countWhere = countConditions.join(' AND ')
+
+    const countRow = db.prepare(
+      `SELECT COUNT(*) AS total FROM messages WHERE ${countWhere}`,
+    ).get(...countParams) as { total: number }
 
     const rows = db.prepare(`
       SELECT
@@ -194,16 +210,17 @@ export function buildOralsinStats(db: Database.Database) {
         m.context,
         m.idempotency_key,
         m.waha_message_id,
+        m.screenshot_path,
         m.created_at,
         m.updated_at,
         pc.delivered_emitted,
         pc.read_emitted
       FROM messages m
       LEFT JOIN pending_correlations pc ON pc.message_id = m.id
-      WHERE m.plugin_name = 'oralsin'
+      WHERE ${where}
       ORDER BY m.created_at DESC
       LIMIT ? OFFSET ?
-    `).all(limit, offset) as Array<Record<string, unknown>>
+    `).all(...queryParams, limit, offset) as Array<Record<string, unknown>>
 
     const data: OralsinMessage[] = rows.map((r) => {
       let context: Record<string, unknown> | null = null
@@ -227,6 +244,7 @@ export function buildOralsinStats(db: Database.Database) {
         wahaMessageId: (r.waha_message_id as string) ?? null,
         delivered: (r.delivered_emitted as number | null) === 1,
         read: (r.read_emitted as number | null) === 1,
+        screenshotPath: (r.screenshot_path as string) ?? null,
         createdAt: r.created_at as string,
         updatedAt: r.updated_at as string,
       }
@@ -306,23 +324,24 @@ export function registerPluginOralsinRoutes(
 ): void {
   const stats = buildOralsinStats(db)
 
-  server.get('/api/v1/plugins/oralsin/overview', async () => {
+  server.get('/api/v1/monitoring/oralsin/overview', async () => {
     return stats.overview()
   })
 
-  server.get('/api/v1/plugins/oralsin/messages', async (request) => {
-    const { limit, offset } = request.query as { limit?: string; offset?: string }
+  server.get('/api/v1/monitoring/oralsin/messages', async (request) => {
+    const { limit, offset, status } = request.query as { limit?: string; offset?: string; status?: string }
     return stats.messages({
       limit: limit !== undefined ? Math.min(Math.max(Number(limit), 1), 200) : 50,
       offset: offset !== undefined ? Math.max(Number(offset), 0) : 0,
+      status: status || undefined,
     })
   })
 
-  server.get('/api/v1/plugins/oralsin/senders', async () => {
+  server.get('/api/v1/monitoring/oralsin/senders', async () => {
     return stats.senderStats()
   })
 
-  server.get('/api/v1/plugins/oralsin/callbacks', async () => {
+  server.get('/api/v1/monitoring/oralsin/callbacks', async () => {
     return stats.callbackLog()
   })
 }

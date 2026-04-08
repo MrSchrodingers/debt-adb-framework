@@ -32,6 +32,7 @@ export interface Message {
   maxRetries: number
   fallbackUsed: number
   fallbackProvider: string | null
+  screenshotPath: string | null
 }
 
 export type MessageStatus =

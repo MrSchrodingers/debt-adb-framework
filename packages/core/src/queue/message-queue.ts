@@ -40,6 +40,12 @@ export class MessageQueue {
         registered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       );
     `)
+
+    // Migration: add screenshot_path column if not present
+    const cols = this.db.prepare("PRAGMA table_info(messages)").all() as { name: string }[]
+    if (!cols.some(c => c.name === 'screenshot_path')) {
+      this.db.exec("ALTER TABLE messages ADD COLUMN screenshot_path TEXT")
+    }
   }
 
   enqueue(params: EnqueueParams): Message {
@@ -279,9 +285,14 @@ export class MessageQueue {
     return row !== undefined
   }
 
+  getContactName(phone: string): string | null {
+    const row = this.db.prepare('SELECT name FROM contacts WHERE phone = ?').get(phone) as { name: string } | undefined
+    return row?.name ?? null
+  }
+
   saveContact(phone: string, name: string): void {
     this.db.prepare(
-      'INSERT OR IGNORE INTO contacts (phone, name) VALUES (?, ?)',
+      'INSERT INTO contacts (phone, name) VALUES (?, ?) ON CONFLICT(phone) DO UPDATE SET name = excluded.name',
     ).run(phone, name)
   }
 
@@ -307,6 +318,7 @@ export class MessageQueue {
       maxRetries: (row.max_retries as number) ?? 3,
       fallbackUsed: (row.fallback_used as number) ?? 0,
       fallbackProvider: (row.fallback_provider as string) ?? null,
+      screenshotPath: (row.screenshot_path as string) ?? null,
     }
   }
 
@@ -391,6 +403,12 @@ export class MessageQueue {
     })
 
     return txn.immediate()
+  }
+
+  updateScreenshotPath(id: string, screenshotPath: string): void {
+    this.db.prepare(
+      "UPDATE messages SET screenshot_path = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+    ).run(screenshotPath, id)
   }
 
   markFallbackUsed(id: string, provider: string): void {

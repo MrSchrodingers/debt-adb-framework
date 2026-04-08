@@ -6,10 +6,10 @@ import type { ResultCallback, AckCallback, ResponseCallback, FailedCallbackRecor
 
 type FetchFn = (url: string, init: RequestInit) => Promise<Response>
 
-const MAX_RETRIES = 3
+const MAX_RETRIES = 4
 
-/** Delays in ms before each attempt: attempt 1 = 0 (immediate), attempt 2 = 5s, attempt 3 = 15s */
-const BACKOFF_DELAYS_MS = [0, 5_000, 15_000] as const
+/** Delays in ms before each attempt: attempt 1 = 0 (immediate), attempt 2 = 5s, attempt 3 = 30s, attempt 4 = 120s */
+const BACKOFF_DELAYS_MS = [0, 5_000, 30_000, 120_000] as const
 
 function sleep(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve()

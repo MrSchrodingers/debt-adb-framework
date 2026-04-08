@@ -6,7 +6,7 @@ import { MessageQueue } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
 import { SendEngine, selectDevice, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
-import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes } from './api/index.js'
+import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes } from './api/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
 import { SessionManager, WebhookHandler, MessageHistory } from './waha/index.js'
 import { createWahaHttpClient } from './waha/waha-http-client.js'
@@ -130,6 +130,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         failed_last_hour: queueStats.failedLastHour,
       },
       plugins: pluginStatus,
+      failed_callbacks: callbackDelivery.listFailedCallbacks().length,
       pid: process.pid,
     }
   })
@@ -151,6 +152,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   // Plugin monitoring routes
   registerPluginOralsinRoutes(server, db)
+  registerScreenshotRoutes(server, queue)
 
   // Manual phone number mapping moved to api/devices.ts
 
@@ -515,12 +517,12 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   }, 30_000)
 
   // DP-5: Helper to process a single message (ADB + WAHA fallback)
-  const processMessage = async (message: import('./queue/types.js').Message, deviceSerial: string) => {
+  const processMessage = async (message: import('./queue/types.js').Message, deviceSerial: string, profileId?: number) => {
     let sendSuccess = false
     let usedFallback = false
 
     try {
-      await engine.send(message, deviceSerial)
+      await engine.send(message, deviceSerial, profileId)
       sendSuccess = true
     } catch (adbErr) {
       server.log.warn({ messageId: message.id, err: adbErr }, 'Worker: ADB send failed, attempting WAHA fallback')
@@ -568,6 +570,30 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   }
 
   // DP-5: Worker loop uses sender-grouped dequeue
+  let currentForegroundUser = 0
+
+  const switchToUser = async (deviceSerial: string, profileId: number): Promise<boolean> => {
+    if (profileId === currentForegroundUser) return true
+
+    await adb.shell(deviceSerial, `am switch-user ${profileId}`)
+
+    // Poll am get-current-user until it returns the expected profileId (max 10s)
+    for (let i = 0; i < 10; i++) {
+      await new Promise(r => setTimeout(r, 1000))
+      const output = await adb.shell(deviceSerial, 'am get-current-user')
+      const currentUser = parseInt(output.trim(), 10)
+      if (currentUser === profileId) {
+        currentForegroundUser = profileId
+        // Wait 2s for UI stabilization after switch
+        await new Promise(r => setTimeout(r, 2000))
+        return true
+      }
+    }
+
+    server.log.error({ profileId, deviceSerial }, 'Worker: user switch timed out after 10s')
+    return false
+  }
+
   const workerInterval = setInterval(async () => {
     if (workerRunning) return
     workerRunning = true
@@ -588,10 +614,26 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         releaseMutex = await accountMutex.acquire(senderNumber)
       }
 
-      server.log.info({ batchSize: batch.length, senderNumber, device: online.serial }, 'Worker: processing sender batch')
+      // Resolve profileId and switch user ONCE for the entire batch
+      const senderProfile = senderNumber ? senderMapping.getByPhone(senderNumber) : null
+      const profileId = senderProfile?.profile_id ?? 0
+
+      if (profileId !== currentForegroundUser) {
+        const switched = await switchToUser(online.serial, profileId)
+        if (!switched) {
+          server.log.error({ profileId, batchSize: batch.length }, 'Worker: skipping batch — user switch failed')
+          // Requeue the batch
+          for (const msg of batch) {
+            try { queue.requeueForRetry(msg.id) } catch { /* ignore */ }
+          }
+          return
+        }
+      }
+
+      server.log.info({ batchSize: batch.length, senderNumber, profileId, device: online.serial }, 'Worker: processing sender batch')
 
       for (const message of batch) {
-        await processMessage(message, online.serial)
+        await processMessage(message, online.serial, profileId)
       }
     } catch (err) {
       server.log.error({ err }, 'Worker: batch processing failed')
@@ -609,6 +651,20 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const historyCleanupInterval = setInterval(() => {
     messageHistory.cleanup(retentionDays)
   }, 3_600_000)
+
+  // Periodic callback retry worker (60s) — retries failed callbacks up to 10 attempts
+  const callbackRetryInterval = setInterval(async () => {
+    const failed = callbackDelivery.listFailedCallbacks()
+    for (const cb of failed) {
+      if (cb.attempts < 10) {
+        try {
+          await callbackDelivery.retryFailedCallback(cb.id)
+        } catch (err) {
+          server.log.warn({ callbackId: cb.id, err }, 'Callback retry failed')
+        }
+      }
+    }
+  }, 60_000)
 
   // ── Graceful Shutdown (must register hook BEFORE listen) ──
   const shutdown = new GracefulShutdown(server.log)
@@ -646,6 +702,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     clearInterval(historyCleanupInterval)
     clearInterval(cleanupInterval)
     clearInterval(workerInterval)
+    clearInterval(callbackRetryInterval)
   })
 
   shutdown.addHandler('stale-locks', async () => {

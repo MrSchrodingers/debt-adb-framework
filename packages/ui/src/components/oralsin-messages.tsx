@@ -160,6 +160,19 @@ function ExpandedRow({ msg }: { msg: OralsinMessage }) {
             </div>
           )}
 
+          {/* Screenshot proof */}
+          {(msg.status === 'sent' || msg.status === 'delivered' || msg.status === 'read') && (
+            <div className="space-y-1">
+              <div className="text-zinc-500 uppercase tracking-wider font-medium">Screenshot</div>
+              <img
+                src={`${CORE_URL}/api/v1/messages/${msg.id}/screenshot`}
+                alt="Screenshot do envio"
+                className="rounded-lg border border-zinc-800 max-h-48 object-contain bg-zinc-900"
+                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+              />
+            </div>
+          )}
+
           {/* Metadata grid */}
           <div className="space-y-2 md:col-span-2">
             <div className="text-zinc-500 uppercase tracking-wider font-medium">Metadados</div>
@@ -223,7 +236,7 @@ export function OralsinMessages() {
       }
 
       const res = await fetch(
-        `${CORE_URL}/api/v1/plugins/oralsin/messages?${params.toString()}`,
+        `${CORE_URL}/api/v1/monitoring/oralsin/messages?${params.toString()}`,
         { headers: authHeaders() },
       )
       if (!res.ok) return
