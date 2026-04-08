@@ -156,6 +156,19 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   // Manual phone number mapping moved to api/devices.ts
 
+  // Reset permanently_failed → queued (manual recovery for lost messages)
+  server.post('/api/v1/messages/:id/retry', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const message = queue.getById(id)
+    if (!message) return reply.status(404).send({ error: 'Message not found' })
+    if (message.status !== 'permanently_failed' && message.status !== 'failed') {
+      return reply.status(409).send({ error: `Cannot retry message in status: ${message.status}` })
+    }
+    const updated = queue.requeueForRetry(id)
+    emitter.emit('message:queued', { id: updated.id, to: updated.to, priority: updated.priority })
+    return { id: updated.id, status: updated.status, attempts: updated.attempts }
+  })
+
   let workerRunning = false
 
   server.post('/api/v1/messages/:id/send', async (request, reply) => {
@@ -261,7 +274,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   }
 
   // Per-message metadata set by worker loop, consumed by callback listeners
-  const sendMetadata = new Map<string, { profileId: number; userSwitched: boolean }>()
+  const sendMetadata = new Map<string, { profileId: number; userSwitched: boolean; ts: number }>()
 
   // Plugin callback listeners — only when plugins are configured
   if (pluginNames.length > 0) {
@@ -652,7 +665,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       server.log.info({ batchSize: batch.length, senderNumber, profileId, userSwitched, device: online.serial }, 'Worker: processing sender batch')
 
       for (const message of batch) {
-        sendMetadata.set(message.id, { profileId, userSwitched })
+        sendMetadata.set(message.id, { profileId, userSwitched, ts: Date.now() })
         await processMessage(message, online.serial)
       }
     } catch (err) {
@@ -671,6 +684,14 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const historyCleanupInterval = setInterval(() => {
     messageHistory.cleanup(retentionDays)
   }, 3_600_000)
+
+  // Periodic sendMetadata cleanup (60s) — remove stale entries older than 5 minutes
+  const metadataCleanupInterval = setInterval(() => {
+    const cutoff = Date.now() - 300_000
+    for (const [id, meta] of sendMetadata) {
+      if (meta.ts < cutoff) sendMetadata.delete(id)
+    }
+  }, 60_000)
 
   // Periodic callback retry worker (60s) — retries failed callbacks up to 10 attempts
   const callbackRetryInterval = setInterval(async () => {
@@ -723,6 +744,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     clearInterval(cleanupInterval)
     clearInterval(workerInterval)
     clearInterval(callbackRetryInterval)
+    clearInterval(metadataCleanupInterval)
   })
 
   shutdown.addHandler('stale-locks', async () => {
