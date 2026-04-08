@@ -4,7 +4,7 @@ import Database from 'better-sqlite3'
 import { Server as SocketIOServer } from 'socket.io'
 import { MessageQueue } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
-import { SendEngine, selectDevice, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback } from './engine/index.js'
+import { SendEngine, selectDevice, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
 import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes } from './api/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
@@ -51,6 +51,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const engine = new SendEngine(adb, queue, emitter)
 
   const rateLimitGuard = RateLimitGuard.fromEnv(process.env as Record<string, string | undefined>)
+  const senderHealth = new SenderHealth()
 
   // Initialize monitor modules
   const deviceManager = new DeviceManager(db, emitter, adb)
@@ -550,7 +551,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   }, 30_000)
 
   // DP-5: Helper to process a single message (ADB + WAHA fallback)
-  const processMessage = async (message: import('./queue/types.js').Message, deviceSerial: string, isFirstInBatch = true, appPackage = 'com.whatsapp') => {
+  const processMessage = async (message: import('./queue/types.js').Message, deviceSerial: string, isFirstInBatch = true, appPackage = 'com.whatsapp'): Promise<boolean> => {
     let sendSuccess = false
     let usedFallback = false
 
@@ -600,6 +601,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         })
       }
     }
+
+    return sendSuccess
   }
 
   // DP-5: Worker loop uses sender-grouped dequeue
@@ -673,6 +676,15 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         }
       }
 
+      // Quarantine check: skip senders with consecutive failures
+      if (senderNumber && senderHealth.isQuarantined(senderNumber)) {
+        server.log.warn({ senderNumber }, 'Worker: sender quarantined, skipping batch')
+        for (const msg of batch) {
+          try { queue.updateStatus(msg.id, 'queued') } catch { /* ignore */ }
+        }
+        return
+      }
+
       // Resolve profileId and switch user ONCE for the entire batch
       const senderProfile = senderNumber ? senderMapping.getByPhone(senderNumber) : null
       const profileId = senderProfile?.profile_id ?? 0
@@ -696,7 +708,14 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       for (let i = 0; i < batch.length; i++) {
         const message = batch[i]
         sendMetadata.set(message.id, { profileId, userSwitched, ts: Date.now() })
-        await processMessage(message, online.serial, i === 0, appPackage)
+        const success = await processMessage(message, online.serial, i === 0, appPackage)
+        if (senderNumber) {
+          if (success) {
+            senderHealth.recordSuccess(senderNumber)
+          } else {
+            senderHealth.recordFailure(senderNumber)
+          }
+        }
 
         // Rate-limit-aware delay between messages (skip after last message)
         if (i < batch.length - 1) {
