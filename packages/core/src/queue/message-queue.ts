@@ -421,7 +421,7 @@ export class MessageQueue {
     const row = this.db.prepare(`
       SELECT COUNT(*) as cnt FROM messages
       WHERE sender_number = ? AND status = 'sent'
-        AND created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', 'start of day')
+        AND updated_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', 'start of day', '-3 hours')
     `).get(senderNumber) as { cnt: number }
     return row.cnt
   }

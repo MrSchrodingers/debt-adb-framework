@@ -603,6 +603,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   }
 
   // DP-5: Worker loop uses sender-grouped dequeue
+  const cappedSendersCooldown = new Map<string, number>() // senderNumber → timestamp when capped
   let currentForegroundUser = 0
 
   const switchToUser = async (deviceSerial: string, profileId: number): Promise<boolean> => {
@@ -650,9 +651,21 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
       // Rate limit: check daily cap for this sender
       if (senderNumber) {
+        // Cooldown: if we already logged the cap within the last 60s, requeue silently
+        const lastCapped = cappedSendersCooldown.get(senderNumber)
+        if (lastCapped !== undefined && Date.now() - lastCapped < 60_000) {
+          for (const msg of batch) {
+            try { queue.updateStatus(msg.id, 'queued') } catch { /* ignore */ }
+          }
+          return
+        }
+        // Cooldown expired or first check — evaluate cap
+        if (lastCapped !== undefined) cappedSendersCooldown.delete(senderNumber)
+
         const dailyCount = queue.getSenderDailyCount(senderNumber)
         if (!rateLimitGuard.canSend(dailyCount)) {
           server.log.warn({ senderNumber, dailyCount, max: rateLimitGuard.maxPerSenderPerDay }, 'Worker: sender daily limit reached, skipping batch')
+          cappedSendersCooldown.set(senderNumber, Date.now())
           for (const msg of batch) {
             try { queue.updateStatus(msg.id, 'queued') } catch { /* ignore */ }
           }
@@ -687,7 +700,9 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         // Rate-limit-aware delay between messages (skip after last message)
         if (i < batch.length - 1) {
           const nextMsg = batch[i + 1]
-          const isFirstContact = queue.isFirstContactWith(nextMsg.to, senderNumber ?? '')
+          const isFirstContact = senderNumber
+            ? queue.isFirstContactWith(nextMsg.to, senderNumber)
+            : false
           const delayMs = rateLimitGuard.getInterMessageDelay(isFirstContact)
           server.log.info({ delayMs, isFirstContact, remaining: batch.length - i - 1 }, 'Worker: rate-limited delay')
           await new Promise(r => setTimeout(r, delayMs))
