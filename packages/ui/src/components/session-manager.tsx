@@ -102,7 +102,15 @@ export function SessionManager() {
 
   const handleShowQr = async (name: string) => {
     try {
-      const res = await fetch(`${CORE_URL}/api/v1/sessions/${encodeURIComponent(name)}/qr`, { headers: authHeaders() })
+      // Restart session first to ensure it enters SCAN_QR_CODE state
+      await fetch(`${CORE_URL}/api/v1/waha/sessions/${encodeURIComponent(name)}/restart`, {
+        method: 'POST',
+        headers: authHeaders(),
+      })
+      // Wait for session to reach SCAN_QR_CODE
+      await new Promise((r) => setTimeout(r, 4000))
+
+      const res = await fetch(`${CORE_URL}/api/v1/waha/sessions/${encodeURIComponent(name)}/qr`, { headers: authHeaders() })
       if (!res.ok) {
         const data = await res.json()
         throw new Error(data.detail || `HTTP ${res.status}`)
@@ -248,7 +256,7 @@ export function SessionManager() {
             </button>
           </div>
           <div className="flex justify-center bg-white p-4 rounded">
-            <img src={`data:image/png;base64,${qrData.qr}`} alt="QR Code" className="max-w-64" />
+            <img src={qrData.qr} alt="QR Code" className="max-w-64" />
           </div>
           <p className="text-xs text-zinc-500 mt-2 text-center">
             Scan with WhatsApp on the device to pair
@@ -305,12 +313,12 @@ export function SessionManager() {
 
               {/* Actions */}
               <div className="flex gap-1.5">
-                {session.wahaStatus === 'SCAN_QR_CODE' && (
+                {(session.wahaStatus === 'SCAN_QR_CODE' || session.wahaStatus === 'FAILED' || session.wahaStatus === 'STARTING' || session.wahaStatus === 'STOPPED') && (
                   <button
                     onClick={() => handleShowQr(session.sessionName)}
                     className="rounded bg-blue-800 px-2 py-1 text-xs text-blue-100 hover:bg-blue-700"
                   >
-                    QR
+                    {session.wahaStatus === 'SCAN_QR_CODE' ? 'QR' : 'Restart + QR'}
                   </button>
                 )}
                 {session.managed && !session.chatwootInboxId && (
