@@ -51,7 +51,10 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const engine = new SendEngine(adb, queue, emitter)
 
   const rateLimitGuard = RateLimitGuard.fromEnv(process.env as Record<string, string | undefined>)
-  const senderHealth = new SenderHealth()
+  const senderHealth = new SenderHealth({
+    quarantineAfterFailures: Number(process.env.QUARANTINE_AFTER_FAILURES) || 3,
+    quarantineDurationMs: Number(process.env.QUARANTINE_DURATION_MS) || 3_600_000,
+  })
 
   // Initialize monitor modules
   const deviceManager = new DeviceManager(db, emitter, adb)
@@ -682,7 +685,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         for (const msg of batch) {
           try { queue.updateStatus(msg.id, 'queued') } catch { /* ignore */ }
         }
-        return
+        return // finally block releases mutex
       }
 
       // Resolve profileId and switch user ONCE for the entire batch
