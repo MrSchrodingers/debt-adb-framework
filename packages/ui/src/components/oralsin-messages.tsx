@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, Fragment } from 'react'
 import { ChevronLeft, ChevronRight, Check, CheckCheck, AlertCircle } from 'lucide-react'
 import { CORE_URL, authHeaders } from '../config'
 import { formatRelativeTime } from '../utils/time'
@@ -316,9 +316,8 @@ export function OralsinMessages() {
             </thead>
             <tbody>
               {messages.map((msg) => (
-                <>
+                <Fragment key={msg.id}>
                   <tr
-                    key={msg.id}
                     className={`border-t border-zinc-800/40 cursor-pointer transition-colors ${
                       expandedId === msg.id
                         ? 'bg-zinc-900/80'
@@ -368,7 +367,7 @@ export function OralsinMessages() {
                     </td>
                   </tr>
                   {expandedId === msg.id && <ExpandedRow key={`${msg.id}-expanded`} msg={msg} />}
-                </>
+                </Fragment>
               ))}
             </tbody>
           </table>

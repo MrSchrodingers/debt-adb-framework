@@ -315,6 +315,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     })
 
     emitter.on('message:failed', (data) => {
+      sendMetadata.delete(data.id)
       const msg = queue.getById(data.id)
       if (msg?.pluginName) {
         void callbackDelivery.sendResultCallback(msg.pluginName, msg.id, {

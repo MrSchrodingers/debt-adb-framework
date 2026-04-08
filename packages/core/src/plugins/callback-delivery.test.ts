@@ -327,13 +327,9 @@ describe('CallbackDelivery', () => {
         status: 'sent',
         sent_at: '2026-04-02T15:00:00Z',
         delivery: {
-          message_id: null,
-          provider: 'adb',
-          sender_phone: '5537999001122',
+          ...baseDelivery,
           sender_session: 'manual',
           pair_used: 'manual',
-          used_fallback: false,
-          elapsed_ms: 5000,
         },
         error: null,
       })
