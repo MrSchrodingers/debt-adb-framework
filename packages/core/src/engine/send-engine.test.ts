@@ -30,7 +30,7 @@ function stubShellForSend(mockAdb: AdbBridge): void {
     if (cmd.includes('content query --uri content://com.android.contacts/phone_lookup')) {
       return 'display_name=Test'
     }
-    if (cmd.includes('dumpsys power')) return 'mScreenOn=true'
+    if (cmd.includes('dumpsys power')) return 'mWakefulness=Awake'
     if (cmd.includes('dumpsys window')) return 'mDreamingLockscreen=false'
     return ''
   })
@@ -61,40 +61,38 @@ describe('SendEngine', () => {
   const enqueueMsg = (key = 'key-1') =>
     queue.enqueue({ to: '5543991938235', body: 'Hi', idempotencyKey: key, senderNumber: '5543996835100' })
 
-  describe('send() — user switching removed', () => {
-    it('does NOT call am switch-user', async () => {
-      const msg = enqueueMsg()
-      stubShellForSend(mockAdb)
-
-      await engine.send(msg, 'device-1', 10)
-
-      const calls = (mockAdb.shell as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[1] as string)
-      const switchCalls = calls.filter((cmd: string) => cmd.includes('am switch-user'))
-      expect(switchCalls).toHaveLength(0)
-    })
-
-    it('uses --user flag in am start intent when profileId is provided', async () => {
-      const msg = enqueueMsg()
-      stubShellForSend(mockAdb)
-
-      await engine.send(msg, 'device-1', 10)
-
-      const calls = (mockAdb.shell as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[1] as string)
-      const amStartCalls = calls.filter((cmd: string) => cmd.includes('am start'))
-      expect(amStartCalls).toHaveLength(1)
-      expect(amStartCalls[0]).toContain('--user 10')
-    })
-
-    it('does NOT include --user flag when profileId is undefined', async () => {
+  describe('send() — user switching at batch level', () => {
+    it('does NOT call am switch-user (handled by worker loop)', async () => {
       const msg = enqueueMsg()
       stubShellForSend(mockAdb)
 
       await engine.send(msg, 'device-1')
 
       const calls = (mockAdb.shell as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[1] as string)
-      const amStartCalls = calls.filter((cmd: string) => cmd.includes('am start'))
+      const switchCalls = calls.filter((cmd: string) => cmd.includes('am switch-user'))
+      expect(switchCalls).toHaveLength(0)
+    })
+
+    it('does NOT include --user flag in am start (user already switched)', async () => {
+      const msg = enqueueMsg()
+      stubShellForSend(mockAdb)
+
+      await engine.send(msg, 'device-1')
+
+      const calls = (mockAdb.shell as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[1] as string)
+      const amStartCalls = calls.filter((cmd: string) => cmd.includes('am start') && !cmd.includes('force-stop'))
       expect(amStartCalls).toHaveLength(1)
       expect(amStartCalls[0]).not.toContain('--user')
+    })
+
+    it('force-stops WhatsApp in ensureCleanState', async () => {
+      const msg = enqueueMsg('clean-1')
+      stubShellForSend(mockAdb)
+
+      await engine.send(msg, 'device-1')
+
+      const calls = (mockAdb.shell as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[1] as string)
+      expect(calls.some((cmd: string) => cmd.includes('am force-stop com.whatsapp'))).toBe(true)
     })
 
     it('emits message:sending and message:sent events', async () => {
@@ -145,7 +143,7 @@ describe('SendEngine', () => {
         if (cmd.includes('content query --uri content://com.android.contacts/phone_lookup')) {
           return 'display_name=Test'
         }
-        if (cmd.includes('dumpsys power')) return 'mScreenOn=true'
+        if (cmd.includes('dumpsys power')) return 'mWakefulness=Awake'
         if (cmd.includes('dumpsys window')) return 'mDreamingLockscreen=false'
         return ''
       })
@@ -175,7 +173,7 @@ describe('SendEngine', () => {
         if (cmd.includes('content query --uri content://com.android.contacts/phone_lookup')) {
           return 'display_name=Test'
         }
-        if (cmd.includes('dumpsys power')) return 'mScreenOn=true'
+        if (cmd.includes('dumpsys power')) return 'mWakefulness=Awake'
         if (cmd.includes('dumpsys window')) return 'mDreamingLockscreen=false'
         return ''
       })
@@ -205,7 +203,7 @@ describe('SendEngine', () => {
         if (cmd.includes('content query --uri content://com.android.contacts/phone_lookup')) {
           return 'display_name=Test'
         }
-        if (cmd.includes('dumpsys power')) return 'mScreenOn=true'
+        if (cmd.includes('dumpsys power')) return 'mWakefulness=Awake'
         if (cmd.includes('dumpsys window')) return 'mDreamingLockscreen=false'
         return ''
       })
@@ -229,7 +227,7 @@ describe('SendEngine', () => {
         if (cmd.includes('content query --uri content://com.android.contacts/phone_lookup')) {
           return 'display_name=Test'
         }
-        if (cmd.includes('dumpsys power')) return 'mScreenOn=true'
+        if (cmd.includes('dumpsys power')) return 'mWakefulness=Awake'
         if (cmd.includes('dumpsys window')) return 'mDreamingLockscreen=false'
         return ''
       })
@@ -239,29 +237,13 @@ describe('SendEngine', () => {
   })
 
   describe('pre-send health check', () => {
-    it('wakes screen if it is off', async () => {
+    it('always sends KEYCODE_WAKEUP proactively', async () => {
       const msg = enqueueMsg('health-1')
-      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
-
-      let powerCallCount = 0
-      shellMock.mockImplementation(async (_serial: string, cmd: string) => {
-        if (cmd.includes('dumpsys power')) {
-          powerCallCount++
-          // First call: screen off, subsequent: screen on
-          return powerCallCount === 1 ? 'mScreenOn=false' : 'mScreenOn=true'
-        }
-        if (cmd.includes('dumpsys window')) return 'mDreamingLockscreen=false'
-        if (cmd.includes('uiautomator dump')) return ''
-        if (cmd.includes('cat /sdcard/dispatch-ui.xml')) return CHAT_READY_XML
-        if (cmd.includes('content query --uri content://com.android.contacts/phone_lookup')) {
-          return 'display_name=Test'
-        }
-        return ''
-      })
+      stubShellForSend(mockAdb)
 
       await engine.send(msg, 'device-1')
 
-      const calls = shellMock.mock.calls.map((c: unknown[]) => c[1] as string)
+      const calls = (mockAdb.shell as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[1] as string)
       expect(calls.some((cmd: string) => cmd.includes('KEYCODE_WAKEUP'))).toBe(true)
     })
 
@@ -269,13 +251,8 @@ describe('SendEngine', () => {
       const msg = enqueueMsg('health-2')
       const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
 
-      let windowCallCount = 0
       shellMock.mockImplementation(async (_serial: string, cmd: string) => {
-        if (cmd.includes('dumpsys power')) return 'mScreenOn=true'
-        if (cmd.includes('dumpsys window')) {
-          windowCallCount++
-          return windowCallCount === 1 ? 'mDreamingLockscreen=true' : 'mDreamingLockscreen=false'
-        }
+        if (cmd.includes('dumpsys window')) return 'mDreamingLockscreen=true'
         if (cmd.includes('uiautomator dump')) return ''
         if (cmd.includes('cat /sdcard/dispatch-ui.xml')) return CHAT_READY_XML
         if (cmd.includes('content query --uri content://com.android.contacts/phone_lookup')) {
@@ -288,19 +265,6 @@ describe('SendEngine', () => {
 
       const calls = shellMock.mock.calls.map((c: unknown[]) => c[1] as string)
       expect(calls.some((cmd: string) => cmd.includes('input swipe'))).toBe(true)
-    })
-
-    it('throws if screen never recovers', async () => {
-      const msg = enqueueMsg('health-3')
-      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
-
-      shellMock.mockImplementation(async (_serial: string, cmd: string) => {
-        if (cmd.includes('dumpsys power')) return 'mScreenOn=false'
-        if (cmd.includes('dumpsys window')) return 'mDreamingLockscreen=false'
-        return ''
-      })
-
-      await expect(engine.send(msg, 'device-1')).rejects.toThrow('Screen not ready')
     })
   })
 })

@@ -22,7 +22,7 @@ export class SendEngine {
     return this.processing
   }
 
-  async send(message: Message, deviceSerial: string, profileId?: number): Promise<SendResult> {
+  async send(message: Message, deviceSerial: string): Promise<SendResult> {
     this.processing = true
     const startTime = Date.now()
 
@@ -34,10 +34,10 @@ export class SendEngine {
       await this.ensureCleanState(deviceSerial)
       await this.ensureContact(deviceSerial, message.to)
 
-      const userFlag = profileId !== undefined ? `--user ${profileId}` : ''
+      // No --user flag needed — worker loop already switched to correct foreground user
       await this.adb.shell(
         deviceSerial,
-        `am start ${userFlag} -a android.intent.action.VIEW -d "https://wa.me/${message.to}" -p com.whatsapp`,
+        `am start -a android.intent.action.VIEW -d "https://wa.me/${message.to}" -p com.whatsapp`,
       )
       await this.delay(4000)
 
@@ -95,39 +95,22 @@ export class SendEngine {
     }
   }
 
-  private async ensureScreenReady(deviceSerial: string, maxAttempts = 2): Promise<void> {
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      // Check if screen is on
-      const powerState = await this.adb.shell(deviceSerial, 'dumpsys power')
-      const screenOn = /mScreenOn=true|Display Power: state=ON/i.test(powerState)
+  private async ensureScreenReady(deviceSerial: string): Promise<void> {
+    // Proactively wake the screen — cheap and prevents false negatives after user switch
+    await this.adb.shell(deviceSerial, 'input keyevent KEYCODE_WAKEUP')
+    await this.delay(500)
 
-      if (!screenOn) {
-        await this.adb.shell(deviceSerial, 'input keyevent KEYCODE_WAKEUP')
-        await this.delay(1000)
-      }
-
-      // Check if screen is locked
-      const windowState = await this.adb.shell(deviceSerial, 'dumpsys window')
-      const isLocked = /mDreamingLockscreen=true|isStatusBarKeyguard=true|mShowingLockscreen=true/i.test(windowState)
-
-      if (isLocked) {
-        // Swipe up to dismiss lock screen
-        await this.adb.shell(deviceSerial, 'input swipe 540 1800 540 800 300')
-        await this.delay(1000)
-      }
-
-      // Verify screen is now on and unlocked
-      const verify = await this.adb.shell(deviceSerial, 'dumpsys power')
-      if (/mScreenOn=true|Display Power: state=ON/i.test(verify)) {
-        return // Screen ready
-      }
+    // Dismiss lock screen if present
+    const windowState = await this.adb.shell(deviceSerial, 'dumpsys window')
+    if (/mDreamingLockscreen=true|isStatusBarKeyguard=true|mShowingLockscreen=true/i.test(windowState)) {
+      await this.adb.shell(deviceSerial, 'input swipe 540 1800 540 800 300')
+      await this.delay(1000)
     }
-
-    throw new Error('Screen not ready after recovery attempts')
   }
 
   private async ensureCleanState(deviceSerial: string): Promise<void> {
-    await this.adb.shell(deviceSerial, 'input keyevent 4') // BACK
+    // Force-stop WhatsApp to ensure a fresh start (prevents "Activity not started" issue)
+    await this.adb.shell(deviceSerial, 'am force-stop com.whatsapp')
     await this.delay(300)
     await this.adb.shell(deviceSerial, 'input keyevent 3') // HOME
     await this.delay(500)
@@ -189,8 +172,17 @@ export class SendEngine {
     }
   }
 
-  private async dumpUi(deviceSerial: string): Promise<string> {
-    await this.adb.shell(deviceSerial, 'uiautomator dump /sdcard/dispatch-ui.xml')
+  private async dumpUi(deviceSerial: string, maxRetries = 3): Promise<string> {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const dumpResult = await this.adb.shell(deviceSerial, 'uiautomator dump /sdcard/dispatch-ui.xml')
+      // UIAutomator sometimes fails with "null root node" after user switch
+      if (dumpResult.includes('ERROR') || dumpResult.includes('null root node')) {
+        await this.delay(1000)
+        continue
+      }
+      return this.adb.shell(deviceSerial, 'cat /sdcard/dispatch-ui.xml')
+    }
+    // Last attempt — read whatever is there
     return this.adb.shell(deviceSerial, 'cat /sdcard/dispatch-ui.xml')
   }
 
@@ -239,7 +231,7 @@ export class SendEngine {
     return false
   }
 
-  private async waitForChatReady(deviceSerial: string, maxRetries = 3): Promise<void> {
+  private async waitForChatReady(deviceSerial: string, maxRetries = 5): Promise<void> {
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       const xml = await this.dumpUi(deviceSerial)
 
