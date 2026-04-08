@@ -34,6 +34,14 @@ export function createWahaHttpClient(apiUrl: string, apiKey: string): WahaApiCli
       await assertOk(res, PREFIX)
     },
 
+    async stopSession(name) {
+      const res = await fetch(`${apiUrl}/api/sessions/${encodeURIComponent(name)}/stop`, {
+        method: 'POST',
+        headers,
+      })
+      await assertOk(res, PREFIX)
+    },
+
     async getServerVersion() {
       const res = await fetch(`${apiUrl}/api/server/version`, { headers })
       return jsonOrThrow<{ version: string; engine: string; tier: string }>(res, PREFIX)
@@ -46,9 +54,12 @@ export function createWahaHttpClient(apiUrl: string, apiKey: string): WahaApiCli
     },
 
     async getQrCode(name) {
-      const res = await fetch(`${apiUrl}/api/sessions/${encodeURIComponent(name)}/qr`, { headers })
-      const data = await jsonOrThrow<{ qr: string }>(res, PREFIX)
-      return data.qr
+      // GoWS WAHA Plus uses /api/{session}/auth/qr (returns PNG binary)
+      const res = await fetch(`${apiUrl}/api/${encodeURIComponent(name)}/auth/qr`, { headers })
+      if (!res.ok) throw new Error(`${PREFIX} ${res.status}: QR code not available for session ${name}`)
+      const buf = Buffer.from(await res.arrayBuffer())
+      // Return as base64 data URI for direct use in <img src>
+      return `data:image/png;base64,${buf.toString('base64')}`
     },
   }
 }

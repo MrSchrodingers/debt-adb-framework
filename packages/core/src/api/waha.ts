@@ -119,6 +119,34 @@ export function registerWahaRoutes(server: FastifyInstance, deps: WahaDeps): voi
     }
   })
 
+  server.get('/api/v1/waha/sessions/:name/qr', async (request, reply) => {
+    if (!requireWahaClient(reply)) return
+    const { name } = request.params as { name: string }
+    try {
+      const qrDataUri = await sessionManager!.getQrCode(name)
+      return { ok: true, session: name, qr: qrDataUri }
+    } catch (err) {
+      return reply.status(500).send({
+        error: 'QR code not available',
+        detail: err instanceof Error ? err.message : String(err),
+      })
+    }
+  })
+
+  server.post('/api/v1/waha/sessions/:name/stop', async (request, reply) => {
+    if (!requireWahaClient(reply)) return
+    const { name } = request.params as { name: string }
+    try {
+      await sessionManager!.stopSession(name)
+      return { ok: true, session: name }
+    } catch (err) {
+      return reply.status(500).send({
+        error: 'Failed to stop session',
+        detail: err instanceof Error ? err.message : String(err),
+      })
+    }
+  })
+
   server.get('/api/v1/waha/history', async (request, reply) => {
     const parsed = historyQuerySchema.safeParse(request.query)
     if (!parsed.success) {
