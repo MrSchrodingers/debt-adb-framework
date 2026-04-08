@@ -3,6 +3,12 @@ import type { AdbBridge } from '../adb/index.js'
 import type { MessageQueue, Message } from '../queue/index.js'
 import type { DispatchEmitter } from '../events/index.js'
 import { escapeForAdbContent } from './contact-utils.js'
+
+/** Packages allowed in am start/force-stop commands. Reject everything else. */
+const ALLOWED_PACKAGES = new Set(['com.whatsapp', 'com.whatsapp.w4b'])
+
+/** Device serials: alphanumeric + limited safe chars. Reject shell metacharacters. */
+const DEVICE_SERIAL_RE = /^[a-zA-Z0-9_:.\-]+$/
 import { SendStrategy } from './send-strategy.js'
 
 export interface SendResult {
@@ -36,8 +42,12 @@ export class SendEngine {
     this.processing = true
     const startTime = Date.now()
 
-    if (!/^[a-zA-Z0-9.]+$/.test(appPackage)) {
-      throw new Error(`Invalid app package: ${appPackage}`)
+    // Security: allowlist-only for shell command arguments
+    if (!ALLOWED_PACKAGES.has(appPackage)) {
+      throw new Error(`Rejected app package: ${appPackage} — only ${[...ALLOWED_PACKAGES].join(', ')} allowed`)
+    }
+    if (!DEVICE_SERIAL_RE.test(deviceSerial)) {
+      throw new Error(`Rejected device serial: contains unsafe characters`)
     }
 
     try {
@@ -298,12 +308,21 @@ export class SendEngine {
     throw new Error('Chat input not ready after dialog detection retries')
   }
 
+  /**
+   * Open chat via WhatsApp search bar.
+   * Uses last 8 digits to minimize false matches (4 digits is too ambiguous
+   * when multiple contacts share the same suffix).
+   * Coordinates are POCO C71 specific (720x1600).
+   */
   private async openViaSearch(deviceSerial: string, phone: string, body: string): Promise<void> {
+    // Tap search icon
     await this.adb.shell(deviceSerial, 'input tap 624 172')
     await this.delay(1000)
-    const last4 = phone.slice(-4)
-    await this.adb.shell(deviceSerial, `input text '${last4}'`)
+    // Type last 8 digits — specific enough to match a single contact
+    const searchDigits = phone.slice(-8)
+    await this.adb.shell(deviceSerial, `input text '${searchDigits}'`)
     await this.delay(1500)
+    // Tap first search result
     await this.adb.shell(deviceSerial, 'input tap 360 350')
     await this.delay(2000)
     await this.typeMessage(deviceSerial, body)

