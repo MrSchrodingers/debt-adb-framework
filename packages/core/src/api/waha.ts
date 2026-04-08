@@ -153,12 +153,14 @@ export function registerWahaRoutes(server: FastifyInstance, deps: WahaDeps): voi
 
   /** Reliable UIAutomator dump with retry on "null root node" */
   const dumpUiReliable = async (adbBridge: AdbBridge, serial: string, retries = 3): Promise<string> => {
+    // Delete stale XML before dumping to avoid reading old data
+    await adbBridge.shell(serial, 'rm -f /sdcard/dispatch-ui.xml').catch(() => {})
     for (let i = 0; i < retries; i++) {
       const result = await adbBridge.shell(serial, 'uiautomator dump /sdcard/dispatch-ui.xml')
       if (!result.includes('ERROR') && !result.includes('null root node')) {
         return adbBridge.shell(serial, 'cat /sdcard/dispatch-ui.xml')
       }
-      await new Promise(r => setTimeout(r, 1000))
+      await new Promise(r => setTimeout(r, 1500))
     }
     return adbBridge.shell(serial, 'cat /sdcard/dispatch-ui.xml')
   }
@@ -217,36 +219,39 @@ export function registerWahaRoutes(server: FastifyInstance, deps: WahaDeps): voi
       await adb.shell(serial, 'am force-stop com.whatsapp')
       await new Promise(r => setTimeout(r, 500))
       await adb.shell(serial, 'am start -n com.whatsapp/com.whatsapp.HomeActivity')
-      await new Promise(r => setTimeout(r, 3000))
+      await new Promise(r => setTimeout(r, 5000))
       steps.push('WhatsApp opened')
 
-      // 5. Navigate to Linked Devices: overflow → Dispositivos conectados → Conectar
+      // 5. Navigate: overflow → Dispositivos conectados → CONECTAR DISPOSITIVO
+      // Uses sequential ADB taps — UIAutomator is unreliable for popup menus via adbkit
       try {
-        const xml1 = await dumpUiReliable(adb, serial)
-        const overflowTapped = await tapText(adb, serial, xml1,
-          /resource-id="com\.whatsapp:id\/menuitem_overflow"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/)
-        if (!overflowTapped) { steps.push('Overflow menu not found — navigate manually'); throw null }
-        await new Promise(r => setTimeout(r, 2000))
+        // Tap overflow (top-right "..." button) — position stable on POCO C71 720x1640
+        await adb.shell(serial, 'input tap 684 124')
+        await new Promise(r => setTimeout(r, 3000))
         steps.push('Menu aberto')
 
-        const xml2 = await dumpUiReliable(adb, serial)
-        const linkedTapped = await tapText(adb, serial, xml2,
-          /text="(Dispositivos conectados|Linked [Dd]evices)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/)
-        if (!linkedTapped) { steps.push('"Dispositivos conectados" not found — navigate manually'); throw null }
-        await new Promise(r => setTimeout(r, 2000))
-        steps.push('Tela Dispositivos conectados')
+        // Tap "Dispositivos conectados" (4th item, y≈532 on 720x1640)
+        await adb.shell(serial, 'input tap 500 532')
+        await new Promise(r => setTimeout(r, 2500))
 
-        const xml3 = await dumpUiReliable(adb, serial)
-        const linkTapped = await tapText(adb, serial, xml3,
-          /text="(CONECTAR DISPOSITIVO|Conectar um dispositivo|Conectar dispositivo|Link a [Dd]evice)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/i)
-        if (linkTapped) {
-          await new Promise(r => setTimeout(r, 2000))
-          steps.push('Scanner QR aberto no device')
+        // Verify we're on Linked Devices screen
+        const xml2 = await dumpUiReliable(adb, serial)
+        if (xml2.includes('CONECTAR DISPOSITIVO') || xml2.includes('Conectar dispositivo') || xml2.includes('Link a device')) {
+          steps.push('Tela Dispositivos conectados')
+          // Tap "CONECTAR DISPOSITIVO"
+          const linkTapped = await tapText(adb, serial, xml2,
+            /text="(CONECTAR DISPOSITIVO|Conectar um dispositivo|Conectar dispositivo|Link a [Dd]evice)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/i)
+          if (linkTapped) {
+            await new Promise(r => setTimeout(r, 2000))
+            steps.push('Scanner QR aberto no device')
+          }
+        } else if (xml2.includes('Dispositivos conectados')) {
+          steps.push('Tela Dispositivos conectados (sem botao Conectar — pode estar banido)')
         } else {
-          steps.push('"Conectar dispositivo" not found — pode estar banido ou necessitar autorizacao biometrica')
+          steps.push('Navegacao incerta — verifique o device e toque manualmente')
         }
       } catch {
-        // Navigation failed at some point — device is at least on WhatsApp
+        steps.push('Navegacao falhou — abra manualmente: WhatsApp > Menu > Dispositivos conectados')
       }
 
       // 6. Restart WAHA session
