@@ -14,6 +14,7 @@ import { createChatwootHttpClient, ManagedSessions, InboxAutomation } from './ch
 import { PluginRegistry, PluginEventBus, CallbackDelivery, PluginLoader } from './plugins/index.js'
 import { buildLoggerConfig } from './config/logger.js'
 import { GracefulShutdown } from './config/graceful-shutdown.js'
+import { RateLimitGuard } from './config/rate-limits.js'
 import { OralsinPlugin } from './plugins/oralsin-plugin.js'
 import type { DispatchEventName } from './events/index.js'
 import type { DispatchPlugin } from './plugins/types.js'
@@ -48,6 +49,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const adb = new AdbBridge()
   const emitter = new DispatchEmitter()
   const engine = new SendEngine(adb, queue, emitter)
+
+  const rateLimitGuard = RateLimitGuard.fromEnv(process.env as Record<string, string | undefined>)
 
   // Initialize monitor modules
   const deviceManager = new DeviceManager(db, emitter, adb)
@@ -645,6 +648,18 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         releaseMutex = await accountMutex.acquire(senderNumber)
       }
 
+      // Rate limit: check daily cap for this sender
+      if (senderNumber) {
+        const dailyCount = queue.getSenderDailyCount(senderNumber)
+        if (!rateLimitGuard.canSend(dailyCount)) {
+          server.log.warn({ senderNumber, dailyCount, max: rateLimitGuard.maxPerSenderPerDay }, 'Worker: sender daily limit reached, skipping batch')
+          for (const msg of batch) {
+            try { queue.updateStatus(msg.id, 'queued') } catch { /* ignore */ }
+          }
+          return
+        }
+      }
+
       // Resolve profileId and switch user ONCE for the entire batch
       const senderProfile = senderNumber ? senderMapping.getByPhone(senderNumber) : null
       const profileId = senderProfile?.profile_id ?? 0
@@ -664,21 +679,18 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
       server.log.info({ batchSize: batch.length, senderNumber, profileId, userSwitched, device: online.serial }, 'Worker: processing sender batch')
 
-      // Anti-ban jitter between messages (typing simulation IS the main anti-ban)
-      // Default 5s base + random 0-5s = 5-10s between messages
-      // The char-by-char typing already takes ~20-25s per message (human-like pace)
-      const interMessageDelayMs = Number(process.env.INTER_MESSAGE_DELAY_MS) || 5_000
-
       for (let i = 0; i < batch.length; i++) {
         const message = batch[i]
         sendMetadata.set(message.id, { profileId, userSwitched, ts: Date.now() })
         await processMessage(message, online.serial, i === 0)
 
-        // Small jitter between messages (skip after last message)
+        // Rate-limit-aware delay between messages (skip after last message)
         if (i < batch.length - 1) {
-          const jitter = interMessageDelayMs + Math.round(Math.random() * interMessageDelayMs)
-          server.log.info({ delayMs: jitter, remaining: batch.length - i - 1 }, 'Worker: inter-message jitter')
-          await new Promise(r => setTimeout(r, jitter))
+          const nextMsg = batch[i + 1]
+          const isFirstContact = queue.isFirstContactWith(nextMsg.to, senderNumber ?? '')
+          const delayMs = rateLimitGuard.getInterMessageDelay(isFirstContact)
+          server.log.info({ delayMs, isFirstContact, remaining: batch.length - i - 1 }, 'Worker: rate-limited delay')
+          await new Promise(r => setTimeout(r, delayMs))
         }
       }
     } catch (err) {

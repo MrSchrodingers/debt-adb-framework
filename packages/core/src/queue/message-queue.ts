@@ -416,4 +416,22 @@ export class MessageQueue {
       "UPDATE messages SET fallback_used = 1, fallback_provider = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
     ).run(provider, id)
   }
+
+  getSenderDailyCount(senderNumber: string): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) as cnt FROM messages
+      WHERE sender_number = ? AND status = 'sent'
+        AND created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', 'start of day')
+    `).get(senderNumber) as { cnt: number }
+    return row.cnt
+  }
+
+  isFirstContactWith(toNumber: string, senderNumber: string): boolean {
+    const row = this.db.prepare(`
+      SELECT 1 FROM messages
+      WHERE to_number = ? AND sender_number = ? AND status = 'sent'
+      LIMIT 1
+    `).get(toNumber, senderNumber)
+    return row === undefined
+  }
 }
