@@ -82,7 +82,7 @@ export class SendEngine {
         }
       } else if (method === 'search') {
         if (isFirstInBatch) {
-          await this.adb.shell(deviceSerial, `am start -n ${appPackage}/${appPackage}.HomeActivity`)
+          await this.adb.shell(deviceSerial, `am start -n ${appPackage}/com.whatsapp.HomeActivity`)
           await this.delay(3000)
         }
         await this.openViaSearch(deviceSerial, phoneDigits, message.body)
@@ -224,7 +224,7 @@ export class SendEngine {
   private async dismissDialogs(deviceSerial: string, xml: string): Promise<boolean> {
     // "Enviar para" / "Abrir com" chooser → tap "WhatsApp" then "Sempre"
     if (/text="(Enviar para|Abrir com|Share with|Open with)"/i.test(xml)) {
-      const waMatch = xml.match(/text="WhatsApp"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/)
+      const waMatch = xml.match(/text="WhatsApp(?:\s+Business)?"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/)
       if (waMatch) {
         const cx = Math.round((Number(waMatch[1]) + Number(waMatch[3])) / 2)
         const cy = Math.round((Number(waMatch[2]) + Number(waMatch[4])) / 2)
@@ -282,6 +282,7 @@ export class SendEngine {
       }
 
       // Verify chat input field is ready
+      // WhatsApp Business (com.whatsapp.w4b) shares resource ID namespace with com.whatsapp
       if (
         xml.includes('com.whatsapp:id/entry') ||
         xml.includes('com.whatsapp:id/text_entry_view')
@@ -321,6 +322,7 @@ export class SendEngine {
   private async tapSendButton(deviceSerial: string): Promise<void> {
     const xml = await this.dumpUi(deviceSerial)
 
+    // WhatsApp Business (com.whatsapp.w4b) shares resource ID namespace with com.whatsapp
     const match = xml.match(
       /resource-id="com\.whatsapp:id\/send"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/,
     )
