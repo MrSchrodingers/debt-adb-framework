@@ -29,10 +29,16 @@ export class SendEngine {
   /**
    * @param isFirstInBatch — if true, does full cleanup (force-stop + screen wake).
    *   Subsequent messages in the same batch skip these for speed.
+   * @param appPackage — Android package to use for sending (default: com.whatsapp).
+   *   Pass 'com.whatsapp.w4b' to send via WhatsApp Business.
    */
-  async send(message: Message, deviceSerial: string, isFirstInBatch = true): Promise<SendResult> {
+  async send(message: Message, deviceSerial: string, isFirstInBatch = true, appPackage = 'com.whatsapp'): Promise<SendResult> {
     this.processing = true
     const startTime = Date.now()
+
+    if (!/^[a-zA-Z0-9.]+$/.test(appPackage)) {
+      throw new Error(`Invalid app package: ${appPackage}`)
+    }
 
     try {
       this.queue.updateStatus(message.id, 'sending')
@@ -46,7 +52,7 @@ export class SendEngine {
 
       if (isFirstInBatch) {
         await this.ensureScreenReady(deviceSerial)
-        await this.ensureCleanState(deviceSerial)
+        await this.ensureCleanState(deviceSerial, appPackage)
       } else {
         // Between messages: BACK to exit chat, keep WhatsApp open
         await this.adb.shell(deviceSerial, 'input keyevent 4')
@@ -67,7 +73,7 @@ export class SendEngine {
 
         await this.adb.shell(
           deviceSerial,
-          `am start -a android.intent.action.VIEW -d "${usePreFill ? deepLink : `https://wa.me/${phoneDigits}`}" -p com.whatsapp`,
+          `am start -a android.intent.action.VIEW -d "${usePreFill ? deepLink : `https://wa.me/${phoneDigits}`}" -p ${appPackage}`,
         )
         await this.delay(isFirstInBatch ? 4000 : 2000)
         dialogsDismissed = await this.waitForChatReady(deviceSerial)
@@ -76,13 +82,13 @@ export class SendEngine {
         }
       } else if (method === 'search') {
         if (isFirstInBatch) {
-          await this.adb.shell(deviceSerial, 'am start -n com.whatsapp/com.whatsapp.HomeActivity')
+          await this.adb.shell(deviceSerial, `am start -n ${appPackage}/${appPackage}.HomeActivity`)
           await this.delay(3000)
         }
         await this.openViaSearch(deviceSerial, phoneDigits, message.body)
         dialogsDismissed = 0
       } else {
-        await this.openViaTyping(deviceSerial, phoneDigits, message.body)
+        await this.openViaTyping(deviceSerial, phoneDigits, message.body, appPackage)
         dialogsDismissed = 0
       }
 
@@ -123,7 +129,7 @@ export class SendEngine {
         error: err instanceof Error ? err.message : String(err),
       })
 
-      try { await this.ensureCleanState(deviceSerial) } catch { /* device may be disconnected */ }
+      try { await this.ensureCleanState(deviceSerial, appPackage) } catch { /* device may be disconnected */ }
 
       throw err
     } finally {
@@ -137,9 +143,9 @@ export class SendEngine {
     await this.delay(500)
   }
 
-  private async ensureCleanState(deviceSerial: string): Promise<void> {
+  private async ensureCleanState(deviceSerial: string, appPackage = 'com.whatsapp'): Promise<void> {
     // Force-stop + HOME in single batch command
-    await this.adb.shell(deviceSerial, 'am force-stop com.whatsapp && sleep 0.2 && input keyevent 3')
+    await this.adb.shell(deviceSerial, `am force-stop ${appPackage} && sleep 0.2 && input keyevent 3`)
     await this.delay(300)
   }
 
@@ -302,10 +308,10 @@ export class SendEngine {
     await this.typeMessage(deviceSerial, body)
   }
 
-  private async openViaTyping(deviceSerial: string, phone: string, body: string): Promise<void> {
+  private async openViaTyping(deviceSerial: string, phone: string, body: string, appPackage = 'com.whatsapp'): Promise<void> {
     await this.adb.shell(
       deviceSerial,
-      `am start -a android.intent.action.VIEW -d "https://wa.me/${phone}" -p com.whatsapp`,
+      `am start -a android.intent.action.VIEW -d "https://wa.me/${phone}" -p ${appPackage}`,
     )
     await this.delay(2000)
     await this.waitForChatReady(deviceSerial)

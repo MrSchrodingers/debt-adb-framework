@@ -550,12 +550,12 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   }, 30_000)
 
   // DP-5: Helper to process a single message (ADB + WAHA fallback)
-  const processMessage = async (message: import('./queue/types.js').Message, deviceSerial: string, isFirstInBatch = true) => {
+  const processMessage = async (message: import('./queue/types.js').Message, deviceSerial: string, isFirstInBatch = true, appPackage = 'com.whatsapp') => {
     let sendSuccess = false
     let usedFallback = false
 
     try {
-      await engine.send(message, deviceSerial, isFirstInBatch)
+      await engine.send(message, deviceSerial, isFirstInBatch, appPackage)
       sendSuccess = true
     } catch (adbErr) {
       server.log.warn({ messageId: message.id, err: adbErr }, 'Worker: ADB send failed, attempting WAHA fallback')
@@ -676,6 +676,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       // Resolve profileId and switch user ONCE for the entire batch
       const senderProfile = senderNumber ? senderMapping.getByPhone(senderNumber) : null
       const profileId = senderProfile?.profile_id ?? 0
+      const appPackage = senderProfile?.app_package ?? 'com.whatsapp'
       const userSwitched = profileId !== currentForegroundUser
 
       if (userSwitched) {
@@ -695,7 +696,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       for (let i = 0; i < batch.length; i++) {
         const message = batch[i]
         sendMetadata.set(message.id, { profileId, userSwitched, ts: Date.now() })
-        await processMessage(message, online.serial, i === 0)
+        await processMessage(message, online.serial, i === 0, appPackage)
 
         // Rate-limit-aware delay between messages (skip after last message)
         if (i < batch.length - 1) {
