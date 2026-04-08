@@ -574,6 +574,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   const switchToUser = async (deviceSerial: string, profileId: number): Promise<boolean> => {
     if (profileId === currentForegroundUser) return true
+    if (!Number.isInteger(profileId) || profileId < 0) return false
 
     await adb.shell(deviceSerial, `am switch-user ${profileId}`)
 

@@ -109,11 +109,18 @@ export class PluginLoader {
           priority: PRIORITY_MAP[m.sendOptions?.priority ?? 'normal'] ?? 5,
           senderNumber: m.resolvedSenderPhone ?? m.senders[0]?.phone ?? null,
           pluginName,
-          correlationId: m.correlationId ?? null,
+          correlationId: m.correlationId ?? undefined,
           sendersConfig: JSON.stringify(m.senders),
           context: m.context ? JSON.stringify(m.context) : null,
           maxRetries: m.sendOptions?.maxRetries ?? 3,
         }))
+
+        // Save patient contacts with real names for ADB send
+        for (const m of msgs) {
+          if (m.patient.phone && m.patient.name) {
+            this.queue.saveContact(m.patient.phone, m.patient.name)
+          }
+        }
 
         const messages = this.queue.enqueueBatch(params)
 

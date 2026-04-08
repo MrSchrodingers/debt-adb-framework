@@ -30,6 +30,11 @@ export class SendEngine {
       this.queue.updateStatus(message.id, 'sending')
       this.emitter.emit('message:sending', { id: message.id, deviceSerial })
 
+      // Validate phone number to prevent shell injection
+      if (!/^\d{10,15}$/.test(message.to)) {
+        throw new Error(`Invalid phone number: ${message.to}`)
+      }
+
       await this.ensureScreenReady(deviceSerial)
       await this.ensureCleanState(deviceSerial)
       await this.ensureContact(deviceSerial, message.to)

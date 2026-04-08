@@ -117,6 +117,8 @@ export class CallbackDelivery {
       })
       if (response.ok) {
         this.getStmtDeleteFailed().run(failedId)
+      } else {
+        this.getStmtUpdateFailedAttempts().run(failedId)
       }
     } catch {
       this.getStmtUpdateFailedAttempts().run(failedId)
