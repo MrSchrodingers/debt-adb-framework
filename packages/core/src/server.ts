@@ -140,7 +140,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   // WAHA routes always registered (webhook receiver works without WAHA client)
   // sessionManager may be null if WAHA_API_URL not configured
-  registerWahaRoutes(server, { webhookHandler, sessionManager, messageHistory })
+  // WAHA routes registered after senderMapping init (see below)
 
   // Session management routes (Phase 5)
   registerSessionRoutes(server, { inboxAutomation, managedSessions })
@@ -206,6 +206,9 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const senderMapping = new SenderMapping(db)
   senderMapping.initialize()
   registerSenderMappingRoutes(server, senderMapping)
+
+  // WAHA routes (after senderMapping init — pair endpoint needs it)
+  registerWahaRoutes(server, { webhookHandler, sessionManager, messageHistory, adb, senderMapping })
 
   // ── WAHA Fallback + Account Mutex (DP-3) ──
   const accountMutex = new AccountMutex()
