@@ -64,7 +64,8 @@ export class SendEngine {
       await this.delay(500)
       await this.tapSendButton(deviceSerial)
 
-      await this.delay(2000)
+      // Wait for WhatsApp to process the send and show the delivered checkmark
+      await this.delay(3000)
       const screenshot = await this.adb.screenshot(deviceSerial)
 
       // Persist screenshot to disk for audit trail
