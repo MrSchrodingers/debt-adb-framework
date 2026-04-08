@@ -25,7 +25,9 @@ export function registerApiAuth(server: FastifyInstance, apiKey: string | undefi
   server.addHook('onRequest', async (request, reply) => {
     if (isPublicRoute(request.url)) return
 
-    const providedKey = request.headers['x-api-key'] as string | undefined
+    // Accept API key from header or query param (query param needed for <img src> tags)
+    const providedKey = (request.headers['x-api-key'] as string | undefined)
+      ?? (request.query as Record<string, string>)?.key
     if (!providedKey || providedKey.length !== apiKey.length ||
         !timingSafeEqual(Buffer.from(providedKey), Buffer.from(apiKey))) {
       return reply.status(401).send({ error: 'Unauthorized' })

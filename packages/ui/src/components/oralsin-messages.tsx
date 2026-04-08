@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, Fragment } from 'react'
 import { ChevronLeft, ChevronRight, Check, CheckCheck, AlertCircle } from 'lucide-react'
-import { CORE_URL, authHeaders } from '../config'
+import { CORE_URL, API_KEY, authHeaders } from '../config'
 import { formatRelativeTime } from '../utils/time'
 
 const PAGE_SIZE = 50
@@ -165,7 +165,7 @@ function ExpandedRow({ msg }: { msg: OralsinMessage }) {
             <div className="space-y-1">
               <div className="text-zinc-500 uppercase tracking-wider font-medium">Screenshot</div>
               <img
-                src={`${CORE_URL}/api/v1/messages/${msg.id}/screenshot`}
+                src={`${CORE_URL}/api/v1/messages/${msg.id}/screenshot${API_KEY ? `?key=${API_KEY}` : ''}`}
                 alt="Screenshot do envio"
                 className="rounded-lg border border-zinc-800 max-h-48 object-contain bg-zinc-900"
                 onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
