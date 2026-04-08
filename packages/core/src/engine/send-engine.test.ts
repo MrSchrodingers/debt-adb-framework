@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { SendEngine } from './send-engine.js'
+import { SendStrategy } from './send-strategy.js'
 import { MessageQueue } from '../queue/index.js'
 import { DispatchEmitter } from '../events/index.js'
 import type { AdbBridge } from '../adb/index.js'
@@ -50,7 +51,8 @@ describe('SendEngine', () => {
     queue.initialize()
     emitter = new DispatchEmitter()
     mockAdb = createMockAdb()
-    engine = new SendEngine(mockAdb, queue, emitter)
+    const strategy = new SendStrategy({ prefillWeight: 100, searchWeight: 0, typingWeight: 0 })
+    engine = new SendEngine(mockAdb, queue, emitter, strategy)
 
     // Mock internal delay to avoid real waits (~8s per send)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

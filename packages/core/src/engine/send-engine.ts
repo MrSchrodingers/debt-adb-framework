@@ -3,6 +3,7 @@ import type { AdbBridge } from '../adb/index.js'
 import type { MessageQueue, Message } from '../queue/index.js'
 import type { DispatchEmitter } from '../events/index.js'
 import { escapeForAdbContent } from './contact-utils.js'
+import { SendStrategy } from './send-strategy.js'
 
 export interface SendResult {
   screenshot: Buffer
@@ -18,6 +19,7 @@ export class SendEngine {
     private adb: AdbBridge,
     private queue: MessageQueue,
     private emitter: DispatchEmitter,
+    private strategy: SendStrategy = new SendStrategy(),
   ) {}
 
   get isProcessing(): boolean {
@@ -53,26 +55,35 @@ export class SendEngine {
 
       const contactRegistered = await this.ensureContact(deviceSerial, phoneDigits)
 
-      // Open chat with message pre-filled via wa.me?text= (official WhatsApp API)
-      // This eliminates typing entirely — text appears in compose field on open
-      const encodedBody = encodeURIComponent(message.body)
-      const deepLink = `https://wa.me/${phoneDigits}?text=${encodedBody}`
+      // Select chat opening method (diversifies entryPointSource fingerprint)
+      const method = this.strategy.selectMethod()
+      let dialogsDismissed = 0
 
-      // URL length limit ~2KB. Fall back to typing for very long messages
-      const usePreFill = deepLink.length < 2000
+      if (method === 'prefill') {
+        // wa.me?text= pre-fill (fast, no typing indicator)
+        const encodedBody = encodeURIComponent(message.body)
+        const deepLink = `https://wa.me/${phoneDigits}?text=${encodedBody}`
+        const usePreFill = deepLink.length < 2000
 
-      await this.adb.shell(
-        deviceSerial,
-        `am start -a android.intent.action.VIEW -d "${usePreFill ? deepLink : `https://wa.me/${phoneDigits}`}" -p com.whatsapp`,
-      )
-      await this.delay(isFirstInBatch ? 4000 : 2000)
-
-      // Detect and dismiss known WhatsApp dialogs, then verify chat is ready
-      const dialogsDismissed = await this.waitForChatReady(deviceSerial)
-
-      // Only type if pre-fill wasn't used (very long messages >2KB URL)
-      if (!usePreFill) {
-        await this.typeMessage(deviceSerial, message.body)
+        await this.adb.shell(
+          deviceSerial,
+          `am start -a android.intent.action.VIEW -d "${usePreFill ? deepLink : `https://wa.me/${phoneDigits}`}" -p com.whatsapp`,
+        )
+        await this.delay(isFirstInBatch ? 4000 : 2000)
+        dialogsDismissed = await this.waitForChatReady(deviceSerial)
+        if (!usePreFill) {
+          await this.typeMessage(deviceSerial, message.body)
+        }
+      } else if (method === 'search') {
+        if (isFirstInBatch) {
+          await this.adb.shell(deviceSerial, 'am start -n com.whatsapp/com.whatsapp.HomeActivity')
+          await this.delay(3000)
+        }
+        await this.openViaSearch(deviceSerial, phoneDigits, message.body)
+        dialogsDismissed = 0
+      } else {
+        await this.openViaTyping(deviceSerial, phoneDigits, message.body)
+        dialogsDismissed = 0
       }
 
       await this.delay(300)
@@ -278,6 +289,27 @@ export class SendEngine {
 
     // All retries exhausted — throw transient error
     throw new Error('Chat input not ready after dialog detection retries')
+  }
+
+  private async openViaSearch(deviceSerial: string, phone: string, body: string): Promise<void> {
+    await this.adb.shell(deviceSerial, 'input tap 624 172')
+    await this.delay(1000)
+    const last4 = phone.slice(-4)
+    await this.adb.shell(deviceSerial, `input text '${last4}'`)
+    await this.delay(1500)
+    await this.adb.shell(deviceSerial, 'input tap 360 350')
+    await this.delay(2000)
+    await this.typeMessage(deviceSerial, body)
+  }
+
+  private async openViaTyping(deviceSerial: string, phone: string, body: string): Promise<void> {
+    await this.adb.shell(
+      deviceSerial,
+      `am start -a android.intent.action.VIEW -d "https://wa.me/${phone}" -p com.whatsapp`,
+    )
+    await this.delay(2000)
+    await this.waitForChatReady(deviceSerial)
+    await this.typeMessage(deviceSerial, body)
   }
 
   private async tapSendButton(deviceSerial: string): Promise<void> {

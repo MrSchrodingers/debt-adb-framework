@@ -1,4 +1,6 @@
 export { SendEngine } from './send-engine.js'
+export { SendStrategy } from './send-strategy.js'
+export type { ChatOpenMethod, SendStrategyConfig } from './send-strategy.js'
 export { SenderMapping } from './sender-mapping.js'
 export type { SenderMappingRecord, CreateSenderMappingParams, ResolvedSender } from './sender-mapping.js'
 export { ReceiptTracker, normalizeBrPhoneForMatching } from './receipt-tracker.js'
