@@ -547,12 +547,12 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   }, 30_000)
 
   // DP-5: Helper to process a single message (ADB + WAHA fallback)
-  const processMessage = async (message: import('./queue/types.js').Message, deviceSerial: string) => {
+  const processMessage = async (message: import('./queue/types.js').Message, deviceSerial: string, isFirstInBatch = true) => {
     let sendSuccess = false
     let usedFallback = false
 
     try {
-      await engine.send(message, deviceSerial)
+      await engine.send(message, deviceSerial, isFirstInBatch)
       sendSuccess = true
     } catch (adbErr) {
       server.log.warn({ messageId: message.id, err: adbErr }, 'Worker: ADB send failed, attempting WAHA fallback')
@@ -672,7 +672,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       for (let i = 0; i < batch.length; i++) {
         const message = batch[i]
         sendMetadata.set(message.id, { profileId, userSwitched, ts: Date.now() })
-        await processMessage(message, online.serial)
+        await processMessage(message, online.serial, i === 0)
 
         // Small jitter between messages (skip after last message)
         if (i < batch.length - 1) {

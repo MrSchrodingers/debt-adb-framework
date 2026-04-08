@@ -24,7 +24,11 @@ export class SendEngine {
     return this.processing
   }
 
-  async send(message: Message, deviceSerial: string): Promise<SendResult> {
+  /**
+   * @param isFirstInBatch — if true, does full cleanup (force-stop + screen wake).
+   *   Subsequent messages in the same batch skip these for speed.
+   */
+  async send(message: Message, deviceSerial: string, isFirstInBatch = true): Promise<SendResult> {
     this.processing = true
     const startTime = Date.now()
 
@@ -38,35 +42,35 @@ export class SendEngine {
         throw new Error(`Invalid phone number: ${message.to}`)
       }
 
-      await this.ensureScreenReady(deviceSerial)
-      await this.ensureCleanState(deviceSerial)
+      if (isFirstInBatch) {
+        await this.ensureScreenReady(deviceSerial)
+        await this.ensureCleanState(deviceSerial)
+      } else {
+        // Between messages: BACK to exit chat, keep WhatsApp open
+        await this.adb.shell(deviceSerial, 'input keyevent 4')
+        await this.delay(500)
+      }
+
       const contactRegistered = await this.ensureContact(deviceSerial, phoneDigits)
 
-      // No --user flag needed — worker loop already switched to correct foreground user
+      // Open chat via wa.me deep link (WhatsApp already running for non-first msgs)
       await this.adb.shell(
         deviceSerial,
         `am start -a android.intent.action.VIEW -d "https://wa.me/${phoneDigits}" -p com.whatsapp`,
       )
-      await this.delay(4000)
+      await this.delay(isFirstInBatch ? 4000 : 2000)
 
       // Detect and dismiss known WhatsApp dialogs, then verify chat is ready
       const dialogsDismissed = await this.waitForChatReady(deviceSerial)
 
-      for (const char of message.body) {
-        if (char === ' ') {
-          await this.adb.shell(deviceSerial, 'input keyevent 62')
-        } else {
-          const escaped = char.replace(/'/g, "'\\''")
-          await this.adb.shell(deviceSerial, `input text '${escaped}'`)
-        }
-        await this.delay(this.gaussianDelay(80, 30))
-      }
+      // Type message in word chunks (3-5x faster than char-by-char, still natural)
+      await this.typeMessage(deviceSerial, message.body)
 
       await this.delay(500)
       await this.tapSendButton(deviceSerial)
 
-      // Wait for WhatsApp to process the send and show the delivered checkmark
-      await this.delay(3000)
+      // Wait for send confirmation
+      await this.delay(2000)
       const screenshot = await this.adb.screenshot(deviceSerial)
 
       // Persist screenshot to disk for audit trail
@@ -290,6 +294,38 @@ export class SendEngine {
       await this.adb.shell(deviceSerial, `input tap ${cx} ${cy}`)
     } else {
       await this.adb.shell(deviceSerial, 'input keyevent 66')
+    }
+  }
+
+  /**
+   * Type message in word-level chunks with natural delays.
+   * ~3-5x faster than char-by-char while maintaining human-like pacing.
+   * Each word = 1 ADB call instead of N chars = N ADB calls.
+   */
+  private async typeMessage(deviceSerial: string, text: string): Promise<void> {
+    // Split text into words, preserving spaces
+    const words = text.split(/(\s+)/)
+
+    for (const segment of words) {
+      if (!segment) continue
+
+      if (/^\s+$/.test(segment)) {
+        // Whitespace segment: type spaces via keyevent (more reliable)
+        for (const ch of segment) {
+          if (ch === '\n') {
+            await this.adb.shell(deviceSerial, 'input keyevent 66') // ENTER
+          } else {
+            await this.adb.shell(deviceSerial, 'input keyevent 62') // SPACE
+          }
+        }
+      } else {
+        // Word segment: type entire word in one shell call
+        const escaped = segment.replace(/'/g, "'\\''")
+        await this.adb.shell(deviceSerial, `input text '${escaped}'`)
+      }
+
+      // Human-like pause between words (150-350ms, gaussian)
+      await this.delay(this.gaussianDelay(200, 60))
     }
   }
 
