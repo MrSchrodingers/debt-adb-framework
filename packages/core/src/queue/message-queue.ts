@@ -74,6 +74,13 @@ export class MessageQueue {
       );
       CREATE INDEX IF NOT EXISTS idx_audit_log_resource ON audit_log(resource_type, resource_id);
       CREATE INDEX IF NOT EXISTS idx_audit_log_time ON audit_log(created_at);
+
+      CREATE TABLE IF NOT EXISTS sender_warmup (
+        sender_number TEXT PRIMARY KEY,
+        activated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        skipped INTEGER NOT NULL DEFAULT 0,
+        skipped_at TEXT
+      );
     `)
 
     // Migration: add screenshot_path column if not present
