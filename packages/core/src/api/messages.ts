@@ -5,6 +5,10 @@ import type { DispatchEmitter } from '../events/index.js'
 
 const VALID_STATUSES: readonly MessageStatus[] = ['queued', 'locked', 'sending', 'sent', 'failed', 'permanently_failed', 'waiting_device']
 
+const ALLOWED_MEDIA_TYPES = [
+  'image/jpeg', 'image/png', 'image/webp', 'application/pdf',
+] as const
+
 const enqueueSchema = z.object({
   to: z.string().regex(/^\d{10,15}$/, 'Phone must be 10-15 digits'),
   body: z.string().min(1).max(4096),
@@ -12,6 +16,9 @@ const enqueueSchema = z.object({
   priority: z.number().int().min(1).max(10).optional(),
   senderNumber: z.string().regex(/^\d{10,15}$/).optional(),
   contactName: z.string().min(1).max(100).optional(),
+  mediaUrl: z.string().url().optional(),
+  mediaType: z.enum(ALLOWED_MEDIA_TYPES).optional(),
+  mediaCaption: z.string().max(4096).optional(),
 })
 
 export function registerMessageRoutes(

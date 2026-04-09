@@ -9,6 +9,9 @@ export interface EnqueueParams {
   sendersConfig?: string
   context?: string
   maxRetries?: number
+  mediaUrl?: string
+  mediaType?: string
+  mediaCaption?: string
 }
 
 export interface Message {
@@ -33,6 +36,9 @@ export interface Message {
   fallbackUsed: number
   fallbackProvider: string | null
   screenshotPath: string | null
+  mediaUrl: string | null
+  mediaType: string | null
+  mediaCaption: string | null
 }
 
 export type MessageStatus =
