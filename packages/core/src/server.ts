@@ -4,9 +4,9 @@ import Database from 'better-sqlite3'
 import { Server as SocketIOServer } from 'socket.io'
 import { MessageQueue } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
-import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, WorkerOrchestrator, EventRecorder } from './engine/index.js'
+import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
-import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes } from './api/index.js'
+import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes } from './api/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
 import { SessionManager, WebhookHandler, MessageHistory } from './waha/index.js'
 import { createWahaHttpClient } from './waha/waha-http-client.js'
@@ -94,6 +94,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     senderQuarantined.set({ sender: data.sender }, 0)
   })
 
+  const senderWarmup = new SenderWarmup(db)
   const rateLimitGuard = RateLimitGuard.fromEnv(process.env as Record<string, string | undefined>)
   const senderHealth = new SenderHealth(db, {
     quarantineAfterFailures: Number(process.env.QUARANTINE_AFTER_FAILURES) || 3,
@@ -276,6 +277,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const senderMapping = new SenderMapping(db)
   senderMapping.initialize()
   registerSenderMappingRoutes(server, senderMapping, auditLogger)
+  registerSenderRoutes(server, { senderWarmup, senderMapping, senderHealth, queue })
 
   // WAHA routes (after senderMapping init — pair endpoint needs it)
   registerWahaRoutes(server, { webhookHandler, sessionManager, messageHistory, adb, senderMapping })
@@ -629,12 +631,24 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   }, 30_000)
 
   // DP-5: Worker orchestrator — extracted from inline closures
+  const sendWindow = new SendWindow({
+    start: Number(process.env.SEND_WINDOW_START) || 7,
+    end: Number(process.env.SEND_WINDOW_END) || 21,
+    days: process.env.SEND_WINDOW_DAYS || '1,2,3,4,5',
+    utcOffsetHours: Number(process.env.SEND_WINDOW_OFFSET_HOURS) || -3,
+  })
+
+  const circuitBreaker = new DeviceCircuitBreaker()
+
   const orchestrator = new WorkerOrchestrator({
     db, queue, engine, adb, emitter, senderMapping, senderHealth,
     rateLimitGuard, receiptTracker, accountMutex, wahaFallback,
     messageHistory, deviceManager,
     latestHealthMap,
     logger: server.log,
+    sendWindow,
+    senderWarmup,
+    circuitBreaker,
   })
   const workerInterval = setInterval(() => orchestrator.tick(), 5_000)
   const metadataCleanupInterval = setInterval(() => orchestrator.cleanupMetadata(), 60_000)

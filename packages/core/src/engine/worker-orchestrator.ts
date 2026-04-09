@@ -13,6 +13,9 @@ import type { MessageHistory } from '../waha/index.js'
 import type { DeviceManager } from '../monitor/index.js'
 import type { HealthSnapshot } from '../monitor/types.js'
 import type { Message } from '../queue/types.js'
+import type { SendWindow } from './send-window.js'
+import type { SenderWarmup } from './sender-warmup.js'
+import type { DeviceCircuitBreaker } from './device-circuit-breaker.js'
 import { selectDevice } from './dispatcher.js'
 
 export interface WorkerOrchestratorDeps {
@@ -31,12 +34,16 @@ export interface WorkerOrchestratorDeps {
   deviceManager: DeviceManager
   latestHealthMap: Map<string, HealthSnapshot>
   logger: { info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void; error: (...args: unknown[]) => void }
+  sendWindow?: SendWindow
+  senderWarmup?: SenderWarmup
+  circuitBreaker?: DeviceCircuitBreaker
 }
 
 export class WorkerOrchestrator {
   private workerRunning = false
   private currentForegroundUser = 0
   private cappedSendersCooldown = new Map<string, number>()
+  private lastWindowLogAt: number | null = null
   private sendMetadata = new Map<string, {
     profileId: number; userSwitched: boolean; ts: number;
     appPackage: string; senderNumber: string | null; isFirstContact: boolean;
@@ -130,13 +137,38 @@ export class WorkerOrchestrator {
     if (this.workerRunning) return
     this.workerRunning = true
 
+    // Send window gate — skip if outside business hours
+    if (this.deps.sendWindow && !this.deps.sendWindow.isOpen()) {
+      const now = Date.now()
+      if (!this.lastWindowLogAt || now - this.lastWindowLogAt >= 60_000) {
+        this.deps.logger.info(
+          { msUntilOpen: this.deps.sendWindow.msUntilOpen() },
+          'Worker: send window closed, messages stay queued',
+        )
+        this.lastWindowLogAt = now
+      }
+      this.workerRunning = false
+      return
+    }
+
     const { db, queue, emitter, senderMapping, senderHealth, rateLimitGuard, accountMutex, deviceManager, latestHealthMap, logger } = this.deps
     let releaseMutex: (() => void) | null = null
+    let selectedDeviceSerial: string | null = null
 
     try {
       const online = selectDevice(deviceManager.getDevices(), latestHealthMap, db)
         ?? deviceManager.getDevices().find(d => d.status === 'online')
       if (!online) return
+
+      selectedDeviceSerial = online.serial
+
+      // Circuit breaker: skip if device circuit is open
+      if (this.deps.circuitBreaker && !this.deps.circuitBreaker.canExecute(online.serial)) {
+        logger.warn({ device: online.serial, state: this.deps.circuitBreaker.getState(online.serial) },
+          'Worker: device circuit breaker open, skipping tick')
+        this.workerRunning = false
+        return
+      }
 
       // DP-5: Dequeue batch grouped by sender (minimizes user switches)
       const batch = queue.dequeueBySender(online.serial)
@@ -147,8 +179,13 @@ export class WorkerOrchestrator {
         releaseMutex = await accountMutex.acquire(senderNumber)
       }
 
-      // Rate limit: check daily cap for this sender
+      // Rate limit: check daily cap for this sender (warmup-aware)
       if (senderNumber) {
+        // Ensure sender is activated for warmup tracking
+        if (this.deps.senderWarmup) {
+          this.deps.senderWarmup.activateSender(senderNumber)
+        }
+
         // Cooldown: if we already logged the cap within the last 60s, requeue silently
         const lastCapped = this.cappedSendersCooldown.get(senderNumber)
         if (lastCapped !== undefined && Date.now() - lastCapped < 60_000) {
@@ -160,9 +197,14 @@ export class WorkerOrchestrator {
         // Cooldown expired or first check — evaluate cap
         if (lastCapped !== undefined) this.cappedSendersCooldown.delete(senderNumber)
 
+        // Use warmup-adjusted cap if available, otherwise fall back to RateLimitGuard
         const dailyCount = queue.getSenderDailyCount(senderNumber)
-        if (!rateLimitGuard.canSend(dailyCount)) {
-          logger.warn({ senderNumber, dailyCount, max: rateLimitGuard.maxPerSenderPerDay }, 'Worker: sender daily limit reached, skipping batch')
+        const effectiveCap = this.deps.senderWarmup
+          ? this.deps.senderWarmup.getEffectiveDailyCap(senderNumber)
+          : rateLimitGuard.maxPerSenderPerDay
+
+        if (dailyCount >= effectiveCap) {
+          logger.warn({ senderNumber, dailyCount, max: effectiveCap }, 'Worker: sender daily limit reached, skipping batch')
           this.cappedSendersCooldown.set(senderNumber, Date.now())
           for (const msg of batch) {
             try { queue.updateStatus(msg.id, 'queued') } catch { /* ignore */ }
@@ -178,6 +220,15 @@ export class WorkerOrchestrator {
           try { queue.updateStatus(msg.id, 'queued') } catch { /* ignore */ }
         }
         return // finally block releases mutex
+      }
+
+      // Pause check: skip paused senders
+      if (senderNumber && senderMapping.isPaused(senderNumber)) {
+        logger.info({ senderNumber }, 'Worker: sender paused, skipping batch')
+        for (const msg of batch) {
+          try { queue.updateStatus(msg.id, 'queued') } catch { /* ignore */ }
+        }
+        return
       }
 
       // Resolve profileId and switch user ONCE for the entire batch
@@ -224,13 +275,33 @@ export class WorkerOrchestrator {
           const isFirstContact = senderNumber
             ? queue.isFirstContactWith(nextMsg.to, senderNumber)
             : false
-          const delayMs = rateLimitGuard.getInterMessageDelay(isFirstContact)
+
+          let delayMs: number
+          if (senderNumber && this.deps.senderWarmup) {
+            const delays = this.deps.senderWarmup.getEffectiveDelays(senderNumber)
+            const base = isFirstContact ? delays.firstContactDelayMs : delays.recurringContactDelayMs
+            delayMs = base + Math.round(base * 0.3 * (Math.random() * 2 - 1)) // +/-30% jitter
+            delayMs = Math.max(5000, delayMs)
+          } else {
+            delayMs = rateLimitGuard.getInterMessageDelay(isFirstContact)
+          }
+
           logger.info({ delayMs, isFirstContact, remaining: batch.length - i - 1 }, 'Worker: rate-limited delay')
           await new Promise(r => setTimeout(r, delayMs))
         }
       }
+
+      // Circuit breaker: record success after batch completes without throwing
+      if (this.deps.circuitBreaker && selectedDeviceSerial) {
+        this.deps.circuitBreaker.recordSuccess(selectedDeviceSerial)
+      }
     } catch (err) {
       logger.error({ err }, 'Worker: batch processing failed')
+
+      // Circuit breaker: record failure on unhandled batch error
+      if (this.deps.circuitBreaker && selectedDeviceSerial) {
+        this.deps.circuitBreaker.recordFailure(selectedDeviceSerial)
+      }
     } finally {
       if (releaseMutex) releaseMutex()
       this.workerRunning = false
