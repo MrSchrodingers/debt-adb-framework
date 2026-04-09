@@ -41,6 +41,17 @@ export class MessageQueue {
         name TEXT NOT NULL,
         registered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       );
+
+      CREATE TABLE IF NOT EXISTS sender_health (
+        sender_number TEXT PRIMARY KEY,
+        consecutive_failures INTEGER NOT NULL DEFAULT 0,
+        quarantined_until TEXT,
+        last_failure_at TEXT,
+        last_success_at TEXT,
+        total_failures INTEGER NOT NULL DEFAULT 0,
+        total_successes INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
     `)
 
     // Migration: add screenshot_path column if not present
