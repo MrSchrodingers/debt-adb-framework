@@ -3,6 +3,7 @@ import type { AdbBridge } from '../adb/index.js'
 import type { MessageQueue, Message } from '../queue/index.js'
 import type { DispatchEmitter } from '../events/index.js'
 import { escapeForAdbContent } from './contact-utils.js'
+import type { EventRecorder } from './event-recorder.js'
 
 /** Packages allowed in am start/force-stop commands. Reject everything else. */
 const ALLOWED_PACKAGES = new Set(['com.whatsapp', 'com.whatsapp.w4b'])
@@ -26,7 +27,12 @@ export class SendEngine {
     private queue: MessageQueue,
     private emitter: DispatchEmitter,
     private strategy: SendStrategy = new SendStrategy(),
+    private recorder?: EventRecorder,
   ) {}
+
+  private record(messageId: string, event: string, metadata?: Record<string, unknown>): void {
+    this.recorder?.record(messageId, event, metadata)
+  }
 
   get isProcessing(): boolean {
     return this.processing
@@ -62,7 +68,9 @@ export class SendEngine {
 
       if (isFirstInBatch) {
         await this.ensureScreenReady(deviceSerial)
+        this.record(message.id, 'screen_ready', { wakeSent: true })
         await this.ensureCleanState(deviceSerial, appPackage)
+        this.record(message.id, 'clean_state', { forceStoppedPackage: appPackage })
       } else {
         // Between messages: BACK to exit chat, keep WhatsApp open
         await this.adb.shell(deviceSerial, 'input keyevent 4')
@@ -70,9 +78,11 @@ export class SendEngine {
       }
 
       const contactRegistered = await this.ensureContact(deviceSerial, phoneDigits)
+      this.record(message.id, 'contact_resolved', { registered: contactRegistered, phone: phoneDigits })
 
       // Select chat opening method (diversifies entryPointSource fingerprint)
       const method = this.strategy.selectMethod()
+      this.record(message.id, 'strategy_selected', { method, appPackage })
       let dialogsDismissed = 0
 
       if (method === 'prefill') {
@@ -87,9 +97,11 @@ export class SendEngine {
         )
         await this.delay(isFirstInBatch ? 4000 : 2000)
         dialogsDismissed = await this.waitForChatReady(deviceSerial)
+        this.record(message.id, 'chat_opened', { method, dialogsDismissed })
         if (!usePreFill) {
           await this.typeMessage(deviceSerial, message.body)
         }
+        this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
       } else if (method === 'search') {
         if (isFirstInBatch) {
           await this.adb.shell(deviceSerial, `am start -n ${appPackage}/com.whatsapp.HomeActivity`)
@@ -97,13 +109,18 @@ export class SendEngine {
         }
         await this.openViaSearch(deviceSerial, phoneDigits, message.body)
         dialogsDismissed = 0
+        this.record(message.id, 'chat_opened', { method, dialogsDismissed })
+        this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
       } else {
         await this.openViaTyping(deviceSerial, phoneDigits, message.body, appPackage)
         dialogsDismissed = 0
+        this.record(message.id, 'chat_opened', { method, dialogsDismissed })
+        this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
       }
 
       await this.delay(300)
       await this.tapSendButton(deviceSerial)
+      this.record(message.id, 'send_tapped', {})
 
       // Wait for send confirmation
       await this.delay(2000)
@@ -116,6 +133,7 @@ export class SendEngine {
         await mkdir(screenshotDir, { recursive: true })
         await writeFile(screenshotPath, screenshot)
         this.queue.updateScreenshotPath(message.id, screenshotPath)
+        this.record(message.id, 'screenshot_saved', { path: screenshotPath })
       } catch {
         // Screenshot persistence is best-effort — don't fail the send
       }

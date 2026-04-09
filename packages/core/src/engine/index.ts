@@ -1,4 +1,5 @@
 export { SendEngine } from './send-engine.js'
+export { EventRecorder } from './event-recorder.js'
 export { SendStrategy } from './send-strategy.js'
 export type { ChatOpenMethod, SendStrategyConfig } from './send-strategy.js'
 export { SenderMapping } from './sender-mapping.js'

@@ -4,9 +4,9 @@ import Database from 'better-sqlite3'
 import { Server as SocketIOServer } from 'socket.io'
 import { MessageQueue } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
-import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, WorkerOrchestrator } from './engine/index.js'
+import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, WorkerOrchestrator, EventRecorder } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
-import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes } from './api/index.js'
+import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes } from './api/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
 import { SessionManager, WebhookHandler, MessageHistory } from './waha/index.js'
 import { createWahaHttpClient } from './waha/waha-http-client.js'
@@ -16,6 +16,8 @@ import { buildLoggerConfig } from './config/logger.js'
 import { GracefulShutdown } from './config/graceful-shutdown.js'
 import { RateLimitGuard } from './config/rate-limits.js'
 import { parseConfig } from './config/config-schema.js'
+import { AuditLogger } from './config/audit-logger.js'
+import { metricsRegistry, messagesSentTotal, messagesFailedTotal, messagesQueuedTotal, sendDurationSeconds, queueDepth, devicesOnline, quarantineEventsTotal, senderQuarantined } from './config/metrics.js'
 import { OralsinPlugin } from './plugins/oralsin-plugin.js'
 import type { DispatchEventName } from './events/index.js'
 import type { DispatchPlugin } from './plugins/types.js'
@@ -51,16 +53,52 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const queue = new MessageQueue(db)
   queue.initialize()
 
+  const auditLogger = new AuditLogger(db)
+
   const adb = new AdbBridge()
   const emitter = new DispatchEmitter()
   const strategy = SendStrategy.fromEnv(process.env as Record<string, string | undefined>)
-  const engine = new SendEngine(adb, queue, emitter, strategy)
+  const eventRecorder = new EventRecorder(db)
+  const engine = new SendEngine(adb, queue, emitter, strategy, eventRecorder)
+
+  // ── Prometheus metrics collection ──
+  emitter.on('message:sent', (data) => {
+    messagesSentTotal.inc({
+      sender: data.senderNumber ?? 'unknown',
+      method: data.strategyMethod ?? 'unknown',
+      app_package: data.appPackage ?? 'unknown',
+    })
+    sendDurationSeconds.observe(
+      { method: data.strategyMethod ?? 'unknown' },
+      data.durationMs / 1000,
+    )
+  })
+
+  emitter.on('message:failed', (data) => {
+    messagesFailedTotal.inc({
+      sender: data.senderNumber ?? 'unknown',
+      error_type: data.attempts !== undefined && data.attempts > 3 ? 'exhausted' : 'transient',
+    })
+  })
+
+  emitter.on('message:queued', () => {
+    messagesQueuedTotal.inc({ plugin: 'direct' })
+  })
+
+  emitter.on('sender:quarantined', (data) => {
+    quarantineEventsTotal.inc({ sender: data.sender })
+    senderQuarantined.set({ sender: data.sender }, 1)
+  })
+
+  emitter.on('sender:released', (data) => {
+    senderQuarantined.set({ sender: data.sender }, 0)
+  })
 
   const rateLimitGuard = RateLimitGuard.fromEnv(process.env as Record<string, string | undefined>)
   const senderHealth = new SenderHealth(db, {
     quarantineAfterFailures: Number(process.env.QUARANTINE_AFTER_FAILURES) || 3,
     quarantineDurationMs: Number(process.env.QUARANTINE_DURATION_MS) || 3_600_000,
-  })
+  }, emitter)
 
   // Initialize monitor modules
   const deviceManager = new DeviceManager(db, emitter, adb)
@@ -147,6 +185,13 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       pid: process.pid,
     }
   })
+  // Prometheus metrics endpoint (unauthenticated — standard for /metrics)
+  server.get('/metrics', async (_request, reply) => {
+    const metrics = await metricsRegistry.metrics()
+    reply.header('content-type', metricsRegistry.contentType)
+    return reply.send(metrics)
+  })
+
   registerMessageRoutes(server, queue, emitter)
   registerDeviceRoutes(server, adb)
   registerMonitorRoutes(server, { adb, engine, deviceManager, healthCollector, waMapper, alertSystem })
@@ -160,12 +205,13 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   // Metrics routes (Phase 6)
   registerMetricsRoutes(server, db)
-  registerAuditRoutes(server, db)
+  registerAuditRoutes(server, db, auditLogger)
   registerBulkActionRoutes(server, adb)
 
   // Plugin monitoring routes
   registerPluginOralsinRoutes(server, db)
   registerScreenshotRoutes(server, queue)
+  registerTraceRoutes(server, eventRecorder)
 
   // Manual phone number mapping moved to api/devices.ts
 
@@ -229,7 +275,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // ── Sender Mapping (DP-1) ──
   const senderMapping = new SenderMapping(db)
   senderMapping.initialize()
-  registerSenderMappingRoutes(server, senderMapping)
+  registerSenderMappingRoutes(server, senderMapping, auditLogger)
 
   // WAHA routes (after senderMapping init — pair endpoint needs it)
   registerWahaRoutes(server, { webhookHandler, sessionManager, messageHistory, adb, senderMapping })
@@ -460,21 +506,43 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   server.patch('/api/v1/admin/plugins/:name', async (req, reply) => {
     const { name } = req.params as { name: string }
     const body = req.body as { enabled?: boolean; webhookUrl?: string; events?: string[] }
+    const beforeState = pluginRegistry.getPlugin(name)
     if (body.enabled === false) pluginRegistry.disablePlugin(name)
     if (body.enabled === true) pluginRegistry.enablePlugin(name)
     if (body.webhookUrl || body.events) pluginRegistry.updatePlugin(name, body)
-    return reply.send(pluginRegistry.getPlugin(name))
+    const afterState = pluginRegistry.getPlugin(name)
+    auditLogger.log({
+      action: 'update',
+      resourceType: 'plugin',
+      resourceId: name,
+      beforeState: beforeState ? { status: beforeState.status, webhookUrl: beforeState.webhookUrl, events: beforeState.events } : null,
+      afterState: afterState ? { status: afterState.status, webhookUrl: afterState.webhookUrl, events: afterState.events } : null,
+    })
+    return reply.send(afterState)
   })
 
   server.delete('/api/v1/admin/plugins/:name', async (req, reply) => {
     const { name } = req.params as { name: string }
+    const beforeState = pluginRegistry.getPlugin(name)
     pluginRegistry.deletePlugin(name)
+    auditLogger.log({
+      action: 'delete',
+      resourceType: 'plugin',
+      resourceId: name,
+      beforeState: beforeState ? { status: beforeState.status, webhookUrl: beforeState.webhookUrl, events: beforeState.events } : null,
+    })
     return reply.status(204).send()
   })
 
   server.post('/api/v1/admin/plugins/:name/rotate-key', async (req, reply) => {
     const { name } = req.params as { name: string }
     const newKey = pluginRegistry.rotateApiKey(name)
+    auditLogger.log({
+      action: 'rotate_key',
+      resourceType: 'plugin',
+      resourceId: name,
+      // Intentionally not logging the key value for security
+    })
     return reply.send({ api_key: newKey })
   })
 
@@ -546,6 +614,13 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     receiptTracker.cleanup() // DP-2: remove correlations older than 48h
   }, 3_600_000)
 
+  // Prometheus gauge refresh (30s) — queue depth + device count
+  const metricsInterval = setInterval(() => {
+    const stats = queue.getQueueStats()
+    queueDepth.set(stats.pending + stats.processing)
+    devicesOnline.set(deviceManager.getDevices().filter(d => d.status === 'online').length)
+  }, 30_000)
+
   const cleanupInterval = setInterval(() => {
     const cleaned = queue.cleanStaleLocks()
     if (cleaned > 0) {
@@ -614,6 +689,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     'message:delivered', 'message:read',
     'device:connected', 'device:disconnected', 'device:health', 'alert:new',
     'waha:message_received', 'waha:message_sent', 'waha:session_status', 'waha:message_ack',
+    'sender:quarantined', 'sender:released',
   ]
   for (const event of events) {
     emitter.on(event, (data) => io.emit(event, data))
@@ -636,6 +712,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     clearInterval(workerInterval)
     clearInterval(callbackRetryInterval)
     clearInterval(metadataCleanupInterval)
+    clearInterval(metricsInterval)
   })
 
   shutdown.addHandler('stale-locks', async () => {

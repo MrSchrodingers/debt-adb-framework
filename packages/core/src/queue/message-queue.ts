@@ -52,6 +52,28 @@ export class MessageQueue {
         total_successes INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       );
+
+      CREATE TABLE IF NOT EXISTS message_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id TEXT NOT NULL,
+        event TEXT NOT NULL,
+        metadata TEXT,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_message_events_msg ON message_events(message_id);
+
+      CREATE TABLE IF NOT EXISTS audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        actor TEXT NOT NULL DEFAULT 'api',
+        action TEXT NOT NULL,
+        resource_type TEXT NOT NULL,
+        resource_id TEXT,
+        before_state TEXT,
+        after_state TEXT,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_audit_log_resource ON audit_log(resource_type, resource_id);
+      CREATE INDEX IF NOT EXISTS idx_audit_log_time ON audit_log(created_at);
     `)
 
     // Migration: add screenshot_path column if not present
