@@ -62,6 +62,8 @@ export class SendEngine {
       throw new Error(`Rejected device serial: contains unsafe characters`)
     }
 
+    let method: string = 'unknown' // enrichment: populated in text/media branch, used in emit
+
     try {
       this.queue.updateStatus(message.id, 'sending')
       this.emitter.emit('message:sending', { id: message.id, deviceSerial })
@@ -90,6 +92,7 @@ export class SendEngine {
 
       // Media send flow — share intent (bypasses text-only strategy)
       if (message.mediaUrl && message.mediaType) {
+        method = 'media'
         if (!this.mediaSender) {
           throw new Error('Media sending not configured — MediaSender not provided')
         }
@@ -111,7 +114,7 @@ export class SendEngine {
         this.record(message.id, 'send_tapped', { method: 'media_share' })
       } else {
         // Text-only flow — select chat opening method (diversifies entryPointSource fingerprint)
-        const method = this.strategy.selectMethod()
+        method = this.strategy.selectMethod()
         this.record(message.id, 'strategy_selected', { method, appPackage })
 
         if (method === 'prefill') {
@@ -191,6 +194,9 @@ export class SendEngine {
         deviceSerial,
         contactRegistered,
         dialogsDismissed,
+        strategyMethod: message.mediaUrl ? 'media' : method,
+        appPackage,
+        senderNumber: message.senderNumber ?? undefined,
       })
 
       return { screenshot, durationMs, contactRegistered, dialogsDismissed }
@@ -199,6 +205,9 @@ export class SendEngine {
       this.emitter.emit('message:failed', {
         id: message.id,
         error: err instanceof Error ? err.message : String(err),
+        attempts: message.attempts,
+        senderNumber: message.senderNumber ?? undefined,
+        lastStrategyMethod: method,
       })
 
       try { await this.ensureCleanState(deviceSerial, appPackage) } catch { /* device may be disconnected */ }

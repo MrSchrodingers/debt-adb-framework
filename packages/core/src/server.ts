@@ -19,7 +19,7 @@ import { RateLimitGuard } from './config/rate-limits.js'
 import { parseConfig } from './config/config-schema.js'
 import { AuditLogger } from './config/audit-logger.js'
 import { ScreenshotPolicy } from './config/screenshot-policy.js'
-import { metricsRegistry, messagesSentTotal, messagesFailedTotal, messagesQueuedTotal, sendDurationSeconds, queueDepth, devicesOnline, quarantineEventsTotal, senderQuarantined } from './config/metrics.js'
+import { metricsRegistry, messagesSentTotal, messagesFailedTotal, messagesQueuedTotal, sendDurationSeconds, interMessageDelaySeconds, queueDepth, devicesOnline, senderDailyCount, quarantineEventsTotal, senderQuarantined } from './config/metrics.js'
 import { OralsinPlugin } from './plugins/oralsin-plugin.js'
 import type { DispatchEventName } from './events/index.js'
 import type { DispatchPlugin } from './plugins/types.js'
@@ -78,6 +78,12 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       { method: data.strategyMethod ?? 'unknown' },
       data.durationMs / 1000,
     )
+    if (data.interMessageDelayMs !== undefined && data.interMessageDelayMs > 0) {
+      interMessageDelaySeconds.observe(
+        { is_first_contact: data.isFirstContact ? 'true' : 'false' },
+        data.interMessageDelayMs / 1000,
+      )
+    }
   })
 
   emitter.on('message:failed', (data) => {
@@ -664,11 +670,16 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     } catch { /* directory may not exist yet */ }
   }, 3_600_000)
 
-  // Prometheus gauge refresh (30s) — queue depth + device count
+  // Prometheus gauge refresh (30s) — queue depth + device count + sender daily counts
   const metricsInterval = setInterval(() => {
     const stats = queue.getQueueStats()
     queueDepth.set(stats.pending + stats.processing)
     devicesOnline.set(deviceManager.getDevices().filter(d => d.status === 'online').length)
+    // Per-sender daily count gauges
+    for (const mapping of senderMapping.listAll()) {
+      const count = queue.getSenderDailyCount(mapping.phone_number)
+      senderDailyCount.set({ sender: mapping.phone_number }, count)
+    }
   }, 30_000)
 
   const cleanupInterval = setInterval(() => {

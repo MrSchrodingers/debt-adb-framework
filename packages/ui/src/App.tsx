@@ -179,6 +179,10 @@ export function App() {
       fetchSendersStatus()
     })
 
+    socket.on('contact:opted_out', (data: { phone: string; pattern: string }) => {
+      addToast('warning', `Opt-out detectado: ${data.phone.slice(-4)} ("${data.pattern}") — blacklistado`)
+    })
+
     return () => { socket.disconnect() }
   }, [fetchDevices, fetchAlerts, fetchDetail, addToast, fetchSendersStatus])
 

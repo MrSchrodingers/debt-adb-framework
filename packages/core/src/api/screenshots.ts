@@ -31,8 +31,11 @@ export function registerScreenshotRoutes(server: FastifyInstance, queue: Message
       return reply.status(404).send({ error: 'Screenshot file not found on disk' })
     }
 
+    const contentType = resolvedPath.endsWith('.jpg') || resolvedPath.endsWith('.jpeg')
+      ? 'image/jpeg'
+      : 'image/png'
     return reply
-      .type('image/png')
+      .type(contentType)
       .send(createReadStream(resolvedPath))
   })
 }
