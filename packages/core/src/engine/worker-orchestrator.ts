@@ -37,7 +37,10 @@ export class WorkerOrchestrator {
   private workerRunning = false
   private currentForegroundUser = 0
   private cappedSendersCooldown = new Map<string, number>()
-  private sendMetadata = new Map<string, { profileId: number; userSwitched: boolean; ts: number }>()
+  private sendMetadata = new Map<string, {
+    profileId: number; userSwitched: boolean; ts: number;
+    appPackage: string; senderNumber: string | null; isFirstContact: boolean;
+  }>()
 
   constructor(private readonly deps: WorkerOrchestratorDeps) {}
 
@@ -199,7 +202,13 @@ export class WorkerOrchestrator {
 
       for (let i = 0; i < batch.length; i++) {
         const message = batch[i]
-        this.sendMetadata.set(message.id, { profileId, userSwitched, ts: Date.now() })
+        const isFirstContact = senderNumber
+          ? queue.isFirstContactWith(message.to, senderNumber)
+          : false
+        this.sendMetadata.set(message.id, {
+          profileId, userSwitched, ts: Date.now(),
+          appPackage, senderNumber: senderNumber ?? null, isFirstContact,
+        })
         const success = await this.processMessage(message, online.serial, i === 0, appPackage)
         if (senderNumber) {
           if (success) {
@@ -235,7 +244,10 @@ export class WorkerOrchestrator {
     }
   }
 
-  getSendMetadata(id: string): { profileId: number; userSwitched: boolean; ts: number } | undefined {
+  getSendMetadata(id: string): {
+    profileId: number; userSwitched: boolean; ts: number;
+    appPackage: string; senderNumber: string | null; isFirstContact: boolean;
+  } | undefined {
     const meta = this.sendMetadata.get(id)
     if (meta) this.sendMetadata.delete(id)
     return meta

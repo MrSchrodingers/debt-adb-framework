@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
 import { SenderHealth } from './sender-health.js'
+import { DispatchEmitter } from '../events/index.js'
 
 function createTestDb(): InstanceType<typeof Database> {
   const db = new Database(':memory:')
@@ -128,5 +129,50 @@ describe('SenderHealth', () => {
   it('returns null for unknown sender in getStatus', () => {
     const health = new SenderHealth(db)
     expect(health.getStatus('unknown')).toBeNull()
+  })
+
+  it('emits sender:quarantined when threshold reached', () => {
+    const emitter = new DispatchEmitter()
+    const handler = vi.fn()
+    emitter.on('sender:quarantined', handler)
+
+    const health = new SenderHealth(db, { quarantineAfterFailures: 2 }, emitter)
+    health.recordFailure('+5543996835100')
+    expect(handler).not.toHaveBeenCalled()
+    health.recordFailure('+5543996835100')
+    expect(handler).toHaveBeenCalledTimes(1)
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sender: '+5543996835100',
+        failureCount: 2,
+        quarantinedUntil: expect.any(String),
+      }),
+    )
+  })
+
+  it('emits sender:released when quarantine expires', () => {
+    vi.useFakeTimers()
+    const now = new Date('2026-04-09T12:00:00.000Z')
+    vi.setSystemTime(now)
+
+    const emitter = new DispatchEmitter()
+    const handler = vi.fn()
+    emitter.on('sender:released', handler)
+
+    const health = new SenderHealth(db, { quarantineAfterFailures: 1, quarantineDurationMs: 60_000 }, emitter)
+    health.recordFailure('+5543996835100')
+    expect(health.isQuarantined('+5543996835100')).toBe(true)
+    expect(handler).not.toHaveBeenCalled()
+
+    // Advance past the quarantine duration
+    vi.setSystemTime(new Date('2026-04-09T12:01:01.000Z'))
+    expect(health.isQuarantined('+5543996835100')).toBe(false)
+    expect(handler).toHaveBeenCalledTimes(1)
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sender: '+5543996835100',
+        quarantineDurationActualMs: expect.any(Number),
+      }),
+    )
   })
 })

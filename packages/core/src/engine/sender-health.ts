@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import type { DispatchEmitter } from '../events/index.js'
 
 export interface SenderHealthConfig {
   quarantineAfterFailures: number
@@ -23,6 +24,7 @@ export class SenderHealth {
   constructor(
     private db: Database.Database,
     config?: Partial<SenderHealthConfig>,
+    private emitter?: DispatchEmitter,
   ) {
     this.config = { ...DEFAULTS, ...config }
   }
@@ -63,6 +65,11 @@ export class SenderHealth {
       this.db.prepare(
         'UPDATE sender_health SET quarantined_until = ?, updated_at = ? WHERE sender_number = ?',
       ).run(quarantinedUntil, now, sender)
+      this.emitter?.emit('sender:quarantined', {
+        sender,
+        failureCount: row.consecutive_failures,
+        quarantinedUntil,
+      })
     }
   }
 
@@ -81,6 +88,13 @@ export class SenderHealth {
         SET consecutive_failures = 0, quarantined_until = NULL, updated_at = ?
         WHERE sender_number = ? AND quarantined_until IS NOT NULL AND quarantined_until <= ?
       `).run(now, sender, now)
+      // Calculate actual quarantine duration
+      const quarantineStart = new Date(row.quarantined_until).getTime() - this.config.quarantineDurationMs
+      const actualMs = Date.now() - quarantineStart
+      this.emitter?.emit('sender:released', {
+        sender,
+        quarantineDurationActualMs: actualMs,
+      })
       return false
     }
 
