@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import type { SenderMapping } from '../engine/sender-mapping.js'
+import type { AuditLogger } from '../config/audit-logger.js'
 
 const createSchema = z.object({
   phone_number: z.string().min(10),
@@ -23,6 +24,7 @@ const updateSchema = z.object({
 export function registerSenderMappingRoutes(
   server: FastifyInstance,
   senderMapping: SenderMapping,
+  auditLogger?: AuditLogger,
 ): void {
   // List all active mappings
   server.get('/api/v1/sender-mapping', async (_request, reply) => {
@@ -56,6 +58,12 @@ export function registerSenderMappingRoutes(
         wahaSession: parsed.data.waha_session,
         wahaApiUrl: parsed.data.waha_api_url,
       })
+      auditLogger?.log({
+        action: 'create',
+        resourceType: 'sender_mapping',
+        resourceId: parsed.data.phone_number,
+        afterState: mapping,
+      })
       return reply.status(201).send(mapping)
     } catch (err) {
       if (err instanceof Error && err.message.includes('UNIQUE constraint')) {
@@ -73,6 +81,7 @@ export function registerSenderMappingRoutes(
       return reply.status(400).send({ error: 'Validation failed', details: parsed.error.issues })
     }
 
+    const beforeState = senderMapping.getByPhone(phone)
     const updated = senderMapping.update(phone, {
       deviceSerial: parsed.data.device_serial,
       profileId: parsed.data.profile_id,
@@ -85,16 +94,30 @@ export function registerSenderMappingRoutes(
     if (!updated) {
       return reply.status(404).send({ error: 'Mapping not found' })
     }
+    auditLogger?.log({
+      action: 'update',
+      resourceType: 'sender_mapping',
+      resourceId: phone,
+      beforeState,
+      afterState: updated,
+    })
     return reply.send(updated)
   })
 
   // Delete mapping
   server.delete('/api/v1/sender-mapping/:phone', async (request, reply) => {
     const { phone } = request.params as { phone: string }
+    const beforeState = senderMapping.getByPhone(phone)
     const deleted = senderMapping.remove(phone)
     if (!deleted) {
       return reply.status(404).send({ error: 'Mapping not found' })
     }
+    auditLogger?.log({
+      action: 'delete',
+      resourceType: 'sender_mapping',
+      resourceId: phone,
+      beforeState,
+    })
     return reply.status(204).send()
   })
 }
