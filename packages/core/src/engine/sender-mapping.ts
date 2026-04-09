@@ -10,6 +10,9 @@ export interface SenderMappingRecord {
   waha_session: string | null
   waha_api_url: string | null
   active: number
+  paused: number
+  paused_at: string | null
+  paused_reason: string | null
   created_at: string
   updated_at: string
 }
@@ -65,6 +68,14 @@ export class SenderMapping {
       CREATE INDEX IF NOT EXISTS idx_sender_mapping_device ON sender_mapping(device_serial);
       CREATE INDEX IF NOT EXISTS idx_sender_mapping_active ON sender_mapping(active);
     `)
+
+    // Migration: add paused columns if not present
+    const cols = this.db.prepare('PRAGMA table_info(sender_mapping)').all() as { name: string }[]
+    if (!cols.some(c => c.name === 'paused')) {
+      this.db.exec('ALTER TABLE sender_mapping ADD COLUMN paused INTEGER NOT NULL DEFAULT 0')
+      this.db.exec('ALTER TABLE sender_mapping ADD COLUMN paused_at TEXT')
+      this.db.exec('ALTER TABLE sender_mapping ADD COLUMN paused_reason TEXT')
+    }
   }
 
   create(params: CreateSenderMappingParams): SenderMappingRecord {
@@ -157,6 +168,27 @@ export class SenderMapping {
       'DELETE FROM sender_mapping WHERE phone_number = ?',
     ).run(phoneNumber)
     return result.changes > 0
+  }
+
+  pauseSender(phone: string, reason?: string): void {
+    const now = new Date().toISOString()
+    this.db.prepare(
+      'UPDATE sender_mapping SET paused = 1, paused_at = ?, paused_reason = ?, updated_at = ? WHERE phone_number = ?',
+    ).run(now, reason ?? null, now, phone)
+  }
+
+  resumeSender(phone: string): void {
+    const now = new Date().toISOString()
+    this.db.prepare(
+      'UPDATE sender_mapping SET paused = 0, paused_at = NULL, paused_reason = NULL, updated_at = ? WHERE phone_number = ?',
+    ).run(now, phone)
+  }
+
+  isPaused(phone: string): boolean {
+    const row = this.db.prepare(
+      'SELECT paused FROM sender_mapping WHERE phone_number = ?',
+    ).get(phone) as { paused: number } | undefined
+    return row?.paused === 1
   }
 
   /**
