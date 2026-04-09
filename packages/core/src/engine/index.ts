@@ -1,4 +1,6 @@
 export { SendEngine } from './send-engine.js'
+export { MediaSender } from './media-sender.js'
+export type { MediaSendParams } from './media-sender.js'
 export { EventRecorder } from './event-recorder.js'
 export { SendStrategy } from './send-strategy.js'
 export type { ChatOpenMethod, SendStrategyConfig } from './send-strategy.js'
@@ -29,6 +31,10 @@ export { ContactRegistrar } from './contact-registrar.js'
 export type { ContactRegistration } from './contact-registrar.js'
 export { DeviceCircuitBreaker } from './device-circuit-breaker.js'
 export type { CircuitBreakerConfig, CircuitState } from './device-circuit-breaker.js'
+export { ContactCache } from './contact-cache.js'
+export type { ContactCacheConfig } from './contact-cache.js'
+export { OptOutDetector } from './opt-out-detector.js'
+export type { OptOutResult, OptOutMatch, OptOutNoMatch } from './opt-out-detector.js'
 export { escapeForAdbContent } from './contact-utils.js'
 export type {
   RateLimitConfig,
