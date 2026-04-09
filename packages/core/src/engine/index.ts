@@ -9,8 +9,8 @@ export { WahaFallback } from './waha-fallback.js'
 export type { WahaFallbackResult } from './waha-fallback.js'
 export type { RegisterSentParams, CorrelateOutgoingParams, CorrelationResult } from './receipt-tracker.js'
 export type { SendResult } from './send-engine.js'
-export { RateLimiter } from './rate-limiter.js'
-export { Dispatcher, selectDevice, computeHealthScore } from './dispatcher.js'
+export { PairRateLimiter } from './pair-rate-limiter.js'
+export { selectDevice, computeHealthScore } from './dispatcher.js'
 export type { DispatchDecision } from './dispatcher.js'
 export { BanDetector } from './ban-detector.js'
 export { RetryManager } from './retry-manager.js'
@@ -25,14 +25,12 @@ export type {
   RateLimitConfig,
   RetryConfig,
   BanDetectionConfig,
-  SendPhase,
   CanSendResult,
   OcrAnalysis,
   BehavioralProbeResult,
   BanCountdown,
   CrashDetection,
   RecoveryResult,
-  SenderState,
   RateLimitStore,
 } from './types.js'
 export {

@@ -10,7 +10,7 @@
 
 import { writeFileSync } from 'node:fs'
 import { AdbBridge } from '../packages/core/src/adb/adb-bridge.js'
-import { RateLimiter } from '../packages/core/src/engine/rate-limiter.js'
+import { PairRateLimiter } from '../packages/core/src/engine/pair-rate-limiter.js'
 import { DEFAULT_RATE_LIMIT_CONFIG } from '../packages/core/src/engine/types.js'
 import type { RateLimitStore } from '../packages/core/src/engine/types.js'
 
@@ -108,7 +108,7 @@ async function main() {
     baseMinDelayS: 8.0,  // Shorter for E2E — still demonstrates rate limiting
     baseMaxDelayS: 12.0,
   }
-  const limiter = new RateLimiter(store, e2eConfig)
+  const limiter = new PairRateLimiter(store, e2eConfig)
   const senderNumber = 'e2e-test'
 
   console.log('=== Phase 3 E2E: Rate-Limited Batch Send ===')

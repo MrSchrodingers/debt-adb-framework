@@ -1,6 +1,6 @@
 import type { RateLimitConfig, RateLimitStore, CanSendResult } from './types.js'
 
-export class RateLimiter {
+export class PairRateLimiter {
   private nextEligibleAt = new Map<string, number>()
 
   constructor(
