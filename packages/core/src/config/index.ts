@@ -4,6 +4,8 @@ export { parseConfig } from './config-schema.js'
 export type { DispatchConfig } from './config-schema.js'
 export { AuditLogger } from './audit-logger.js'
 export type { AuditEntry, AuditQueryParams, AuditLogParams } from './audit-logger.js'
+export { ScreenshotPolicy } from './screenshot-policy.js'
+export type { ScreenshotPolicyConfig } from './screenshot-policy.js'
 export {
   metricsRegistry,
   messagesSentTotal,

@@ -50,6 +50,7 @@ const envSchema = z
     SCREENSHOT_MODE: z.enum(['all', 'sample', 'none']).default('all'),
     SCREENSHOT_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0.1),
     SCREENSHOT_FORMAT: z.enum(['png', 'jpeg']).default('png'),
+    SCREENSHOT_JPEG_QUALITY: z.coerce.number().min(1).max(100).default(60),
     SCREENSHOT_RETENTION_DAYS: z.coerce.number().default(7),
 
     // Plugins
@@ -113,6 +114,7 @@ export interface DispatchConfig {
     mode: 'all' | 'sample' | 'none'
     sampleRate: number
     format: 'png' | 'jpeg'
+    jpegQuality: number
     retentionDays: number
   }
   plugins: string[]
@@ -170,6 +172,7 @@ export function parseConfig(env: Record<string, string | undefined>): DispatchCo
       mode: parsed.SCREENSHOT_MODE,
       sampleRate: parsed.SCREENSHOT_SAMPLE_RATE,
       format: parsed.SCREENSHOT_FORMAT,
+      jpegQuality: parsed.SCREENSHOT_JPEG_QUALITY,
       retentionDays: parsed.SCREENSHOT_RETENTION_DAYS,
     },
     plugins: parsed.DISPATCH_PLUGINS

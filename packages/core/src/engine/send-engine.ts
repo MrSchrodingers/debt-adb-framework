@@ -4,6 +4,9 @@ import type { MessageQueue, Message } from '../queue/index.js'
 import type { DispatchEmitter } from '../events/index.js'
 import { escapeForAdbContent } from './contact-utils.js'
 import type { EventRecorder } from './event-recorder.js'
+import type { ScreenshotPolicy } from '../config/screenshot-policy.js'
+import type { ContactCache } from './contact-cache.js'
+import type { MediaSender } from './media-sender.js'
 
 /** Packages allowed in am start/force-stop commands. Reject everything else. */
 const ALLOWED_PACKAGES = new Set(['com.whatsapp', 'com.whatsapp.w4b'])
@@ -28,6 +31,9 @@ export class SendEngine {
     private emitter: DispatchEmitter,
     private strategy: SendStrategy = new SendStrategy(),
     private recorder?: EventRecorder,
+    private screenshotPolicy?: ScreenshotPolicy,
+    private contactCache?: ContactCache,
+    private mediaSender?: MediaSender,
   ) {}
 
   private record(messageId: string, event: string, metadata?: Record<string, unknown>): void {
@@ -80,62 +86,100 @@ export class SendEngine {
       const contactRegistered = await this.ensureContact(deviceSerial, phoneDigits)
       this.record(message.id, 'contact_resolved', { registered: contactRegistered, phone: phoneDigits })
 
-      // Select chat opening method (diversifies entryPointSource fingerprint)
-      const method = this.strategy.selectMethod()
-      this.record(message.id, 'strategy_selected', { method, appPackage })
       let dialogsDismissed = 0
 
-      if (method === 'prefill') {
-        // wa.me?text= pre-fill (fast, no typing indicator)
-        const encodedBody = encodeURIComponent(message.body)
-        const deepLink = `https://wa.me/${phoneDigits}?text=${encodedBody}`
-        const usePreFill = deepLink.length < 2000
+      // Media send flow — share intent (bypasses text-only strategy)
+      if (message.mediaUrl && message.mediaType) {
+        if (!this.mediaSender) {
+          throw new Error('Media sending not configured — MediaSender not provided')
+        }
 
-        await this.adb.shell(
+        await this.mediaSender.sendMedia({
           deviceSerial,
-          `am start -a android.intent.action.VIEW -d "${usePreFill ? deepLink : `https://wa.me/${phoneDigits}`}" -p ${appPackage}`,
-        )
-        await this.delay(isFirstInBatch ? 4000 : 2000)
-        dialogsDismissed = await this.waitForChatReady(deviceSerial)
-        this.record(message.id, 'chat_opened', { method, dialogsDismissed })
-        if (!usePreFill) {
-          await this.typeMessage(deviceSerial, message.body)
-        }
-        this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
-      } else if (method === 'search') {
-        if (isFirstInBatch) {
-          await this.adb.shell(deviceSerial, `am start -n ${appPackage}/com.whatsapp.HomeActivity`)
-          await this.delay(3000)
-        }
-        await this.openViaSearch(deviceSerial, phoneDigits, message.body)
-        dialogsDismissed = 0
-        this.record(message.id, 'chat_opened', { method, dialogsDismissed })
-        this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
-      } else {
-        await this.openViaTyping(deviceSerial, phoneDigits, message.body, appPackage)
-        dialogsDismissed = 0
-        this.record(message.id, 'chat_opened', { method, dialogsDismissed })
-        this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
-      }
+          mediaUrl: message.mediaUrl,
+          mediaType: message.mediaType,
+          appPackage,
+          caption: message.mediaCaption ?? undefined,
+        })
 
-      await this.delay(300)
-      await this.tapSendButton(deviceSerial)
-      this.record(message.id, 'send_tapped', {})
+        this.record(message.id, 'media_sent', { mediaType: message.mediaType, hasCaption: !!message.mediaCaption })
+
+        // Wait for share intent to process and dismiss any app chooser dialogs
+        await this.delay(3000)
+        dialogsDismissed = await this.waitForChatReady(deviceSerial)
+        await this.tapSendButton(deviceSerial)
+        this.record(message.id, 'send_tapped', { method: 'media_share' })
+      } else {
+        // Text-only flow — select chat opening method (diversifies entryPointSource fingerprint)
+        const method = this.strategy.selectMethod()
+        this.record(message.id, 'strategy_selected', { method, appPackage })
+
+        if (method === 'prefill') {
+          // wa.me?text= pre-fill (fast, no typing indicator)
+          const encodedBody = encodeURIComponent(message.body)
+          const deepLink = `https://wa.me/${phoneDigits}?text=${encodedBody}`
+          const usePreFill = deepLink.length < 2000
+
+          await this.adb.shell(
+            deviceSerial,
+            `am start -a android.intent.action.VIEW -d "${usePreFill ? deepLink : `https://wa.me/${phoneDigits}`}" -p ${appPackage}`,
+          )
+          await this.delay(isFirstInBatch ? 4000 : 2000)
+          dialogsDismissed = await this.waitForChatReady(deviceSerial)
+          this.record(message.id, 'chat_opened', { method, dialogsDismissed })
+          if (!usePreFill) {
+            await this.typeMessage(deviceSerial, message.body)
+          }
+          this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
+        } else if (method === 'search') {
+          if (isFirstInBatch) {
+            await this.adb.shell(deviceSerial, `am start -n ${appPackage}/com.whatsapp.HomeActivity`)
+            await this.delay(3000)
+          }
+          await this.openViaSearch(deviceSerial, phoneDigits, message.body)
+          dialogsDismissed = 0
+          this.record(message.id, 'chat_opened', { method, dialogsDismissed })
+          this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
+        } else {
+          await this.openViaTyping(deviceSerial, phoneDigits, message.body, appPackage)
+          dialogsDismissed = 0
+          this.record(message.id, 'chat_opened', { method, dialogsDismissed })
+          this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
+        }
+
+        await this.delay(300)
+        await this.tapSendButton(deviceSerial)
+        this.record(message.id, 'send_tapped', {})
+      }
 
       // Wait for send confirmation
       await this.delay(2000)
-      const screenshot = await this.adb.screenshot(deviceSerial)
 
-      // Persist screenshot to disk for audit trail
-      const screenshotDir = 'reports/sends'
-      const screenshotPath = `${screenshotDir}/${message.id}.png`
-      try {
-        await mkdir(screenshotDir, { recursive: true })
-        await writeFile(screenshotPath, screenshot)
-        this.queue.updateScreenshotPath(message.id, screenshotPath)
-        this.record(message.id, 'screenshot_saved', { path: screenshotPath })
-      } catch {
-        // Screenshot persistence is best-effort — don't fail the send
+      // Screenshot handling — use policy if available
+      const shouldCapture = this.screenshotPolicy
+        ? this.screenshotPolicy.shouldCapture(true)
+        : true // default: always capture (backward-compatible)
+
+      let screenshot = Buffer.alloc(0)
+      if (shouldCapture) {
+        screenshot = await this.adb.screenshot(deviceSerial)
+        const screenshotPath = this.screenshotPolicy
+          ? this.screenshotPolicy.getOutputPath(message.id)
+          : `reports/sends/${message.id}.png`
+
+        try {
+          await mkdir('reports/sends', { recursive: true })
+          const processed = this.screenshotPolicy
+            ? await this.screenshotPolicy.processBuffer(screenshot)
+            : screenshot
+          await writeFile(screenshotPath, processed)
+          this.queue.updateScreenshotPath(message.id, screenshotPath)
+          this.record(message.id, 'screenshot_saved', { path: screenshotPath, format: this.screenshotPolicy?.format ?? 'png' })
+        } catch {
+          // Screenshot persistence is best-effort — don't fail the send
+        }
+      } else {
+        this.record(message.id, 'screenshot_skipped', { mode: 'sample' })
       }
 
       const durationMs = Date.now() - startTime
@@ -179,6 +223,15 @@ export class SendEngine {
 
   /** Returns true if a NEW contact was created, false if it already existed */
   private async ensureContact(deviceSerial: string, phone: string): Promise<boolean> {
+    // Check cache first — skip ADB lookup if contact recently verified
+    if (this.contactCache?.isVerified(deviceSerial, phone)) {
+      if (!this.queue.hasContact(phone)) {
+        const dbName = this.queue.getContactName(phone)
+        this.queue.saveContact(phone, dbName ?? `Contato ${phone.slice(-4)}`)
+      }
+      return false // Already verified — not a new registration
+    }
+
     // Get name from DB (plugin saves patient.name during enqueue)
     const dbName = this.queue.getContactName(phone)
     const name = dbName ?? `Contato ${phone.slice(-4)}`
@@ -195,6 +248,7 @@ export class SendEngine {
         if (!this.queue.hasContact(phone)) {
           this.queue.saveContact(phone, name)
         }
+        this.contactCache?.markVerified(deviceSerial, phone)
         return false
       }
     } catch {
@@ -232,6 +286,7 @@ export class SendEngine {
     if (!this.queue.hasContact(phone)) {
       this.queue.saveContact(phone, name)
     }
+    this.contactCache?.markVerified(deviceSerial, phone)
     return true
   }
 

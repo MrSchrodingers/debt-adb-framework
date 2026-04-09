@@ -1,12 +1,13 @@
+import { readdir, unlink, stat } from 'node:fs/promises'
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import Database from 'better-sqlite3'
 import { Server as SocketIOServer } from 'socket.io'
 import { MessageQueue } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
-import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker } from './engine/index.js'
+import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
-import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes } from './api/index.js'
+import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes } from './api/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
 import { SessionManager, WebhookHandler, MessageHistory } from './waha/index.js'
 import { createWahaHttpClient } from './waha/waha-http-client.js'
@@ -17,6 +18,7 @@ import { GracefulShutdown } from './config/graceful-shutdown.js'
 import { RateLimitGuard } from './config/rate-limits.js'
 import { parseConfig } from './config/config-schema.js'
 import { AuditLogger } from './config/audit-logger.js'
+import { ScreenshotPolicy } from './config/screenshot-policy.js'
 import { metricsRegistry, messagesSentTotal, messagesFailedTotal, messagesQueuedTotal, sendDurationSeconds, queueDepth, devicesOnline, quarantineEventsTotal, senderQuarantined } from './config/metrics.js'
 import { OralsinPlugin } from './plugins/oralsin-plugin.js'
 import type { DispatchEventName } from './events/index.js'
@@ -59,7 +61,11 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const emitter = new DispatchEmitter()
   const strategy = SendStrategy.fromEnv(process.env as Record<string, string | undefined>)
   const eventRecorder = new EventRecorder(db)
-  const engine = new SendEngine(adb, queue, emitter, strategy, eventRecorder)
+  const screenshotPolicy = ScreenshotPolicy.fromEnv(process.env as Record<string, string | undefined>)
+  const contactCache = new ContactCache()
+  const optOutDetector = new OptOutDetector()
+  const mediaSender = new MediaSender(adb)
+  const engine = new SendEngine(adb, queue, emitter, strategy, eventRecorder, screenshotPolicy, contactCache, mediaSender)
 
   // ── Prometheus metrics collection ──
   emitter.on('message:sent', (data) => {
@@ -213,6 +219,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   registerPluginOralsinRoutes(server, db)
   registerScreenshotRoutes(server, queue)
   registerTraceRoutes(server, eventRecorder)
+  registerBlacklistRoutes(server, db)
 
   // Manual phone number mapping moved to api/devices.ts
 
@@ -493,6 +500,29 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     receiptTracker.handleAck(data.wahaMessageId, data.ackLevel, timestamp)
   })
 
+  // ── Opt-out detection on WAHA incoming messages ──
+  emitter.on('waha:message_received', (data) => {
+    const history = messageHistory.query({ fromNumber: data.fromNumber, limit: 1 })
+    if (history.length === 0) return
+
+    const text = history[0].text
+    const result = optOutDetector.detect(text)
+    if (result.matched) {
+      db.prepare(
+        'INSERT OR IGNORE INTO blacklist (phone_number, reason, detected_message, detected_pattern, source_session) VALUES (?, ?, ?, ?, ?)',
+      ).run(data.fromNumber, 'auto_detected', text, result.pattern, data.sessionName)
+
+      emitter.emit('contact:opted_out', {
+        phone: data.fromNumber,
+        pattern: result.pattern,
+        sourceSession: data.sessionName,
+        messageText: text ?? '',
+      })
+
+      server.log.info({ phone: data.fromNumber, pattern: result.pattern }, 'Opt-out detected — phone blacklisted')
+    }
+  })
+
   // Admin routes for plugin management
   server.get('/api/v1/admin/plugins', async (_req, reply) => {
     return reply.send(pluginRegistry.listPlugins())
@@ -616,6 +646,24 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     receiptTracker.cleanup() // DP-2: remove correlations older than 48h
   }, 3_600_000)
 
+  // Screenshot retention cleanup (hourly) — deletes files older than retentionDays
+  const screenshotCleanupInterval = setInterval(async () => {
+    const retentionMs = screenshotPolicy.retentionDays * 24 * 60 * 60 * 1000
+    const cutoff = Date.now() - retentionMs
+    try {
+      const files = await readdir('reports/sends')
+      for (const file of files) {
+        const filePath = `reports/sends/${file}`
+        try {
+          const fileStat = await stat(filePath)
+          if (fileStat.mtimeMs < cutoff) {
+            await unlink(filePath)
+          }
+        } catch { /* file may have been deleted between readdir and stat */ }
+      }
+    } catch { /* directory may not exist yet */ }
+  }, 3_600_000)
+
   // Prometheus gauge refresh (30s) — queue depth + device count
   const metricsInterval = setInterval(() => {
     const stats = queue.getQueueStats()
@@ -703,6 +751,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     'message:delivered', 'message:read',
     'device:connected', 'device:disconnected', 'device:health', 'alert:new',
     'waha:message_received', 'waha:message_sent', 'waha:session_status', 'waha:message_ack',
+    'contact:opted_out',
     'sender:quarantined', 'sender:released',
   ]
   for (const event of events) {
@@ -727,6 +776,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     clearInterval(callbackRetryInterval)
     clearInterval(metadataCleanupInterval)
     clearInterval(metricsInterval)
+    clearInterval(screenshotCleanupInterval)
   })
 
   shutdown.addHandler('stale-locks', async () => {
