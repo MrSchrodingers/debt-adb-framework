@@ -81,6 +81,15 @@ export class MessageQueue {
         skipped INTEGER NOT NULL DEFAULT 0,
         skipped_at TEXT
       );
+
+      CREATE TABLE IF NOT EXISTS blacklist (
+        phone_number TEXT PRIMARY KEY,
+        reason TEXT NOT NULL,
+        detected_message TEXT,
+        detected_pattern TEXT,
+        source_session TEXT,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      );
     `)
 
     // Migration: add screenshot_path column if not present
@@ -88,14 +97,30 @@ export class MessageQueue {
     if (!cols.some(c => c.name === 'screenshot_path')) {
       this.db.exec("ALTER TABLE messages ADD COLUMN screenshot_path TEXT")
     }
+
+    // Migration: add media columns if not present
+    if (!cols.some(c => c.name === 'media_url')) {
+      this.db.exec("ALTER TABLE messages ADD COLUMN media_url TEXT")
+      this.db.exec("ALTER TABLE messages ADD COLUMN media_type TEXT")
+      this.db.exec("ALTER TABLE messages ADD COLUMN media_caption TEXT")
+    }
+  }
+
+  isBlacklisted(phone: string): boolean {
+    const row = this.db.prepare('SELECT 1 FROM blacklist WHERE phone_number = ?').get(phone)
+    return !!row
   }
 
   enqueue(params: EnqueueParams): Message {
+    if (this.isBlacklisted(params.to)) {
+      throw new Error(`Phone ${params.to} is blacklisted — message rejected`)
+    }
     const id = nanoid()
     const row = this.db.prepare(`
       INSERT INTO messages (id, to_number, body, idempotency_key, priority, sender_number,
-                            plugin_name, correlation_id, senders_config, context, max_retries)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            plugin_name, correlation_id, senders_config, context, max_retries,
+                            media_url, media_type, media_caption)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       RETURNING *
     `).get(
       id,
@@ -109,6 +134,9 @@ export class MessageQueue {
       params.sendersConfig ?? null,
       params.context ?? null,
       params.maxRetries ?? 3,
+      params.mediaUrl ?? null,
+      params.mediaType ?? null,
+      params.mediaCaption ?? null,
     ) as Record<string, unknown>
     return this.rowToMessage(row)
   }
@@ -116,12 +144,16 @@ export class MessageQueue {
   enqueueBatch(paramsList: EnqueueParams[]): Message[] {
     const insert = this.db.prepare(`
       INSERT INTO messages (id, to_number, body, idempotency_key, priority, sender_number,
-                            plugin_name, correlation_id, senders_config, context, max_retries)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            plugin_name, correlation_id, senders_config, context, max_retries,
+                            media_url, media_type, media_caption)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       RETURNING *
     `)
     const txn = this.db.transaction((list: EnqueueParams[]) => {
       return list.map((params) => {
+        if (this.isBlacklisted(params.to)) {
+          throw new Error(`Phone ${params.to} is blacklisted — message rejected`)
+        }
         const id = nanoid()
         const row = insert.get(
           id,
@@ -135,6 +167,9 @@ export class MessageQueue {
           params.sendersConfig ?? null,
           params.context ?? null,
           params.maxRetries ?? 3,
+          params.mediaUrl ?? null,
+          params.mediaType ?? null,
+          params.mediaCaption ?? null,
         ) as Record<string, unknown>
         return this.rowToMessage(row)
       })
@@ -361,6 +396,9 @@ export class MessageQueue {
       fallbackUsed: (row.fallback_used as number) ?? 0,
       fallbackProvider: (row.fallback_provider as string) ?? null,
       screenshotPath: (row.screenshot_path as string) ?? null,
+      mediaUrl: (row.media_url as string) ?? null,
+      mediaType: (row.media_type as string) ?? null,
+      mediaCaption: (row.media_caption as string) ?? null,
     }
   }
 

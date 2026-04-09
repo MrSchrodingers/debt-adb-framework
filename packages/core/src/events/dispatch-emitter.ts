@@ -26,6 +26,7 @@ export interface DispatchEventMap {
   'waha:message_ack': { wahaMessageId: string; ackLevel: number; ackLevelName: string; deliveredAt: string | null; readAt: string | null }
   'message:delivered': { id: string; wahaMessageId: string; deliveredAt: string }
   'message:read': { id: string; wahaMessageId: string; readAt: string }
+  'contact:opted_out': { phone: string; pattern: string; sourceSession: string; messageText: string }
   'sender:quarantined': { sender: string; failureCount: number; quarantinedUntil: string }
   'sender:released': { sender: string; quarantineDurationActualMs: number }
 }
