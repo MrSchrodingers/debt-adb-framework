@@ -3,7 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const UI_DEV_URL = 'http://localhost:5173'
+const UI_DEV_URL = process.env.VITE_DEV_URL ?? 'http://localhost:5173'
 const isDev = !app.isPackaged
 
 async function waitForServer(url: string, maxAttempts = 30): Promise<boolean> {
