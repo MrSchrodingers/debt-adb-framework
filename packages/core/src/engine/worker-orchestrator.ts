@@ -1,0 +1,243 @@
+import type Database from 'better-sqlite3'
+import type { MessageQueue } from '../queue/index.js'
+import type { SendEngine } from './send-engine.js'
+import type { AdbBridge } from '../adb/index.js'
+import type { DispatchEmitter } from '../events/index.js'
+import type { SenderMapping } from './sender-mapping.js'
+import type { SenderHealth } from './sender-health.js'
+import type { RateLimitGuard } from '../config/rate-limits.js'
+import type { ReceiptTracker } from './receipt-tracker.js'
+import type { AccountMutex } from './account-mutex.js'
+import type { WahaFallback } from './waha-fallback.js'
+import type { MessageHistory } from '../waha/index.js'
+import type { DeviceManager } from '../monitor/index.js'
+import type { HealthSnapshot } from '../monitor/types.js'
+import type { Message } from '../queue/types.js'
+import { selectDevice } from './dispatcher.js'
+
+export interface WorkerOrchestratorDeps {
+  db: Database.Database
+  queue: MessageQueue
+  engine: SendEngine
+  adb: AdbBridge
+  emitter: DispatchEmitter
+  senderMapping: SenderMapping
+  senderHealth: SenderHealth
+  rateLimitGuard: RateLimitGuard
+  receiptTracker: ReceiptTracker
+  accountMutex: AccountMutex
+  wahaFallback: WahaFallback
+  messageHistory: MessageHistory
+  deviceManager: DeviceManager
+  latestHealthMap: Map<string, HealthSnapshot>
+  logger: { info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void; error: (...args: unknown[]) => void }
+}
+
+export class WorkerOrchestrator {
+  private workerRunning = false
+  private currentForegroundUser = 0
+  private cappedSendersCooldown = new Map<string, number>()
+  private sendMetadata = new Map<string, { profileId: number; userSwitched: boolean; ts: number }>()
+
+  constructor(private readonly deps: WorkerOrchestratorDeps) {}
+
+  get isRunning(): boolean {
+    return this.workerRunning
+  }
+
+  async processMessage(message: Message, deviceSerial: string, isFirstInBatch = true, appPackage = 'com.whatsapp'): Promise<boolean> {
+    const { queue, engine, emitter, wahaFallback, messageHistory, receiptTracker, logger } = this.deps
+    let sendSuccess = false
+    let usedFallback = false
+
+    try {
+      await engine.send(message, deviceSerial, isFirstInBatch, appPackage)
+      sendSuccess = true
+    } catch (adbErr) {
+      logger.warn({ messageId: message.id, err: adbErr }, 'Worker: ADB send failed, attempting WAHA fallback')
+
+      // Reset status to 'sending' to suppress premature 'failed' callback
+      try { queue.updateStatus(message.id, 'sending') } catch { /* ignore */ }
+
+      try {
+        const fallbackResult = await wahaFallback.send(message)
+        logger.info({ messageId: message.id, wahaMessageId: fallbackResult.wahaMessageId }, 'Worker: WAHA fallback succeeded')
+        queue.updateStatus(message.id, 'sent')
+        emitter.emit('message:sent', { id: message.id, sentAt: new Date().toISOString(), durationMs: 0, deviceSerial, contactRegistered: false, dialogsDismissed: 0 })
+        sendSuccess = true
+        usedFallback = true
+      } catch (wahaErr) {
+        logger.error({ messageId: message.id, err: wahaErr }, 'Worker: WAHA fallback also failed')
+        queue.updateStatus(message.id, 'permanently_failed')
+        emitter.emit('message:failed', {
+          id: message.id,
+          error: `ADB and WAHA fallback both failed: ${wahaErr instanceof Error ? wahaErr.message : String(wahaErr)}`,
+        })
+      }
+    }
+
+    if (sendSuccess) {
+      messageHistory.insert({
+        messageId: message.id,
+        direction: 'outgoing',
+        fromNumber: message.senderNumber,
+        toNumber: message.to,
+        text: message.body,
+        deviceSerial,
+        capturedVia: usedFallback ? 'waha_webhook' : 'adb_send',
+      })
+
+      if (message.senderNumber) {
+        receiptTracker.registerSent({
+          messageId: message.id,
+          toNumber: message.to,
+          senderNumber: message.senderNumber,
+          sentAt: new Date().toISOString(),
+        })
+      }
+    }
+
+    return sendSuccess
+  }
+
+  async switchToUser(deviceSerial: string, profileId: number): Promise<boolean> {
+    if (profileId === this.currentForegroundUser) return true
+    if (!Number.isInteger(profileId) || profileId < 0) return false
+
+    await this.deps.adb.shell(deviceSerial, `am switch-user ${profileId}`)
+
+    // Poll am get-current-user until it returns the expected profileId (max 10s)
+    for (let i = 0; i < 10; i++) {
+      await new Promise(r => setTimeout(r, 1000))
+      const output = await this.deps.adb.shell(deviceSerial, 'am get-current-user')
+      const currentUser = parseInt(output.trim(), 10)
+      if (currentUser === profileId) {
+        this.currentForegroundUser = profileId
+        // Wait 2s for UI stabilization after switch
+        await new Promise(r => setTimeout(r, 2000))
+        return true
+      }
+    }
+
+    this.deps.logger.error({ profileId, deviceSerial }, 'Worker: user switch timed out after 10s')
+    return false
+  }
+
+  async tick(): Promise<void> {
+    if (this.workerRunning) return
+    this.workerRunning = true
+
+    const { db, queue, emitter, senderMapping, senderHealth, rateLimitGuard, accountMutex, deviceManager, latestHealthMap, logger } = this.deps
+    let releaseMutex: (() => void) | null = null
+
+    try {
+      const online = selectDevice(deviceManager.getDevices(), latestHealthMap, db)
+        ?? deviceManager.getDevices().find(d => d.status === 'online')
+      if (!online) return
+
+      // DP-5: Dequeue batch grouped by sender (minimizes user switches)
+      const batch = queue.dequeueBySender(online.serial)
+      if (batch.length === 0) return
+
+      const senderNumber = batch[0].senderNumber
+      if (senderNumber) {
+        releaseMutex = await accountMutex.acquire(senderNumber)
+      }
+
+      // Rate limit: check daily cap for this sender
+      if (senderNumber) {
+        // Cooldown: if we already logged the cap within the last 60s, requeue silently
+        const lastCapped = this.cappedSendersCooldown.get(senderNumber)
+        if (lastCapped !== undefined && Date.now() - lastCapped < 60_000) {
+          for (const msg of batch) {
+            try { queue.updateStatus(msg.id, 'queued') } catch { /* ignore */ }
+          }
+          return
+        }
+        // Cooldown expired or first check — evaluate cap
+        if (lastCapped !== undefined) this.cappedSendersCooldown.delete(senderNumber)
+
+        const dailyCount = queue.getSenderDailyCount(senderNumber)
+        if (!rateLimitGuard.canSend(dailyCount)) {
+          logger.warn({ senderNumber, dailyCount, max: rateLimitGuard.maxPerSenderPerDay }, 'Worker: sender daily limit reached, skipping batch')
+          this.cappedSendersCooldown.set(senderNumber, Date.now())
+          for (const msg of batch) {
+            try { queue.updateStatus(msg.id, 'queued') } catch { /* ignore */ }
+          }
+          return
+        }
+      }
+
+      // Quarantine check: skip senders with consecutive failures
+      if (senderNumber && senderHealth.isQuarantined(senderNumber)) {
+        logger.warn({ senderNumber }, 'Worker: sender quarantined, skipping batch')
+        for (const msg of batch) {
+          try { queue.updateStatus(msg.id, 'queued') } catch { /* ignore */ }
+        }
+        return // finally block releases mutex
+      }
+
+      // Resolve profileId and switch user ONCE for the entire batch
+      const senderProfile = senderNumber ? senderMapping.getByPhone(senderNumber) : null
+      const profileId = senderProfile?.profile_id ?? 0
+      const appPackage = senderProfile?.app_package ?? 'com.whatsapp'
+      const userSwitched = profileId !== this.currentForegroundUser
+
+      if (userSwitched) {
+        const switched = await this.switchToUser(online.serial, profileId)
+        if (!switched) {
+          logger.error({ profileId, batchSize: batch.length }, 'Worker: skipping batch — user switch failed')
+          // Requeue the batch
+          for (const msg of batch) {
+            try { queue.requeueForRetry(msg.id) } catch { /* ignore */ }
+          }
+          return
+        }
+      }
+
+      logger.info({ batchSize: batch.length, senderNumber, profileId, userSwitched, device: online.serial }, 'Worker: processing sender batch')
+
+      for (let i = 0; i < batch.length; i++) {
+        const message = batch[i]
+        this.sendMetadata.set(message.id, { profileId, userSwitched, ts: Date.now() })
+        const success = await this.processMessage(message, online.serial, i === 0, appPackage)
+        if (senderNumber) {
+          if (success) {
+            senderHealth.recordSuccess(senderNumber)
+          } else {
+            senderHealth.recordFailure(senderNumber)
+          }
+        }
+
+        // Rate-limit-aware delay between messages (skip after last message)
+        if (i < batch.length - 1) {
+          const nextMsg = batch[i + 1]
+          const isFirstContact = senderNumber
+            ? queue.isFirstContactWith(nextMsg.to, senderNumber)
+            : false
+          const delayMs = rateLimitGuard.getInterMessageDelay(isFirstContact)
+          logger.info({ delayMs, isFirstContact, remaining: batch.length - i - 1 }, 'Worker: rate-limited delay')
+          await new Promise(r => setTimeout(r, delayMs))
+        }
+      }
+    } catch (err) {
+      logger.error({ err }, 'Worker: batch processing failed')
+    } finally {
+      if (releaseMutex) releaseMutex()
+      this.workerRunning = false
+    }
+  }
+
+  cleanupMetadata(): void {
+    const cutoff = Date.now() - 300_000
+    for (const [id, meta] of this.sendMetadata) {
+      if (meta.ts < cutoff) this.sendMetadata.delete(id)
+    }
+  }
+
+  getSendMetadata(id: string): { profileId: number; userSwitched: boolean; ts: number } | undefined {
+    const meta = this.sendMetadata.get(id)
+    if (meta) this.sendMetadata.delete(id)
+    return meta
+  }
+}

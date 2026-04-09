@@ -4,7 +4,7 @@ import Database from 'better-sqlite3'
 import { Server as SocketIOServer } from 'socket.io'
 import { MessageQueue } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
-import { SendEngine, SendStrategy, selectDevice, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth } from './engine/index.js'
+import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, WorkerOrchestrator } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
 import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes } from './api/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
@@ -15,6 +15,7 @@ import { PluginRegistry, PluginEventBus, CallbackDelivery, PluginLoader } from '
 import { buildLoggerConfig } from './config/logger.js'
 import { GracefulShutdown } from './config/graceful-shutdown.js'
 import { RateLimitGuard } from './config/rate-limits.js'
+import { parseConfig } from './config/config-schema.js'
 import { OralsinPlugin } from './plugins/oralsin-plugin.js'
 import type { DispatchEventName } from './events/index.js'
 import type { DispatchPlugin } from './plugins/types.js'
@@ -30,6 +31,10 @@ export interface DispatchCore {
 }
 
 export async function createServer(port = Number(process.env.PORT) || 7890): Promise<DispatchCore> {
+  // Validate all env vars upfront — crash fast on misconfiguration
+  const config = parseConfig(process.env as Record<string, string | undefined>)
+  void config // TODO: incrementally migrate process.env reads to use config
+
   const loggerConfig = buildLoggerConfig(process.env.NODE_ENV, process.env.LOG_FILE)
   const server = Fastify({
     logger: loggerConfig,
@@ -52,7 +57,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const engine = new SendEngine(adb, queue, emitter, strategy)
 
   const rateLimitGuard = RateLimitGuard.fromEnv(process.env as Record<string, string | undefined>)
-  const senderHealth = new SenderHealth({
+  const senderHealth = new SenderHealth(db, {
     quarantineAfterFailures: Number(process.env.QUARANTINE_AFTER_FAILURES) || 3,
     quarantineDurationMs: Number(process.env.QUARANTINE_DURATION_MS) || 3_600_000,
   })
@@ -177,8 +182,6 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     return { id: updated.id, status: updated.status, attempts: updated.attempts }
   })
 
-  let workerRunning = false
-
   server.post('/api/v1/messages/:id/send', async (request, reply) => {
     const { id } = request.params as { id: string }
     const message = queue.getById(id)
@@ -189,7 +192,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     if (message.status !== 'queued' && message.status !== 'failed') {
       return reply.status(409).send({ error: `Cannot send message in status: ${message.status}` })
     }
-    if (workerRunning) {
+    if (orchestrator.isRunning) {
       return reply.status(409).send({ error: 'Worker is currently sending. Try again shortly.' })
     }
 
@@ -281,9 +284,6 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     })
   }
 
-  // Per-message metadata set by worker loop, consumed by callback listeners
-  const sendMetadata = new Map<string, { profileId: number; userSwitched: boolean; ts: number }>()
-
   // Plugin callback listeners — only when plugins are configured
   if (pluginNames.length > 0) {
     // Helper to extract sender session/pair from senders_config JSON
@@ -307,8 +307,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       const msg = queue.getById(data.id)
       if (msg?.pluginName) {
         const { senderSession, pairUsed } = parseSenderInfo(msg)
-        const meta = sendMetadata.get(data.id)
-        sendMetadata.delete(data.id)
+        const meta = orchestrator.getSendMetadata(data.id)
 
         void callbackDelivery.sendResultCallback(msg.pluginName, msg.id, {
           idempotency_key: msg.idempotencyKey,
@@ -339,7 +338,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     })
 
     emitter.on('message:failed', (data) => {
-      sendMetadata.delete(data.id)
+      orchestrator.getSendMetadata(data.id) // cleanup metadata (return value unused)
       const msg = queue.getById(data.id)
       if (msg?.pluginName) {
         void callbackDelivery.sendResultCallback(msg.pluginName, msg.id, {
@@ -499,7 +498,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // Device discovery polling (5s) — managed by DeviceManager
   deviceManager.startPolling(5_000)
 
-  // In-memory health map for selectDevice (populated by health interval)
+  // In-memory health map for WorkerOrchestrator (populated by health interval)
   const latestHealthMap = new Map<string, import('./monitor/types.js').HealthSnapshot>()
 
   // Health collection polling (30s) — per-device error isolation
@@ -554,191 +553,16 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     }
   }, 30_000)
 
-  // DP-5: Helper to process a single message (ADB + WAHA fallback)
-  const processMessage = async (message: import('./queue/types.js').Message, deviceSerial: string, isFirstInBatch = true, appPackage = 'com.whatsapp'): Promise<boolean> => {
-    let sendSuccess = false
-    let usedFallback = false
-
-    try {
-      await engine.send(message, deviceSerial, isFirstInBatch, appPackage)
-      sendSuccess = true
-    } catch (adbErr) {
-      server.log.warn({ messageId: message.id, err: adbErr }, 'Worker: ADB send failed, attempting WAHA fallback')
-
-      // Reset status to 'sending' to suppress premature 'failed' callback
-      try { queue.updateStatus(message.id, 'sending') } catch { /* ignore */ }
-
-      try {
-        const fallbackResult = await wahaFallback.send(message)
-        server.log.info({ messageId: message.id, wahaMessageId: fallbackResult.wahaMessageId }, 'Worker: WAHA fallback succeeded')
-        queue.updateStatus(message.id, 'sent')
-        emitter.emit('message:sent', { id: message.id, sentAt: new Date().toISOString(), durationMs: 0, deviceSerial, contactRegistered: false, dialogsDismissed: 0 })
-        sendSuccess = true
-        usedFallback = true
-      } catch (wahaErr) {
-        server.log.error({ messageId: message.id, err: wahaErr }, 'Worker: WAHA fallback also failed')
-        queue.updateStatus(message.id, 'permanently_failed')
-        emitter.emit('message:failed', {
-          id: message.id,
-          error: `ADB and WAHA fallback both failed: ${wahaErr instanceof Error ? wahaErr.message : String(wahaErr)}`,
-        })
-      }
-    }
-
-    if (sendSuccess) {
-      messageHistory.insert({
-        messageId: message.id,
-        direction: 'outgoing',
-        fromNumber: message.senderNumber,
-        toNumber: message.to,
-        text: message.body,
-        deviceSerial,
-        capturedVia: usedFallback ? 'waha_webhook' : 'adb_send',
-      })
-
-      if (message.senderNumber) {
-        receiptTracker.registerSent({
-          messageId: message.id,
-          toNumber: message.to,
-          senderNumber: message.senderNumber,
-          sentAt: new Date().toISOString(),
-        })
-      }
-    }
-
-    return sendSuccess
-  }
-
-  // DP-5: Worker loop uses sender-grouped dequeue
-  const cappedSendersCooldown = new Map<string, number>() // senderNumber → timestamp when capped
-  let currentForegroundUser = 0
-
-  const switchToUser = async (deviceSerial: string, profileId: number): Promise<boolean> => {
-    if (profileId === currentForegroundUser) return true
-    if (!Number.isInteger(profileId) || profileId < 0) return false
-
-    await adb.shell(deviceSerial, `am switch-user ${profileId}`)
-
-    // Poll am get-current-user until it returns the expected profileId (max 10s)
-    for (let i = 0; i < 10; i++) {
-      await new Promise(r => setTimeout(r, 1000))
-      const output = await adb.shell(deviceSerial, 'am get-current-user')
-      const currentUser = parseInt(output.trim(), 10)
-      if (currentUser === profileId) {
-        currentForegroundUser = profileId
-        // Wait 2s for UI stabilization after switch
-        await new Promise(r => setTimeout(r, 2000))
-        return true
-      }
-    }
-
-    server.log.error({ profileId, deviceSerial }, 'Worker: user switch timed out after 10s')
-    return false
-  }
-
-  const workerInterval = setInterval(async () => {
-    if (workerRunning) return
-    workerRunning = true
-
-    let releaseMutex: (() => void) | null = null
-
-    try {
-      const online = selectDevice(deviceManager.getDevices(), latestHealthMap, db)
-        ?? deviceManager.getDevices().find(d => d.status === 'online')
-      if (!online) return
-
-      // DP-5: Dequeue batch grouped by sender (minimizes user switches)
-      const batch = queue.dequeueBySender(online.serial)
-      if (batch.length === 0) return
-
-      const senderNumber = batch[0].senderNumber
-      if (senderNumber) {
-        releaseMutex = await accountMutex.acquire(senderNumber)
-      }
-
-      // Rate limit: check daily cap for this sender
-      if (senderNumber) {
-        // Cooldown: if we already logged the cap within the last 60s, requeue silently
-        const lastCapped = cappedSendersCooldown.get(senderNumber)
-        if (lastCapped !== undefined && Date.now() - lastCapped < 60_000) {
-          for (const msg of batch) {
-            try { queue.updateStatus(msg.id, 'queued') } catch { /* ignore */ }
-          }
-          return
-        }
-        // Cooldown expired or first check — evaluate cap
-        if (lastCapped !== undefined) cappedSendersCooldown.delete(senderNumber)
-
-        const dailyCount = queue.getSenderDailyCount(senderNumber)
-        if (!rateLimitGuard.canSend(dailyCount)) {
-          server.log.warn({ senderNumber, dailyCount, max: rateLimitGuard.maxPerSenderPerDay }, 'Worker: sender daily limit reached, skipping batch')
-          cappedSendersCooldown.set(senderNumber, Date.now())
-          for (const msg of batch) {
-            try { queue.updateStatus(msg.id, 'queued') } catch { /* ignore */ }
-          }
-          return
-        }
-      }
-
-      // Quarantine check: skip senders with consecutive failures
-      if (senderNumber && senderHealth.isQuarantined(senderNumber)) {
-        server.log.warn({ senderNumber }, 'Worker: sender quarantined, skipping batch')
-        for (const msg of batch) {
-          try { queue.updateStatus(msg.id, 'queued') } catch { /* ignore */ }
-        }
-        return // finally block releases mutex
-      }
-
-      // Resolve profileId and switch user ONCE for the entire batch
-      const senderProfile = senderNumber ? senderMapping.getByPhone(senderNumber) : null
-      const profileId = senderProfile?.profile_id ?? 0
-      const appPackage = senderProfile?.app_package ?? 'com.whatsapp'
-      const userSwitched = profileId !== currentForegroundUser
-
-      if (userSwitched) {
-        const switched = await switchToUser(online.serial, profileId)
-        if (!switched) {
-          server.log.error({ profileId, batchSize: batch.length }, 'Worker: skipping batch — user switch failed')
-          // Requeue the batch
-          for (const msg of batch) {
-            try { queue.requeueForRetry(msg.id) } catch { /* ignore */ }
-          }
-          return
-        }
-      }
-
-      server.log.info({ batchSize: batch.length, senderNumber, profileId, userSwitched, device: online.serial }, 'Worker: processing sender batch')
-
-      for (let i = 0; i < batch.length; i++) {
-        const message = batch[i]
-        sendMetadata.set(message.id, { profileId, userSwitched, ts: Date.now() })
-        const success = await processMessage(message, online.serial, i === 0, appPackage)
-        if (senderNumber) {
-          if (success) {
-            senderHealth.recordSuccess(senderNumber)
-          } else {
-            senderHealth.recordFailure(senderNumber)
-          }
-        }
-
-        // Rate-limit-aware delay between messages (skip after last message)
-        if (i < batch.length - 1) {
-          const nextMsg = batch[i + 1]
-          const isFirstContact = senderNumber
-            ? queue.isFirstContactWith(nextMsg.to, senderNumber)
-            : false
-          const delayMs = rateLimitGuard.getInterMessageDelay(isFirstContact)
-          server.log.info({ delayMs, isFirstContact, remaining: batch.length - i - 1 }, 'Worker: rate-limited delay')
-          await new Promise(r => setTimeout(r, delayMs))
-        }
-      }
-    } catch (err) {
-      server.log.error({ err }, 'Worker: batch processing failed')
-    } finally {
-      if (releaseMutex) releaseMutex()
-      workerRunning = false
-    }
-  }, 5_000)
+  // DP-5: Worker orchestrator — extracted from inline closures
+  const orchestrator = new WorkerOrchestrator({
+    db, queue, engine, adb, emitter, senderMapping, senderHealth,
+    rateLimitGuard, receiptTracker, accountMutex, wahaFallback,
+    messageHistory, deviceManager,
+    latestHealthMap,
+    logger: server.log,
+  })
+  const workerInterval = setInterval(() => orchestrator.tick(), 5_000)
+  const metadataCleanupInterval = setInterval(() => orchestrator.cleanupMetadata(), 60_000)
 
   // WAHA session health polling (60s) and history cleanup (hourly)
   if (sessionManager) {
@@ -748,14 +572,6 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const historyCleanupInterval = setInterval(() => {
     messageHistory.cleanup(retentionDays)
   }, 3_600_000)
-
-  // Periodic sendMetadata cleanup (60s) — remove stale entries older than 5 minutes
-  const metadataCleanupInterval = setInterval(() => {
-    const cutoff = Date.now() - 300_000
-    for (const [id, meta] of sendMetadata) {
-      if (meta.ts < cutoff) sendMetadata.delete(id)
-    }
-  }, 60_000)
 
   // Periodic callback retry worker (60s) — retries failed callbacks, max 20 per cycle
   let callbackRetryRunning = false
