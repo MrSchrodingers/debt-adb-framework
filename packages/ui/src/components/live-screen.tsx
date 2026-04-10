@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Monitor, Play, Pause, RefreshCw } from 'lucide-react'
-import { CORE_URL } from '../config'
+import { CORE_URL, authHeaders } from '../config'
 
 interface LiveScreenProps {
   serial: string
@@ -17,7 +17,7 @@ export function LiveScreen({ serial, profileId }: LiveScreenProps) {
   const fetchScreen = async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${CORE_URL}/api/v1/devices/${serial}/screen`)
+      const res = await fetch(`${CORE_URL}/api/v1/devices/${serial}/screen`, { headers: authHeaders() })
       if (res.ok) {
         const data = await res.json()
         setImage(data.image)

@@ -23,7 +23,7 @@ export function OralsinSenders() {
 
   const fetchSenders = useCallback(async () => {
     try {
-      const res = await fetch(`${CORE_URL}/api/v1/plugins/oralsin/senders`, {
+      const res = await fetch(`${CORE_URL}/api/v1/monitoring/oralsin/senders`, {
         headers: authHeaders(),
       })
       if (res.ok) {

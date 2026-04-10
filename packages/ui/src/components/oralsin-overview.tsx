@@ -32,7 +32,7 @@ export function OralsinOverview() {
 
   const fetchOverview = useCallback(async () => {
     try {
-      const res = await fetch(`${CORE_URL}/api/v1/plugins/oralsin/overview`, {
+      const res = await fetch(`${CORE_URL}/api/v1/monitoring/oralsin/overview`, {
         headers: authHeaders(),
       })
       if (res.ok) {

@@ -40,7 +40,7 @@ export function OralsinCallbacks() {
   const fetchCallbacks = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${CORE_URL}/api/v1/plugins/oralsin/callbacks`, {
+      const res = await fetch(`${CORE_URL}/api/v1/monitoring/oralsin/callbacks`, {
         headers: authHeaders(),
       })
       if (res.ok) {

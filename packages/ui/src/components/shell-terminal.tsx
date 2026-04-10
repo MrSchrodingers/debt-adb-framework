@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Terminal, Send, Trash2 } from 'lucide-react'
-import { CORE_URL } from '../config'
+import { CORE_URL, authHeaders } from '../config'
 
 interface ShellTerminalProps {
   serial: string
@@ -35,7 +35,7 @@ export function ShellTerminal({ serial, profileId }: ShellTerminalProps) {
     try {
       const res = await fetch(`${CORE_URL}/api/v1/devices/${serial}/shell`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ command: cmd }),
       })
       const data = await res.json()
