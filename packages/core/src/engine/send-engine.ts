@@ -169,6 +169,11 @@ export class SendEngine {
           dialogsDismissed = 0
           this.record(message.id, 'chat_opened', { method, dialogsDismissed })
           this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
+        } else if (method === 'chatlist') {
+          await this.withTimeout(this.openViaChatList(deviceSerial, phoneDigits, message.body, appPackage), 30_000, 'openViaChatList')
+          dialogsDismissed = 0
+          this.record(message.id, 'chat_opened', { method, dialogsDismissed })
+          this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
         } else {
           await this.withTimeout(this.openViaTyping(deviceSerial, phoneDigits, message.body, appPackage), 30_000, 'openViaTyping')
           dialogsDismissed = 0

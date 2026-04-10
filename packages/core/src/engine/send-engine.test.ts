@@ -92,7 +92,7 @@ describe('SendEngine', () => {
     queue.initialize()
     emitter = new DispatchEmitter()
     mockAdb = createMockAdb()
-    const strategy = new SendStrategy({ prefillWeight: 100, searchWeight: 0, typingWeight: 0 })
+    const strategy = new SendStrategy({ prefillWeight: 100, searchWeight: 0, typingWeight: 0, chatlistWeight: 0 })
     engine = new SendEngine(mockAdb, queue, emitter, strategy)
 
     // Mock internal delay to avoid real waits (~8s per send)
@@ -700,6 +700,52 @@ describe('SendEngine', () => {
       const calls = shellMock.mock.calls.map((c: unknown[]) => c[1] as string)
       // Should have used search (input text with digits)
       expect(calls.some((cmd: string) => cmd.includes("input text '"))).toBe(true)
+    })
+  })
+
+  describe('chatlist strategy dispatch (P0-B.4)', () => {
+    it('calls openViaChatList when chatlistWeight is 100', async () => {
+      queue.saveContact('5543991938235', 'João Silva')
+
+      const msg = queue.enqueue({
+        to: '5543991938235',
+        body: 'Chatlist strategy test',
+        idempotencyKey: 'chatlist-dispatch-1',
+        senderNumber: '5543996835100',
+      })
+
+      const chatlistStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 0, typingWeight: 0, chatlistWeight: 100 })
+      const chatlistEngine = new SendEngine(mockAdb, queue, emitter, chatlistStrategy)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.spyOn(chatlistEngine as any, 'delay').mockResolvedValue(undefined)
+
+      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
+      let dumpCount = 0
+      shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('pidof')) return '12345'
+        if (cmd.includes('uiautomator dump')) return ''
+        if (cmd.includes('cat /sdcard/dispatch-ui.xml')) {
+          dumpCount++
+          if (dumpCount === 1) return WA_HOME_XML    // Chat list with "João Silva"
+          return CHAT_READY_XML                       // Chat ready for typing
+        }
+        if (cmd.includes('content query --uri content://com.android.contacts/phone_lookup')) {
+          return 'display_name=Test'
+        }
+        return ''
+      })
+
+      const result = await chatlistEngine.send(msg, 'device-1')
+
+      // Verify send completed
+      expect(result.durationMs).toBeGreaterThanOrEqual(0)
+
+      const calls = shellMock.mock.calls.map((c: unknown[]) => c[1] as string)
+      // openViaChatList opens HomeActivity
+      expect(calls.some((cmd: string) => cmd.includes('HomeActivity'))).toBe(true)
+      // Should tap the contact row (João Silva bounds: [100,200][600,260] → center 350,230)
+      const tapCalls = calls.filter((cmd: string) => cmd.startsWith('input tap '))
+      expect(tapCalls.some((cmd: string) => cmd === 'input tap 350 230')).toBe(true)
     })
   })
 
