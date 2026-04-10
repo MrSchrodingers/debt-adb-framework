@@ -191,7 +191,7 @@ export class SendEngine {
             await this.adb.shell(deviceSerial, `am start -n ${appPackage}/com.whatsapp.HomeActivity`)
             await this.delay(3000)
           }
-          await this.withTimeout(this.openViaSearch(deviceSerial, phoneDigits, message.body), 30_000, 'openViaSearch')
+          await this.withTimeout(this.openViaSearch(deviceSerial, phoneDigits, message.body, appPackage), 30_000, 'openViaSearch')
           dialogsDismissed = 0
           this.record(message.id, 'chat_opened', { method, dialogsDismissed })
           this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
@@ -490,8 +490,8 @@ export class SendEngine {
    * Searches by last 8 digits (70%) or contact name (30%) for fingerprint diversity.
    * Resolution-independent — works on any screen size.
    */
-  private async openViaSearch(deviceSerial: string, phone: string, body: string): Promise<void> {
-    const xml = await this.dumpUi(deviceSerial)
+  private async openViaSearch(deviceSerial: string, phone: string, body: string, appPackage = 'com.whatsapp'): Promise<void> {
+    let xml = await this.dumpUi(deviceSerial)
 
     // Find search icon via resource-id, fallback to content-desc
     let searchIcon = this.findElementBounds(xml, {
@@ -502,8 +502,27 @@ export class SendEngine {
         contentDesc: /^(Search|Pesquisar)$/i,
       })
     }
+
+    // Recovery: if search icon not found, force HomeActivity and retry
     if (!searchIcon) {
-      throw new Error('Search icon not found in UIAutomator XML — WhatsApp home screen may not be visible')
+      await this.adb.shell(deviceSerial, `am start -n ${appPackage}/com.whatsapp.HomeActivity`)
+      await this.delay(3000)
+      // Dismiss any dialogs that appeared
+      const recoveryXml = await this.dumpUi(deviceSerial)
+      await this.dismissDialogs(deviceSerial, recoveryXml)
+      await this.delay(1000)
+      xml = await this.dumpUi(deviceSerial)
+      searchIcon = this.findElementBounds(xml, {
+        resourceId: 'com.whatsapp:id/menuitem_search',
+      })
+      if (!searchIcon) {
+        searchIcon = this.findElementBounds(xml, {
+          contentDesc: /^(Search|Pesquisar)$/i,
+        })
+      }
+      if (!searchIcon) {
+        throw new Error('Search icon not found after recovery — WhatsApp home screen not reachable')
+      }
     }
 
     // Tap search icon
@@ -560,7 +579,7 @@ export class SendEngine {
     const contactName = this.queue.getContactName(phone)
     if (!contactName) {
       // No name in DB — cannot search chat list by name, fall back
-      await this.openViaSearch(deviceSerial, phone, body)
+      await this.openViaSearch(deviceSerial, phone, body, appPackage)
       return
     }
 
@@ -576,7 +595,7 @@ export class SendEngine {
 
     if (!contactRow) {
       // Contact not visible in chat list — fall back to search
-      await this.openViaSearch(deviceSerial, phone, body)
+      await this.openViaSearch(deviceSerial, phone, body, appPackage)
       return
     }
 
