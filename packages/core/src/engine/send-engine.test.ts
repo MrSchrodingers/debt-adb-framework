@@ -504,7 +504,7 @@ describe('SendEngine', () => {
         return ''
       })
 
-      await expect(searchEngine.send(msg, 'device-1')).rejects.toThrow('Search icon not found')
+      await expect(searchEngine.send(msg, 'device-1')).rejects.toThrow('Search element not found after recovery')
     })
 
     it('throws descriptive error when search result not found', async () => {

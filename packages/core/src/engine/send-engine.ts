@@ -492,36 +492,19 @@ export class SendEngine {
    */
   private async openViaSearch(deviceSerial: string, phone: string, body: string, appPackage = 'com.whatsapp'): Promise<void> {
     let xml = await this.dumpUi(deviceSerial)
+    let searchIcon = this.findSearchElement(xml)
 
-    // Find search icon via resource-id, fallback to content-desc
-    let searchIcon = this.findElementBounds(xml, {
-      resourceId: 'com.whatsapp:id/menuitem_search',
-    })
-    if (!searchIcon) {
-      searchIcon = this.findElementBounds(xml, {
-        contentDesc: /^(Search|Pesquisar)$/i,
-      })
-    }
-
-    // Recovery: if search icon not found, force HomeActivity and retry
+    // Recovery: if search not found, force HomeActivity and retry
     if (!searchIcon) {
       await this.adb.shell(deviceSerial, `am start -n ${appPackage}/com.whatsapp.HomeActivity`)
       await this.delay(3000)
-      // Dismiss any dialogs that appeared
       const recoveryXml = await this.dumpUi(deviceSerial)
       await this.dismissDialogs(deviceSerial, recoveryXml)
       await this.delay(1000)
       xml = await this.dumpUi(deviceSerial)
-      searchIcon = this.findElementBounds(xml, {
-        resourceId: 'com.whatsapp:id/menuitem_search',
-      })
+      searchIcon = this.findSearchElement(xml)
       if (!searchIcon) {
-        searchIcon = this.findElementBounds(xml, {
-          contentDesc: /^(Search|Pesquisar)$/i,
-        })
-      }
-      if (!searchIcon) {
-        throw new Error('Search icon not found after recovery — WhatsApp home screen not reachable')
+        throw new Error('Search element not found after recovery — WhatsApp home screen not reachable')
       }
     }
 
@@ -660,6 +643,38 @@ export class SendEngine {
     }
 
     return null
+  }
+
+  /**
+   * Find the WhatsApp search element in UIAutomator XML.
+   * Supports multiple WA layouts:
+   * - New (2025+): search bar with com.whatsapp:id/my_search_bar or search_icon
+   * - Legacy: menuitem_search icon
+   * - Fallback: content-desc matching Search/Pesquisar
+   */
+  private findSearchElement(xml: string): { cx: number; cy: number } | null {
+    // New WA layout: integrated search bar (tap anywhere on the bar)
+    const searchBar = this.findElementBounds(xml, {
+      resourceId: 'com.whatsapp:id/my_search_bar',
+    })
+    if (searchBar) return searchBar
+
+    // New WA layout: search icon inside the bar
+    const searchIcon = this.findElementBounds(xml, {
+      resourceId: 'com.whatsapp:id/search_icon',
+    })
+    if (searchIcon) return searchIcon
+
+    // Legacy WA layout: menuitem_search
+    const menuSearch = this.findElementBounds(xml, {
+      resourceId: 'com.whatsapp:id/menuitem_search',
+    })
+    if (menuSearch) return menuSearch
+
+    // Fallback: content-desc matching search-related text
+    return this.findElementBounds(xml, {
+      contentDesc: /^(Search|Pesquisar|Pergunte.*pesquise)$/i,
+    })
   }
 
   /**
