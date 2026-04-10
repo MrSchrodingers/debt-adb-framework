@@ -455,21 +455,102 @@ export class SendEngine {
   }
 
   /**
-   * Open chat via WhatsApp search bar.
-   * Uses last 8 digits to minimize false matches (4 digits is too ambiguous
-   * when multiple contacts share the same suffix).
-   * Coordinates are POCO C71 specific (720x1600).
+   * Open chat via WhatsApp search bar using UIAutomator bounds.
+   * Searches by last 8 digits (70%) or contact name (30%) for fingerprint diversity.
+   * Resolution-independent — works on any screen size.
    */
   private async openViaSearch(deviceSerial: string, phone: string, body: string): Promise<void> {
+    const xml = await this.dumpUi(deviceSerial)
+
+    // Find search icon via resource-id, fallback to content-desc
+    let searchIcon = this.findElementBounds(xml, {
+      resourceId: 'com.whatsapp:id/menuitem_search',
+    })
+    if (!searchIcon) {
+      searchIcon = this.findElementBounds(xml, {
+        contentDesc: /^(Search|Pesquisar)$/i,
+      })
+    }
+    if (!searchIcon) {
+      throw new Error('Search icon not found in UIAutomator XML — WhatsApp home screen may not be visible')
+    }
+
     // Tap search icon
-    await this.adb.shell(deviceSerial, 'input tap 624 172')
+    await this.adb.shell(deviceSerial, `input tap ${searchIcon.cx} ${searchIcon.cy}`)
     await this.delay(1000)
-    // Type last 8 digits — specific enough to match a single contact
-    const searchDigits = phone.slice(-8)
-    await this.adb.shell(deviceSerial, `input text '${searchDigits}'`)
+
+    // Diversify search query: 70% digits, 30% contact name (if available)
+    let searchQuery: string
+    const contactName = this.queue.getContactName(phone)
+    if (contactName && Math.random() < 0.3) {
+      // Search by contact name — escape single quotes for ADB shell
+      searchQuery = contactName
+    } else {
+      // Search by last 8 digits — specific enough to match a single contact
+      searchQuery = phone.slice(-8)
+    }
+    const escapedQuery = searchQuery.replace(/'/g, "'\\''")
+    await this.adb.shell(deviceSerial, `input text '${escapedQuery}'`)
     await this.delay(1500)
+
+    // Dump UI again to find the first search result
+    const searchResultXml = await this.dumpUi(deviceSerial)
+    const firstResult = this.findElementBounds(searchResultXml, {
+      resourceId: 'com.whatsapp:id/conversations_row_contact_name',
+    })
+    if (!firstResult) {
+      throw new Error(`Search result not found for query "${searchQuery}" — contact may not exist in WhatsApp`)
+    }
+
     // Tap first search result
-    await this.adb.shell(deviceSerial, 'input tap 360 350')
+    await this.adb.shell(deviceSerial, `input tap ${firstResult.cx} ${firstResult.cy}`)
+    await this.delay(2000)
+    await this.typeMessage(deviceSerial, body)
+  }
+
+  /**
+   * Open chat via WhatsApp chat list (for contacts messaged before).
+   * Launches HomeActivity, finds contact row by name, taps it.
+   * Falls back to openViaSearch() if contact not found in chat list.
+   */
+  async openViaChatList(deviceSerial: string, phone: string, body: string, appPackage = 'com.whatsapp'): Promise<void> {
+    // Security: validate inputs (same guards as send())
+    if (!ALLOWED_PACKAGES.has(appPackage)) {
+      throw new Error(`Rejected app package: ${appPackage}`)
+    }
+    if (!DEVICE_SERIAL_RE.test(deviceSerial)) {
+      throw new Error('Rejected device serial: contains unsafe characters')
+    }
+
+    // Open WhatsApp home screen
+    await this.adb.shell(deviceSerial, `am start -n ${appPackage}/com.whatsapp.HomeActivity`)
+    await this.delay(3000)
+
+    const contactName = this.queue.getContactName(phone)
+    if (!contactName) {
+      // No name in DB — cannot search chat list by name, fall back
+      await this.openViaSearch(deviceSerial, phone, body)
+      return
+    }
+
+    const xml = await this.dumpUi(deviceSerial)
+
+    // Search for contact row by name in the chat list
+    // Escape regex special chars from contact name to prevent injection into RegExp
+    const escapedName = this.escapeRegex(contactName)
+    const contactRow = this.findElementBounds(xml, {
+      resourceId: 'com.whatsapp:id/conversations_row_contact_name',
+      text: new RegExp(`^${escapedName}$`, 'i'),
+    })
+
+    if (!contactRow) {
+      // Contact not visible in chat list — fall back to search
+      await this.openViaSearch(deviceSerial, phone, body)
+      return
+    }
+
+    // Tap the contact row
+    await this.adb.shell(deviceSerial, `input tap ${contactRow.cx} ${contactRow.cy}`)
     await this.delay(2000)
     await this.typeMessage(deviceSerial, body)
   }
@@ -482,6 +563,60 @@ export class SendEngine {
     await this.delay(2000)
     await this.waitForChatReady(deviceSerial)
     await this.typeMessage(deviceSerial, body)
+  }
+
+  /**
+   * Find a UI element by resource-id, text, or content-desc in the UIAutomator XML.
+   * Returns the center coordinates of the matching element's bounds, or null if not found.
+   */
+  private findElementBounds(
+    xml: string,
+    matcher: { resourceId?: string; text?: RegExp; contentDesc?: RegExp },
+  ): { cx: number; cy: number } | null {
+    // Parse all nodes from the XML — each <node ...> block
+    const nodeRegex = /<node\b[^>]*>/g
+    let nodeMatch: RegExpExecArray | null
+
+    while ((nodeMatch = nodeRegex.exec(xml)) !== null) {
+      const nodeStr = nodeMatch[0]
+
+      // Check resource-id match
+      if (matcher.resourceId) {
+        const ridMatch = nodeStr.match(/resource-id="([^"]*)"/)
+        if (!ridMatch || ridMatch[1] !== matcher.resourceId) continue
+      }
+
+      // Check text match (regex)
+      if (matcher.text) {
+        const textMatch = nodeStr.match(/\btext="([^"]*)"/)
+        if (!textMatch || !matcher.text.test(textMatch[1])) continue
+      }
+
+      // Check content-desc match (regex)
+      if (matcher.contentDesc) {
+        const descMatch = nodeStr.match(/content-desc="([^"]*)"/)
+        if (!descMatch || !matcher.contentDesc.test(descMatch[1])) continue
+      }
+
+      // Extract bounds [x1,y1][x2,y2]
+      const boundsMatch = nodeStr.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/)
+      if (!boundsMatch) continue
+
+      const x1 = Number(boundsMatch[1])
+      const y1 = Number(boundsMatch[2])
+      const x2 = Number(boundsMatch[3])
+      const y2 = Number(boundsMatch[4])
+      return { cx: Math.round((x1 + x2) / 2), cy: Math.round((y1 + y2) / 2) }
+    }
+
+    return null
+  }
+
+  /**
+   * Escape special regex characters in a string to safely use it in a RegExp constructor.
+   */
+  private escapeRegex(str: string): string {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   }
 
   private async tapSendButton(deviceSerial: string): Promise<void> {
