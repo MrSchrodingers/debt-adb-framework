@@ -16,7 +16,6 @@ import type { Message } from '../queue/types.js'
 import type { SendWindow } from './send-window.js'
 import type { SenderWarmup } from './sender-warmup.js'
 import type { DeviceCircuitBreaker } from './device-circuit-breaker.js'
-import { selectDevice } from './dispatcher.js'
 
 export interface WorkerOrchestratorDeps {
   db: Database.Database
@@ -40,8 +39,8 @@ export interface WorkerOrchestratorDeps {
 }
 
 export class WorkerOrchestrator {
-  private workerRunning = false
-  private currentForegroundUser = 0
+  private devicesRunning = new Set<string>()
+  private deviceForegroundUser = new Map<string, number>()
   private cappedSendersCooldown = new Map<string, number>()
   private lastWindowLogAt: number | null = null
   private sendMetadata = new Map<string, {
@@ -52,7 +51,7 @@ export class WorkerOrchestrator {
   constructor(private readonly deps: WorkerOrchestratorDeps) {}
 
   get isRunning(): boolean {
-    return this.workerRunning
+    return this.devicesRunning.size > 0
   }
 
   async processMessage(message: Message, deviceSerial: string, isFirstInBatch = true, appPackage = 'com.whatsapp'): Promise<boolean> {
@@ -118,7 +117,8 @@ export class WorkerOrchestrator {
   }
 
   async switchToUser(deviceSerial: string, profileId: number): Promise<boolean> {
-    if (profileId === this.currentForegroundUser) return true
+    const currentUser = this.deviceForegroundUser.get(deviceSerial) ?? 0
+    if (profileId === currentUser) return true
     if (!Number.isInteger(profileId) || profileId < 0) return false
 
     await this.deps.adb.shell(deviceSerial, `am switch-user ${profileId}`)
@@ -127,9 +127,9 @@ export class WorkerOrchestrator {
     for (let i = 0; i < 10; i++) {
       await new Promise(r => setTimeout(r, 1000))
       const output = await this.deps.adb.shell(deviceSerial, 'am get-current-user')
-      const currentUser = parseInt(output.trim(), 10)
-      if (currentUser === profileId) {
-        this.currentForegroundUser = profileId
+      const polledUser = parseInt(output.trim(), 10)
+      if (polledUser === profileId) {
+        this.deviceForegroundUser.set(deviceSerial, profileId)
         // Disable autocorrect for this user profile (prevents keyboard altering messages)
         await this.deps.adb.shell(deviceSerial, 'settings put secure spell_checker_enabled 0').catch(() => {})
         await this.deps.adb.shell(deviceSerial, 'settings put system text_auto_replace 0').catch(() => {})
@@ -144,9 +144,6 @@ export class WorkerOrchestrator {
   }
 
   async tick(): Promise<void> {
-    if (this.workerRunning) return
-    this.workerRunning = true
-
     // Send window gate — skip if outside business hours
     if (this.deps.sendWindow && !this.deps.sendWindow.isOpen()) {
       const now = Date.now()
@@ -157,31 +154,37 @@ export class WorkerOrchestrator {
         )
         this.lastWindowLogAt = now
       }
-      this.workerRunning = false
       return
     }
 
-    const { db, queue, emitter, senderMapping, senderHealth, rateLimitGuard, accountMutex, deviceManager, latestHealthMap, logger } = this.deps
+    const { deviceManager } = this.deps
+    const devices = deviceManager.getDevices().filter(d => d.status === 'online')
+    if (devices.length === 0) return
+
+    // Process each online device in parallel (each device runs sequentially within)
+    const promises = devices.map(device => this.tickDevice(device.serial))
+    await Promise.allSettled(promises)
+  }
+
+  private async tickDevice(deviceSerial: string): Promise<void> {
+    // Per-device lock — skip if already processing on this device
+    if (this.devicesRunning.has(deviceSerial)) return
+    this.devicesRunning.add(deviceSerial)
+
+    // Circuit breaker: skip if device circuit is open
+    if (this.deps.circuitBreaker && !this.deps.circuitBreaker.canExecute(deviceSerial)) {
+      this.deps.logger.warn({ device: deviceSerial, state: this.deps.circuitBreaker.getState(deviceSerial) },
+        'Worker: device circuit breaker open, skipping tick')
+      this.devicesRunning.delete(deviceSerial)
+      return
+    }
+
+    const { queue, senderMapping, senderHealth, rateLimitGuard, accountMutex, logger } = this.deps
     let releaseMutex: (() => void) | null = null
-    let selectedDeviceSerial: string | null = null
 
     try {
-      const online = selectDevice(deviceManager.getDevices(), latestHealthMap, db)
-        ?? deviceManager.getDevices().find(d => d.status === 'online')
-      if (!online) return
-
-      selectedDeviceSerial = online.serial
-
-      // Circuit breaker: skip if device circuit is open
-      if (this.deps.circuitBreaker && !this.deps.circuitBreaker.canExecute(online.serial)) {
-        logger.warn({ device: online.serial, state: this.deps.circuitBreaker.getState(online.serial) },
-          'Worker: device circuit breaker open, skipping tick')
-        this.workerRunning = false
-        return
-      }
-
       // DP-5: Dequeue batch grouped by sender (minimizes user switches)
-      const batch = queue.dequeueBySender(online.serial)
+      const batch = queue.dequeueBySender(deviceSerial)
       if (batch.length === 0) return
 
       const senderNumber = batch[0].senderNumber
@@ -245,10 +248,11 @@ export class WorkerOrchestrator {
       const senderProfile = senderNumber ? senderMapping.getByPhone(senderNumber) : null
       const profileId = senderProfile?.profile_id ?? 0
       const appPackage = senderProfile?.app_package ?? 'com.whatsapp'
-      const userSwitched = profileId !== this.currentForegroundUser
+      const currentFgUser = this.deviceForegroundUser.get(deviceSerial) ?? 0
+      const userSwitched = profileId !== currentFgUser
 
       if (userSwitched) {
-        const switched = await this.switchToUser(online.serial, profileId)
+        const switched = await this.switchToUser(deviceSerial, profileId)
         if (!switched) {
           logger.error({ profileId, batchSize: batch.length }, 'Worker: skipping batch — user switch failed')
           // Requeue the batch
@@ -259,7 +263,7 @@ export class WorkerOrchestrator {
         }
       }
 
-      logger.info({ batchSize: batch.length, senderNumber, profileId, userSwitched, device: online.serial }, 'Worker: processing sender batch')
+      logger.info({ batchSize: batch.length, senderNumber, profileId, userSwitched, device: deviceSerial }, 'Worker: processing sender batch')
 
       for (let i = 0; i < batch.length; i++) {
         const message = batch[i]
@@ -270,7 +274,7 @@ export class WorkerOrchestrator {
           profileId, userSwitched, ts: Date.now(),
           appPackage, senderNumber: senderNumber ?? null, isFirstContact,
         })
-        const success = await this.processMessage(message, online.serial, i === 0, appPackage)
+        const success = await this.processMessage(message, deviceSerial, i === 0, appPackage)
         if (senderNumber) {
           if (success) {
             senderHealth.recordSuccess(senderNumber)
@@ -302,19 +306,19 @@ export class WorkerOrchestrator {
       }
 
       // Circuit breaker: record success after batch completes without throwing
-      if (this.deps.circuitBreaker && selectedDeviceSerial) {
-        this.deps.circuitBreaker.recordSuccess(selectedDeviceSerial)
+      if (this.deps.circuitBreaker) {
+        this.deps.circuitBreaker.recordSuccess(deviceSerial)
       }
     } catch (err) {
-      logger.error({ err }, 'Worker: batch processing failed')
+      logger.error({ err, device: deviceSerial }, 'Worker: batch processing failed')
 
       // Circuit breaker: record failure on unhandled batch error
-      if (this.deps.circuitBreaker && selectedDeviceSerial) {
-        this.deps.circuitBreaker.recordFailure(selectedDeviceSerial)
+      if (this.deps.circuitBreaker) {
+        this.deps.circuitBreaker.recordFailure(deviceSerial)
       }
     } finally {
       if (releaseMutex) releaseMutex()
-      this.workerRunning = false
+      this.devicesRunning.delete(deviceSerial)
     }
   }
 

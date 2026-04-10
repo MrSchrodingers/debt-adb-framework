@@ -127,7 +127,9 @@ function createDeps(
 }
 
 const DEVICE_SERIAL = 'test-device-001'
+const DEVICE_SERIAL_2 = 'test-device-002'
 const SENDER_NUMBER = '5543999990001'
+const SENDER_NUMBER_2 = '5543999990002'
 
 /** Insert an online device into DB + health map so selectDevice finds it. */
 function seedDeviceOnline(deps: WorkerOrchestratorDeps): void {
@@ -343,7 +345,67 @@ describe('WorkerOrchestrator', () => {
     expect(failedEvents).toHaveLength(1)
   })
 
-  // 9. suppresses log spam for capped sender
+  // 9. processes batches on multiple devices in parallel
+  it('processes batches on multiple devices in parallel', async () => {
+    seedDeviceOnline(deps)
+
+    // Seed second device
+    deps.db.prepare(
+      "INSERT OR REPLACE INTO devices (serial, brand, model, status, last_seen_at) VALUES (?, 'Test', 'Phone2', 'online', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+    ).run(DEVICE_SERIAL_2)
+    deps.latestHealthMap.set(DEVICE_SERIAL_2, {
+      serial: DEVICE_SERIAL_2,
+      batteryPercent: 75,
+      temperatureCelsius: 32,
+      ramAvailableMb: 900,
+      storageFreeBytes: 1.5e9,
+      wifiConnected: true,
+      collectedAt: new Date().toISOString(),
+    })
+
+    // Map sender 1 to device 1, sender 2 to device 2
+    seedSenderMapping(deps)
+    deps.senderMapping.create({
+      phoneNumber: SENDER_NUMBER_2,
+      deviceSerial: DEVICE_SERIAL_2,
+      profileId: 0,
+      appPackage: 'com.whatsapp',
+    })
+
+    // Enqueue messages for both senders
+    const msg1 = deps.queue.enqueue({
+      to: '5543991938235',
+      body: 'Msg device 1',
+      idempotencyKey: `parallel-d1-${Date.now()}`,
+      senderNumber: SENDER_NUMBER,
+    })
+    const msg2 = deps.queue.enqueue({
+      to: '5543991938235',
+      body: 'Msg device 2',
+      idempotencyKey: `parallel-d2-${Date.now()}`,
+      senderNumber: SENDER_NUMBER_2,
+    })
+
+    const processedDevices: string[] = []
+    vi.spyOn(deps.engine, 'send').mockImplementation(async (message, deviceSerial) => {
+      processedDevices.push(deviceSerial as string)
+      deps.queue.updateStatus(message.id, 'sent')
+      return { screenshot: Buffer.from('ok'), durationMs: 50, contactRegistered: false, dialogsDismissed: 0 }
+    })
+
+    await orchestrator.tick()
+
+    // Both messages should be sent
+    expect(deps.queue.getById(msg1.id)!.status).toBe('sent')
+    expect(deps.queue.getById(msg2.id)!.status).toBe('sent')
+
+    // Both devices should have been used
+    expect(processedDevices).toHaveLength(2)
+    expect(processedDevices).toContain(DEVICE_SERIAL)
+    expect(processedDevices).toContain(DEVICE_SERIAL_2)
+  })
+
+  // 10. suppresses log spam for capped sender
   it('suppresses log spam for capped sender', async () => {
     const cappedGuard = new RateLimitGuard({ maxPerSenderPerDay: 0 })
     deps = createDeps(db, { rateLimitGuard: cappedGuard })
