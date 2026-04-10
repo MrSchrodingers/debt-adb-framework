@@ -1,17 +1,17 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { RateLimiter } from './rate-limiter.js'
+import { PairRateLimiter } from './pair-rate-limiter.js'
 import { DEFAULT_RATE_LIMIT_CONFIG } from './types.js'
 import { InMemoryRateLimitStore } from './__test-utils__/in-memory-rate-limit-store.js'
 
-describe('RateLimiter', () => {
+describe('PairRateLimiter', () => {
   let store: InMemoryRateLimitStore
-  let limiter: RateLimiter
+  let limiter: PairRateLimiter
   let currentTime: number
 
   beforeEach(() => {
     currentTime = 1000000000 // ~11.5 days in ms — enough room for 61min offsets
     store = new InMemoryRateLimitStore(() => currentTime)
-    limiter = new RateLimiter(store, DEFAULT_RATE_LIMIT_CONFIG, () => currentTime)
+    limiter = new PairRateLimiter(store, DEFAULT_RATE_LIMIT_CONFIG, () => currentTime)
   })
 
   describe('getVolumeScale', () => {

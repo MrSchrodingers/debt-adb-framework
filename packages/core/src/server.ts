@@ -1,12 +1,13 @@
+import { readdir, unlink, stat } from 'node:fs/promises'
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import Database from 'better-sqlite3'
 import { Server as SocketIOServer } from 'socket.io'
 import { MessageQueue } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
-import { SendEngine, selectDevice, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback } from './engine/index.js'
+import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
-import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes } from './api/index.js'
+import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes } from './api/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
 import { SessionManager, WebhookHandler, MessageHistory } from './waha/index.js'
 import { createWahaHttpClient } from './waha/waha-http-client.js'
@@ -14,6 +15,11 @@ import { createChatwootHttpClient, ManagedSessions, InboxAutomation } from './ch
 import { PluginRegistry, PluginEventBus, CallbackDelivery, PluginLoader } from './plugins/index.js'
 import { buildLoggerConfig } from './config/logger.js'
 import { GracefulShutdown } from './config/graceful-shutdown.js'
+import { RateLimitGuard } from './config/rate-limits.js'
+import { parseConfig } from './config/config-schema.js'
+import { AuditLogger } from './config/audit-logger.js'
+import { ScreenshotPolicy } from './config/screenshot-policy.js'
+import { metricsRegistry, messagesSentTotal, messagesFailedTotal, messagesQueuedTotal, sendDurationSeconds, interMessageDelaySeconds, queueDepth, devicesOnline, senderDailyCount, quarantineEventsTotal, senderQuarantined } from './config/metrics.js'
 import { OralsinPlugin } from './plugins/oralsin-plugin.js'
 import type { DispatchEventName } from './events/index.js'
 import type { DispatchPlugin } from './plugins/types.js'
@@ -29,6 +35,10 @@ export interface DispatchCore {
 }
 
 export async function createServer(port = Number(process.env.PORT) || 7890): Promise<DispatchCore> {
+  // Validate all env vars upfront — crash fast on misconfiguration
+  const config = parseConfig(process.env as Record<string, string | undefined>)
+  void config // TODO: incrementally migrate process.env reads to use config
+
   const loggerConfig = buildLoggerConfig(process.env.NODE_ENV, process.env.LOG_FILE)
   const server = Fastify({
     logger: loggerConfig,
@@ -45,9 +55,63 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const queue = new MessageQueue(db)
   queue.initialize()
 
+  const auditLogger = new AuditLogger(db)
+
   const adb = new AdbBridge()
   const emitter = new DispatchEmitter()
-  const engine = new SendEngine(adb, queue, emitter)
+  const strategy = SendStrategy.fromEnv(process.env as Record<string, string | undefined>)
+  const eventRecorder = new EventRecorder(db)
+  const screenshotPolicy = ScreenshotPolicy.fromEnv(process.env as Record<string, string | undefined>)
+  const contactCache = new ContactCache()
+  const optOutDetector = new OptOutDetector()
+  const mediaSender = new MediaSender(adb)
+  const engine = new SendEngine(adb, queue, emitter, strategy, eventRecorder, screenshotPolicy, contactCache, mediaSender)
+
+  // ── Prometheus metrics collection ──
+  emitter.on('message:sent', (data) => {
+    messagesSentTotal.inc({
+      sender: data.senderNumber ?? 'unknown',
+      method: data.strategyMethod ?? 'unknown',
+      app_package: data.appPackage ?? 'unknown',
+    })
+    sendDurationSeconds.observe(
+      { method: data.strategyMethod ?? 'unknown' },
+      data.durationMs / 1000,
+    )
+    if (data.interMessageDelayMs !== undefined && data.interMessageDelayMs > 0) {
+      interMessageDelaySeconds.observe(
+        { is_first_contact: data.isFirstContact ? 'true' : 'false' },
+        data.interMessageDelayMs / 1000,
+      )
+    }
+  })
+
+  emitter.on('message:failed', (data) => {
+    messagesFailedTotal.inc({
+      sender: data.senderNumber ?? 'unknown',
+      error_type: data.attempts !== undefined && data.attempts > 3 ? 'exhausted' : 'transient',
+    })
+  })
+
+  emitter.on('message:queued', () => {
+    messagesQueuedTotal.inc({ plugin: 'direct' })
+  })
+
+  emitter.on('sender:quarantined', (data) => {
+    quarantineEventsTotal.inc({ sender: data.sender })
+    senderQuarantined.set({ sender: data.sender }, 1)
+  })
+
+  emitter.on('sender:released', (data) => {
+    senderQuarantined.set({ sender: data.sender }, 0)
+  })
+
+  const senderWarmup = new SenderWarmup(db)
+  const rateLimitGuard = RateLimitGuard.fromEnv(process.env as Record<string, string | undefined>)
+  const senderHealth = new SenderHealth(db, {
+    quarantineAfterFailures: Number(process.env.QUARANTINE_AFTER_FAILURES) || 3,
+    quarantineDurationMs: Number(process.env.QUARANTINE_DURATION_MS) || 3_600_000,
+  }, emitter)
 
   // Initialize monitor modules
   const deviceManager = new DeviceManager(db, emitter, adb)
@@ -130,43 +194,53 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         failed_last_hour: queueStats.failedLastHour,
       },
       plugins: pluginStatus,
+      failed_callbacks: callbackDelivery.listFailedCallbacks().length,
       pid: process.pid,
     }
   })
+  // Prometheus metrics endpoint (unauthenticated — standard for /metrics)
+  server.get('/metrics', async (_request, reply) => {
+    const metrics = await metricsRegistry.metrics()
+    reply.header('content-type', metricsRegistry.contentType)
+    return reply.send(metrics)
+  })
+
   registerMessageRoutes(server, queue, emitter)
   registerDeviceRoutes(server, adb)
   registerMonitorRoutes(server, { adb, engine, deviceManager, healthCollector, waMapper, alertSystem })
 
   // WAHA routes always registered (webhook receiver works without WAHA client)
   // sessionManager may be null if WAHA_API_URL not configured
-  registerWahaRoutes(server, { webhookHandler, sessionManager, messageHistory })
+  // WAHA routes registered after senderMapping init (see below)
 
   // Session management routes (Phase 5)
   registerSessionRoutes(server, { inboxAutomation, managedSessions })
 
   // Metrics routes (Phase 6)
   registerMetricsRoutes(server, db)
-  registerAuditRoutes(server, db)
+  registerAuditRoutes(server, db, auditLogger)
   registerBulkActionRoutes(server, adb)
 
-  // Manual phone number mapping for profiles
-  server.put('/api/v1/devices/:serial/profiles/:profileId/phone', async (request, reply) => {
-    const { serial, profileId } = request.params as { serial: string; profileId: string }
-    const body = request.body as { phone: string; package?: string }
-    if (!body?.phone) return reply.status(400).send({ error: 'phone is required' })
-    const pkg = body.package ?? 'com.whatsapp'
-    const uid = Number(profileId)
-    db.prepare(`
-      INSERT INTO whatsapp_accounts (device_serial, profile_id, package_name, phone_number, updated_at)
-      VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-      ON CONFLICT(device_serial, profile_id, package_name) DO UPDATE SET
-        phone_number = excluded.phone_number, updated_at = excluded.updated_at
-    `).run(serial, uid, pkg, body.phone)
-    server.log.info({ serial, profileId: uid, phone: body.phone }, 'Phone number set manually')
-    return reply.send({ serial, profileId: uid, phone: body.phone })
-  })
+  // Plugin monitoring routes
+  registerPluginOralsinRoutes(server, db)
+  registerScreenshotRoutes(server, queue)
+  registerTraceRoutes(server, eventRecorder)
+  registerBlacklistRoutes(server, db)
 
-  let workerRunning = false
+  // Manual phone number mapping moved to api/devices.ts
+
+  // Reset permanently_failed → queued (manual recovery for lost messages)
+  server.post('/api/v1/messages/:id/retry', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const message = queue.getById(id)
+    if (!message) return reply.status(404).send({ error: 'Message not found' })
+    if (message.status !== 'permanently_failed' && message.status !== 'failed') {
+      return reply.status(409).send({ error: `Cannot retry message in status: ${message.status}` })
+    }
+    const updated = queue.requeueForRetry(id)
+    emitter.emit('message:queued', { id: updated.id, to: updated.to, priority: updated.priority })
+    return { id: updated.id, status: updated.status, attempts: updated.attempts }
+  })
 
   server.post('/api/v1/messages/:id/send', async (request, reply) => {
     const { id } = request.params as { id: string }
@@ -178,7 +252,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     if (message.status !== 'queued' && message.status !== 'failed') {
       return reply.status(409).send({ error: `Cannot send message in status: ${message.status}` })
     }
-    if (workerRunning) {
+    if (orchestrator.isRunning) {
       return reply.status(409).send({ error: 'Worker is currently sending. Try again shortly.' })
     }
 
@@ -215,7 +289,11 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // ── Sender Mapping (DP-1) ──
   const senderMapping = new SenderMapping(db)
   senderMapping.initialize()
-  registerSenderMappingRoutes(server, senderMapping)
+  registerSenderMappingRoutes(server, senderMapping, auditLogger)
+  registerSenderRoutes(server, { senderWarmup, senderMapping, senderHealth, queue })
+
+  // WAHA routes (after senderMapping init — pair endpoint needs it)
+  registerWahaRoutes(server, { webhookHandler, sessionManager, messageHistory, adb, senderMapping })
 
   // ── WAHA Fallback + Account Mutex (DP-3) ──
   const accountMutex = new AccountMutex()
@@ -290,6 +368,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       const msg = queue.getById(data.id)
       if (msg?.pluginName) {
         const { senderSession, pairUsed } = parseSenderInfo(msg)
+        const meta = orchestrator.getSendMetadata(data.id)
+
         void callbackDelivery.sendResultCallback(msg.pluginName, msg.id, {
           idempotency_key: msg.idempotencyKey,
           correlation_id: msg.correlationId ?? undefined,
@@ -303,6 +383,13 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
             pair_used: pairUsed,
             used_fallback: msg.fallbackUsed === 1,
             elapsed_ms: data.durationMs,
+            device_serial: data.deviceSerial,
+            profile_id: meta?.profileId ?? 0,
+            char_count: msg.body.length,
+            contact_registered: data.contactRegistered,
+            screenshot_url: msg.screenshotPath ? `/api/v1/messages/${msg.id}/screenshot` : null,
+            dialogs_dismissed: data.dialogsDismissed,
+            user_switched: meta?.userSwitched ?? false,
           },
           error: null,
           fallback_reason: msg.fallbackUsed ? { original_error: 'adb_failed', original_session: senderSession, quarantined: false } : undefined,
@@ -312,6 +399,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     })
 
     emitter.on('message:failed', (data) => {
+      orchestrator.getSendMetadata(data.id) // cleanup metadata (return value unused)
       const msg = queue.getById(data.id)
       if (msg?.pluginName) {
         void callbackDelivery.sendResultCallback(msg.pluginName, msg.id, {
@@ -418,6 +506,29 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     receiptTracker.handleAck(data.wahaMessageId, data.ackLevel, timestamp)
   })
 
+  // ── Opt-out detection on WAHA incoming messages ──
+  emitter.on('waha:message_received', (data) => {
+    const history = messageHistory.query({ fromNumber: data.fromNumber, limit: 1 })
+    if (history.length === 0) return
+
+    const text = history[0].text
+    const result = optOutDetector.detect(text)
+    if (result.matched) {
+      db.prepare(
+        'INSERT OR IGNORE INTO blacklist (phone_number, reason, detected_message, detected_pattern, source_session) VALUES (?, ?, ?, ?, ?)',
+      ).run(data.fromNumber, 'auto_detected', text, result.pattern, data.sessionName)
+
+      emitter.emit('contact:opted_out', {
+        phone: data.fromNumber,
+        pattern: result.pattern,
+        sourceSession: data.sessionName,
+        messageText: text ?? '',
+      })
+
+      server.log.info({ phone: data.fromNumber, pattern: result.pattern }, 'Opt-out detected — phone blacklisted')
+    }
+  })
+
   // Admin routes for plugin management
   server.get('/api/v1/admin/plugins', async (_req, reply) => {
     return reply.send(pluginRegistry.listPlugins())
@@ -433,21 +544,43 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   server.patch('/api/v1/admin/plugins/:name', async (req, reply) => {
     const { name } = req.params as { name: string }
     const body = req.body as { enabled?: boolean; webhookUrl?: string; events?: string[] }
+    const beforeState = pluginRegistry.getPlugin(name)
     if (body.enabled === false) pluginRegistry.disablePlugin(name)
     if (body.enabled === true) pluginRegistry.enablePlugin(name)
     if (body.webhookUrl || body.events) pluginRegistry.updatePlugin(name, body)
-    return reply.send(pluginRegistry.getPlugin(name))
+    const afterState = pluginRegistry.getPlugin(name)
+    auditLogger.log({
+      action: 'update',
+      resourceType: 'plugin',
+      resourceId: name,
+      beforeState: beforeState ? { status: beforeState.status, webhookUrl: beforeState.webhookUrl, events: beforeState.events } : null,
+      afterState: afterState ? { status: afterState.status, webhookUrl: afterState.webhookUrl, events: afterState.events } : null,
+    })
+    return reply.send(afterState)
   })
 
   server.delete('/api/v1/admin/plugins/:name', async (req, reply) => {
     const { name } = req.params as { name: string }
+    const beforeState = pluginRegistry.getPlugin(name)
     pluginRegistry.deletePlugin(name)
+    auditLogger.log({
+      action: 'delete',
+      resourceType: 'plugin',
+      resourceId: name,
+      beforeState: beforeState ? { status: beforeState.status, webhookUrl: beforeState.webhookUrl, events: beforeState.events } : null,
+    })
     return reply.status(204).send()
   })
 
   server.post('/api/v1/admin/plugins/:name/rotate-key', async (req, reply) => {
     const { name } = req.params as { name: string }
     const newKey = pluginRegistry.rotateApiKey(name)
+    auditLogger.log({
+      action: 'rotate_key',
+      resourceType: 'plugin',
+      resourceId: name,
+      // Intentionally not logging the key value for security
+    })
     return reply.send({ api_key: newKey })
   })
 
@@ -460,18 +593,33 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       'svc power stayon usb',
       'locksettings set-disabled true',
       'input keyevent KEYCODE_WAKEUP',
+      // Disable autocorrect/autocomplete — prevents keyboard from altering message text
+      'settings put secure spell_checker_enabled 0',
+      'settings put system text_auto_replace 0',
+      'settings put system text_auto_caps 0',
+      'settings put system text_auto_punctuate 0',
     ]
     for (const cmd of commands) {
       adb.shell(serial, cmd).catch((err) => {
         server.log.warn({ serial, cmd, err: (err as Error).message }, 'Keep-awake command failed')
       })
     }
+
+    // Disable Play Store to prevent WA auto-updates that could break automation
+    adb.shell(serial, 'pm disable-user --user 0 com.android.vending').catch((err) => {
+      server.log.warn({ serial, err: (err as Error).message }, 'Failed to disable Play Store')
+    })
+
+    // Warm contact cache from DB — eliminates cold-start cache misses
+    const contacts = queue.getAllContactPhones()
+    contactCache.warmUp(serial, contacts)
+    server.log.info({ serial, contacts: contacts.length }, 'Contact cache warmed')
   })
 
   // Device discovery polling (5s) — managed by DeviceManager
   deviceManager.startPolling(5_000)
 
-  // In-memory health map for selectDevice (populated by health interval)
+  // In-memory health map for WorkerOrchestrator (populated by health interval)
   const latestHealthMap = new Map<string, import('./monitor/types.js').HealthSnapshot>()
 
   // Health collection polling (30s) — per-device error isolation
@@ -519,6 +667,36 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     receiptTracker.cleanup() // DP-2: remove correlations older than 48h
   }, 3_600_000)
 
+  // Screenshot retention cleanup (hourly) — deletes files older than retentionDays
+  const screenshotCleanupInterval = setInterval(async () => {
+    const retentionMs = screenshotPolicy.retentionDays * 24 * 60 * 60 * 1000
+    const cutoff = Date.now() - retentionMs
+    try {
+      const files = await readdir('reports/sends')
+      for (const file of files) {
+        const filePath = `reports/sends/${file}`
+        try {
+          const fileStat = await stat(filePath)
+          if (fileStat.mtimeMs < cutoff) {
+            await unlink(filePath)
+          }
+        } catch { /* file may have been deleted between readdir and stat */ }
+      }
+    } catch { /* directory may not exist yet */ }
+  }, 3_600_000)
+
+  // Prometheus gauge refresh (30s) — queue depth + device count + sender daily counts
+  const metricsInterval = setInterval(() => {
+    const stats = queue.getQueueStats()
+    queueDepth.set(stats.pending + stats.processing)
+    devicesOnline.set(deviceManager.getDevices().filter(d => d.status === 'online').length)
+    // Per-sender daily count gauges
+    for (const mapping of senderMapping.listAll()) {
+      const count = queue.getSenderDailyCount(mapping.phone_number)
+      senderDailyCount.set({ sender: mapping.phone_number }, count)
+    }
+  }, 30_000)
+
   const cleanupInterval = setInterval(() => {
     const cleaned = queue.cleanStaleLocks()
     if (cleaned > 0) {
@@ -526,92 +704,28 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     }
   }, 30_000)
 
-  // DP-5: Helper to process a single message (ADB + WAHA fallback)
-  const processMessage = async (message: import('./queue/types.js').Message, deviceSerial: string) => {
-    let sendSuccess = false
-    let usedFallback = false
+  // DP-5: Worker orchestrator — extracted from inline closures
+  const sendWindow = new SendWindow({
+    start: Number(process.env.SEND_WINDOW_START) || 7,
+    end: Number(process.env.SEND_WINDOW_END) || 21,
+    days: process.env.SEND_WINDOW_DAYS || '1,2,3,4,5',
+    utcOffsetHours: Number(process.env.SEND_WINDOW_OFFSET_HOURS) || -3,
+  })
 
-    try {
-      await engine.send(message, deviceSerial)
-      sendSuccess = true
-    } catch (adbErr) {
-      server.log.warn({ messageId: message.id, err: adbErr }, 'Worker: ADB send failed, attempting WAHA fallback')
+  const circuitBreaker = new DeviceCircuitBreaker()
 
-      // Reset status to 'sending' to suppress premature 'failed' callback
-      try { queue.updateStatus(message.id, 'sending') } catch { /* ignore */ }
-
-      try {
-        const fallbackResult = await wahaFallback.send(message)
-        server.log.info({ messageId: message.id, wahaMessageId: fallbackResult.wahaMessageId }, 'Worker: WAHA fallback succeeded')
-        queue.updateStatus(message.id, 'sent')
-        emitter.emit('message:sent', { id: message.id, sentAt: new Date().toISOString(), durationMs: 0 })
-        sendSuccess = true
-        usedFallback = true
-      } catch (wahaErr) {
-        server.log.error({ messageId: message.id, err: wahaErr }, 'Worker: WAHA fallback also failed')
-        queue.updateStatus(message.id, 'permanently_failed')
-        emitter.emit('message:failed', {
-          id: message.id,
-          error: `ADB and WAHA fallback both failed: ${wahaErr instanceof Error ? wahaErr.message : String(wahaErr)}`,
-        })
-      }
-    }
-
-    if (sendSuccess) {
-      messageHistory.insert({
-        messageId: message.id,
-        direction: 'outgoing',
-        fromNumber: message.senderNumber,
-        toNumber: message.to,
-        text: message.body,
-        deviceSerial,
-        capturedVia: usedFallback ? 'waha_webhook' : 'adb_send',
-      })
-
-      if (message.senderNumber) {
-        receiptTracker.registerSent({
-          messageId: message.id,
-          toNumber: message.to,
-          senderNumber: message.senderNumber,
-          sentAt: new Date().toISOString(),
-        })
-      }
-    }
-  }
-
-  // DP-5: Worker loop uses sender-grouped dequeue
-  const workerInterval = setInterval(async () => {
-    if (workerRunning) return
-    workerRunning = true
-
-    let releaseMutex: (() => void) | null = null
-
-    try {
-      const online = selectDevice(deviceManager.getDevices(), latestHealthMap, db)
-        ?? deviceManager.getDevices().find(d => d.status === 'online')
-      if (!online) return
-
-      // DP-5: Dequeue batch grouped by sender (minimizes user switches)
-      const batch = queue.dequeueBySender(online.serial)
-      if (batch.length === 0) return
-
-      const senderNumber = batch[0].senderNumber
-      if (senderNumber) {
-        releaseMutex = await accountMutex.acquire(senderNumber)
-      }
-
-      server.log.info({ batchSize: batch.length, senderNumber, device: online.serial }, 'Worker: processing sender batch')
-
-      for (const message of batch) {
-        await processMessage(message, online.serial)
-      }
-    } catch (err) {
-      server.log.error({ err }, 'Worker: batch processing failed')
-    } finally {
-      if (releaseMutex) releaseMutex()
-      workerRunning = false
-    }
-  }, 5_000)
+  const orchestrator = new WorkerOrchestrator({
+    db, queue, engine, adb, emitter, senderMapping, senderHealth,
+    rateLimitGuard, receiptTracker, accountMutex, wahaFallback,
+    messageHistory, deviceManager,
+    latestHealthMap,
+    logger: server.log,
+    sendWindow,
+    senderWarmup,
+    circuitBreaker,
+  })
+  const workerInterval = setInterval(() => orchestrator.tick(), 5_000)
+  const metadataCleanupInterval = setInterval(() => orchestrator.cleanupMetadata(), 60_000)
 
   // WAHA session health polling (60s) and history cleanup (hourly)
   if (sessionManager) {
@@ -621,6 +735,31 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const historyCleanupInterval = setInterval(() => {
     messageHistory.cleanup(retentionDays)
   }, 3_600_000)
+
+  // Periodic callback retry worker (60s) — retries failed callbacks, max 20 per cycle
+  let callbackRetryRunning = false
+  const callbackRetryInterval = setInterval(async () => {
+    if (callbackRetryRunning) return
+    callbackRetryRunning = true
+    try {
+    const failed = callbackDelivery.listFailedCallbacks()
+    let retried = 0
+    for (const cb of failed) {
+      if (retried >= 20) break // Max 20 retries per cycle to prevent storm
+      if (cb.attempts < 10) {
+        try {
+          await callbackDelivery.retryFailedCallback(cb.id)
+          retried++
+        } catch (err) {
+          server.log.warn({ callbackId: cb.id, err }, 'Callback retry failed')
+          retried++
+        }
+      }
+    }
+    } finally {
+      callbackRetryRunning = false
+    }
+  }, 60_000)
 
   // ── Graceful Shutdown (must register hook BEFORE listen) ──
   const shutdown = new GracefulShutdown(server.log)
@@ -638,6 +777,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     'message:delivered', 'message:read',
     'device:connected', 'device:disconnected', 'device:health', 'alert:new',
     'waha:message_received', 'waha:message_sent', 'waha:session_status', 'waha:message_ack',
+    'contact:opted_out',
+    'sender:quarantined', 'sender:released',
   ]
   for (const event of events) {
     emitter.on(event, (data) => io.emit(event, data))
@@ -658,6 +799,10 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     clearInterval(historyCleanupInterval)
     clearInterval(cleanupInterval)
     clearInterval(workerInterval)
+    clearInterval(callbackRetryInterval)
+    clearInterval(metadataCleanupInterval)
+    clearInterval(metricsInterval)
+    clearInterval(screenshotCleanupInterval)
   })
 
   shutdown.addHandler('stale-locks', async () => {

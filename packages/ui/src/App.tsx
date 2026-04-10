@@ -16,9 +16,11 @@ import { DeviceInfo } from './components/device-info'
 import { ToastContainer, type Toast } from './components/toast'
 import { AuditLog } from './components/audit-log'
 import { DeviceProfileSelector, type DeviceProfileSelection } from './components/device-profile-selector'
+import { PluginTabs } from './components/plugin-tabs'
+import { SenderDashboard } from './components/sender-dashboard'
 import type { DeviceRecord, HealthSnapshot, WhatsAppAccount, Alert } from './types'
 
-type Tab = 'devices' | 'queue' | 'sessions' | 'metricas' | 'auditoria'
+type Tab = 'devices' | 'queue' | 'senders' | 'sessions' | 'metricas' | 'auditoria' | 'plugins'
 
 export function App() {
   const [devices, setDevices] = useState<DeviceRecord[]>([])
@@ -37,6 +39,10 @@ export function App() {
     profileId: null,
     senderNumber: null,
   })
+  const [sendersStatus, setSendersStatus] = useState<{
+    total: number; paused: number; quarantined: number
+  }>({ total: 0, paused: 0, quarantined: 0 })
+  const [queueDepth, setQueueDepth] = useState(0)
 
   const addToast = useCallback((type: Toast['type'], message: string) => {
     const toast: Toast = {
@@ -80,10 +86,42 @@ export function App() {
       .catch(() => {})
   }, [])
 
+  const fetchSendersStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${CORE_URL}/api/v1/senders/status`, { headers: authHeaders() })
+      if (res.ok) {
+        const data = await res.json()
+        const senders = data.senders ?? []
+        setSendersStatus({
+          total: senders.length,
+          paused: senders.filter((s: { paused: boolean }) => s.paused).length,
+          quarantined: senders.filter((s: { quarantined: boolean }) => s.quarantined).length,
+        })
+      }
+    } catch { /* ignore */ }
+  }, [])
+
+  const fetchQueueStats = useCallback(async () => {
+    try {
+      const res = await fetch(`${CORE_URL}/api/v1/metrics/by-status`, { headers: authHeaders() })
+      if (res.ok) {
+        const data = await res.json()
+        setQueueDepth((data.queued ?? 0) + (data.sending ?? 0))
+      }
+    } catch { /* ignore */ }
+  }, [])
+
   useEffect(() => {
     fetchDevices()
     fetchAlerts()
-  }, [fetchDevices, fetchAlerts])
+    fetchSendersStatus()
+    fetchQueueStats()
+    const statusInterval = setInterval(() => {
+      fetchSendersStatus()
+      fetchQueueStats()
+    }, 30_000)
+    return () => clearInterval(statusInterval)
+  }, [fetchDevices, fetchAlerts, fetchSendersStatus, fetchQueueStats])
 
   useEffect(() => {
     if (selectedSerial) fetchDetail(selectedSerial)
@@ -122,8 +160,31 @@ export function App() {
       addToast('warning', `Alerta: ${data.message ?? 'novo alerta detectado'}`)
     })
 
+    socket.on('message:delivered', (data: { id: string }) => {
+      addToast('info', `Mensagem entregue: ${data.id.slice(0, 8)}...`)
+    })
+
+    socket.on('message:read', (data: { id: string }) => {
+      addToast('info', `Mensagem lida: ${data.id.slice(0, 8)}...`)
+    })
+
+    // Sender lifecycle events
+    socket.on('sender:quarantined', (data: { sender: string; failureCount: number }) => {
+      addToast('warning', `Sender ${data.sender.slice(-4)} em quarentena — ${data.failureCount} falhas consecutivas`)
+      fetchSendersStatus()
+    })
+
+    socket.on('sender:released', (data: { sender: string }) => {
+      addToast('info', `Sender ${data.sender.slice(-4)} liberado da quarentena`)
+      fetchSendersStatus()
+    })
+
+    socket.on('contact:opted_out', (data: { phone: string; pattern: string }) => {
+      addToast('warning', `Opt-out detectado: ${data.phone.slice(-4)} ("${data.pattern}") — blacklistado`)
+    })
+
     return () => { socket.disconnect() }
-  }, [fetchDevices, fetchAlerts, fetchDetail, addToast])
+  }, [fetchDevices, fetchAlerts, fetchDetail, addToast, fetchSendersStatus])
 
   const handleSend = useCallback(async (to: string, body: string, contactName?: string) => {
     const idempotencyKey = `ui-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -193,11 +254,17 @@ export function App() {
           deviceCount={devices.length}
           onlineCount={onlineCount}
           alertCount={activeAlertCount}
+          queueDepth={queueDepth}
+          sendersPaused={sendersStatus.paused}
+          sendersQuarantined={sendersStatus.quarantined}
+          sendersTotal={sendersStatus.total}
         />
 
         {/* Content */}
         <main className="flex-1 overflow-y-auto p-4 lg:p-6">
-          {activeTab === 'sessions' ? (
+          {activeTab === 'plugins' ? (
+            <PluginTabs />
+          ) : activeTab === 'sessions' ? (
             <SessionManager />
           ) : activeTab === 'auditoria' ? (
             <div className="space-y-4">
@@ -233,6 +300,8 @@ export function App() {
               <SendForm onSend={handleSend} disabled={!hasOnlineDevice} />
               <MessageList senderNumber={dpSelection.senderNumber} />
             </div>
+          ) : activeTab === 'senders' ? (
+            <SenderDashboard />
           ) : (
             <div className="space-y-6">
               <DeviceGrid

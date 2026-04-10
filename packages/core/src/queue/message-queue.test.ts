@@ -277,6 +277,25 @@ describe('MessageQueue', () => {
     })
   })
 
+  describe('getAllContactPhones', () => {
+    it('returns empty array when no contacts exist', () => {
+      const phones = queue.getAllContactPhones()
+      expect(phones).toEqual([])
+    })
+
+    it('returns all saved contact phone numbers', () => {
+      queue.saveContact('5543991938235', 'Alice')
+      queue.saveContact('5543999999999', 'Bob')
+      queue.saveContact('5543988887777', 'Charlie')
+
+      const phones = queue.getAllContactPhones()
+      expect(phones).toHaveLength(3)
+      expect(phones).toContain('5543991938235')
+      expect(phones).toContain('5543999999999')
+      expect(phones).toContain('5543988887777')
+    })
+  })
+
   describe('getById', () => {
     it('returns message by id', () => {
       const created = queue.enqueue({

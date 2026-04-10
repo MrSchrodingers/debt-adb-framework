@@ -100,17 +100,42 @@ export function SessionManager() {
     }
   }
 
+  const [pairing, setPairing] = useState<string | null>(null)
+  const [pairSteps, setPairSteps] = useState<string[]>([])
+
   const handleShowQr = async (name: string) => {
+    setPairing(name)
+    setPairSteps(['Iniciando fluxo de pareamento...'])
+    setError(null)
+
     try {
-      const res = await fetch(`${CORE_URL}/api/v1/sessions/${encodeURIComponent(name)}/qr`, { headers: authHeaders() })
-      if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.detail || `HTTP ${res.status}`)
-      }
+      const res = await fetch(`${CORE_URL}/api/v1/waha/sessions/${encodeURIComponent(name)}/pair`, {
+        method: 'POST',
+        headers: authHeaders(),
+      })
       const data = await res.json()
-      setQrData({ sessionName: name, qr: data.qr })
+
+      if (data.steps) setPairSteps(data.steps)
+
+      if (data.qr) {
+        setQrData({ sessionName: name, qr: data.qr })
+      } else {
+        // QR not ready yet — try fetching directly
+        setPairSteps(prev => [...prev, 'Buscando QR code...'])
+        await new Promise((r) => setTimeout(r, 3000))
+        const qrRes = await fetch(`${CORE_URL}/api/v1/waha/sessions/${encodeURIComponent(name)}/qr`, { headers: authHeaders() })
+        if (qrRes.ok) {
+          const qrData = await qrRes.json()
+          setQrData({ sessionName: name, qr: qrData.qr })
+          setPairSteps(prev => [...prev, 'QR code obtido!'])
+        } else {
+          setPairSteps(prev => [...prev, 'QR nao disponivel — tente novamente em alguns segundos'])
+        }
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'QR code not available')
+      setError(err instanceof Error ? err.message : 'Pairing failed')
+    } finally {
+      setPairing(null)
     }
   }
 
@@ -235,23 +260,49 @@ export function SessionManager() {
         </div>
       )}
 
+      {/* Pairing Steps */}
+      {pairSteps.length > 0 && !qrData && (
+        <div className="rounded-lg border border-amber-800/50 bg-zinc-900 p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium text-amber-400">Pareamento em andamento...</span>
+            <button onClick={() => { setPairSteps([]); setPairing(null) }} className="text-zinc-400 hover:text-zinc-200 text-sm"><X className="h-4 w-4" /></button>
+          </div>
+          <div className="space-y-1">
+            {pairSteps.map((step, i) => (
+              <div key={i} className="text-xs text-zinc-400 flex items-center gap-2">
+                <span className="text-emerald-500">&#10003;</span> {step}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* QR Code Modal */}
       {qrData && (
         <div className="rounded-lg border border-blue-800 bg-zinc-900 p-4">
           <div className="flex items-center justify-between mb-3">
             <span className="text-sm font-medium">QR Code — {qrData.sessionName}</span>
             <button
-              onClick={() => setQrData(null)}
+              onClick={() => { setQrData(null); setPairSteps([]) }}
               className="text-zinc-400 hover:text-zinc-200 text-sm"
             >
-              close
+              <X className="h-4 w-4" />
             </button>
           </div>
+          {pairSteps.length > 0 && (
+            <div className="mb-3 space-y-0.5">
+              {pairSteps.map((step, i) => (
+                <div key={i} className="text-[11px] text-zinc-500 flex items-center gap-1.5">
+                  <span className="text-emerald-600">&#10003;</span> {step}
+                </div>
+              ))}
+            </div>
+          )}
           <div className="flex justify-center bg-white p-4 rounded">
-            <img src={`data:image/png;base64,${qrData.qr}`} alt="QR Code" className="max-w-64" />
+            <img src={qrData.qr} alt="QR Code" className="max-w-64" />
           </div>
           <p className="text-xs text-zinc-500 mt-2 text-center">
-            Scan with WhatsApp on the device to pair
+            Aponte o celular para este QR no WhatsApp &gt; Dispositivos conectados
           </p>
         </div>
       )}
@@ -305,12 +356,13 @@ export function SessionManager() {
 
               {/* Actions */}
               <div className="flex gap-1.5">
-                {session.wahaStatus === 'SCAN_QR_CODE' && (
+                {(session.wahaStatus !== 'WORKING') && (
                   <button
                     onClick={() => handleShowQr(session.sessionName)}
-                    className="rounded bg-blue-800 px-2 py-1 text-xs text-blue-100 hover:bg-blue-700"
+                    disabled={pairing === session.sessionName}
+                    className="rounded bg-blue-800 px-2 py-1 text-xs text-blue-100 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-wait"
                   >
-                    QR
+                    {pairing === session.sessionName ? 'Pareando...' : 'Parear'}
                   </button>
                 )}
                 {session.managed && !session.chatwootInboxId && (

@@ -84,6 +84,7 @@ export interface WahaApiClient {
   getSession(name: string): Promise<WahaSessionInfo>
   updateSessionWebhooks(name: string, webhooks: WahaWebhookConfig[]): Promise<void>
   restartSession(name: string): Promise<void>
+  stopSession(name: string): Promise<void>
   getServerVersion(): Promise<{ version: string; engine: string; tier: string }>
   downloadMedia(fileUrl: string): Promise<Buffer>
   getQrCode(name: string): Promise<string>

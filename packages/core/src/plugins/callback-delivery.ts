@@ -6,10 +6,10 @@ import type { ResultCallback, AckCallback, ResponseCallback, FailedCallbackRecor
 
 type FetchFn = (url: string, init: RequestInit) => Promise<Response>
 
-const MAX_RETRIES = 3
+const MAX_RETRIES = 4
 
-/** Delays in ms before each attempt: attempt 1 = 0 (immediate), attempt 2 = 5s, attempt 3 = 15s */
-const BACKOFF_DELAYS_MS = [0, 5_000, 15_000] as const
+/** Delays in ms before each attempt: attempt 1 = 0 (immediate), attempt 2 = 5s, attempt 3 = 30s, attempt 4 = 120s */
+const BACKOFF_DELAYS_MS = [0, 5_000, 30_000, 120_000] as const
 
 function sleep(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve()
@@ -117,6 +117,8 @@ export class CallbackDelivery {
       })
       if (response.ok) {
         this.getStmtDeleteFailed().run(failedId)
+      } else {
+        this.getStmtUpdateFailedAttempts().run(failedId)
       }
     } catch {
       this.getStmtUpdateFailedAttempts().run(failedId)
@@ -151,6 +153,9 @@ export class CallbackDelivery {
         })
         if (response.ok) return
         lastError = `HTTP ${response.status}`
+        // 4xx = client error (non-retryable), 503 = orphaned/not-found (non-retryable)
+        if (response.status >= 400 && response.status < 500) break
+        if (response.status === 503) break
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err)
       }
@@ -170,6 +175,7 @@ export class CallbackDelivery {
   }
 
   private sign(body: string, secret: string): string {
+    if (!secret) return ''
     return createHmac('sha256', secret).update(body).digest('hex')
   }
 }

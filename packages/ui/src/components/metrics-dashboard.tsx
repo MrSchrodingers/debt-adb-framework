@@ -48,9 +48,12 @@ interface MetricsDashboardProps {
 }
 
 export function MetricsDashboard({ senderNumber }: MetricsDashboardProps = {}) {
+  const [activeView, setActiveView] = useState<'overview' | 'grafana'>('overview')
   const [summary, setSummary] = useState<MetricsSummary | null>(null)
   const [hourly, setHourly] = useState<HourlyBucket[]>([])
   const [byStatus, setByStatus] = useState<StatusCounts | null>(null)
+
+  const grafanaUrl = import.meta.env.VITE_GRAFANA_URL as string | undefined
 
   const fetchAll = useCallback(async () => {
     try {
@@ -90,6 +93,43 @@ export function MetricsDashboard({ senderNumber }: MetricsDashboardProps = {}) {
 
   return (
     <div className="space-y-6">
+      {/* Tab switcher — only show if Grafana is configured */}
+      {grafanaUrl && (
+        <div className="flex gap-1 bg-zinc-900 rounded-lg p-1 border border-zinc-800 w-fit">
+          <button
+            onClick={() => setActiveView('overview')}
+            className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${
+              activeView === 'overview'
+                ? 'bg-zinc-800 text-zinc-100'
+                : 'text-zinc-500 hover:text-zinc-300'
+            }`}
+          >
+            Visao Geral
+          </button>
+          <button
+            onClick={() => setActiveView('grafana')}
+            className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${
+              activeView === 'grafana'
+                ? 'bg-zinc-800 text-zinc-100'
+                : 'text-zinc-500 hover:text-zinc-300'
+            }`}
+          >
+            Grafana
+          </button>
+        </div>
+      )}
+
+      {activeView === 'grafana' && grafanaUrl ? (
+        <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 overflow-hidden">
+          <iframe
+            src={`${grafanaUrl}?orgId=1&kiosk`}
+            className="w-full border-0"
+            style={{ height: 'calc(100vh - 200px)', minHeight: '600px' }}
+            title="Grafana Dashboard"
+          />
+        </div>
+      ) : (
+        <>
       {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatCard
@@ -201,6 +241,8 @@ export function MetricsDashboard({ senderNumber }: MetricsDashboardProps = {}) {
           )}
         </div>
       </div>
+        </>
+      )}
     </div>
   )
 }

@@ -17,6 +17,7 @@ export class HealthCollector {
         serial TEXT NOT NULL,
         battery_percent INTEGER NOT NULL,
         temperature_celsius REAL NOT NULL,
+        cpu_temperature_celsius REAL,
         ram_available_mb INTEGER NOT NULL,
         storage_free_bytes INTEGER NOT NULL,
         wifi_connected INTEGER NOT NULL DEFAULT 0,
@@ -24,14 +25,21 @@ export class HealthCollector {
       );
       CREATE INDEX IF NOT EXISTS idx_health_serial_time ON health_snapshots(serial, collected_at);
     `)
+
+    // Migrate existing tables: add cpu_temperature_celsius if missing
+    const columns = this.db.prepare("PRAGMA table_info(health_snapshots)").all() as { name: string }[]
+    if (!columns.some((c) => c.name === 'cpu_temperature_celsius')) {
+      this.db.exec('ALTER TABLE health_snapshots ADD COLUMN cpu_temperature_celsius REAL')
+    }
   }
 
   async collect(serial: string): Promise<HealthSnapshot> {
-    const [battery, ram, storage, wifi] = await Promise.all([
+    const [battery, ram, storage, wifi, cpuTemp] = await Promise.all([
       this.collectBattery(serial),
       this.collectRam(serial),
       this.collectStorage(serial),
       this.collectWifi(serial),
+      this.collectCpuTemperature(serial),
     ])
 
     const snapshot: HealthSnapshot = {
@@ -44,11 +52,15 @@ export class HealthCollector {
       collectedAt: new Date().toISOString(),
     }
 
+    if (cpuTemp !== null) {
+      snapshot.cpuTemperatureCelsius = cpuTemp
+    }
+
     this.db
       .prepare(
-        'INSERT INTO health_snapshots (serial, battery_percent, temperature_celsius, ram_available_mb, storage_free_bytes, wifi_connected) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO health_snapshots (serial, battery_percent, temperature_celsius, cpu_temperature_celsius, ram_available_mb, storage_free_bytes, wifi_connected) VALUES (?, ?, ?, ?, ?, ?, ?)',
       )
-      .run(serial, snapshot.batteryPercent, snapshot.temperatureCelsius, snapshot.ramAvailableMb, snapshot.storageFreeBytes, snapshot.wifiConnected ? 1 : 0)
+      .run(serial, snapshot.batteryPercent, snapshot.temperatureCelsius, snapshot.cpuTemperatureCelsius ?? null, snapshot.ramAvailableMb, snapshot.storageFreeBytes, snapshot.wifiConnected ? 1 : 0)
 
     return snapshot
   }
@@ -99,10 +111,24 @@ export class HealthCollector {
     const output = await this.adb.shell(serial, 'dumpsys wifi')
     return output.includes('Wi-Fi is enabled')
   }
+
+  private async collectCpuTemperature(serial: string): Promise<number | null> {
+    const cpuTemp = await this.adb.shell(serial,
+      'su -c "cat /sys/class/thermal/thermal_zone0/temp"',
+    ).catch(() => null)
+    if (cpuTemp && cpuTemp.trim()) {
+      const tempValue = parseInt(cpuTemp.trim(), 10)
+      if (!isNaN(tempValue)) {
+        // sysfs reports in millidegrees — convert to Celsius
+        return tempValue / 1000
+      }
+    }
+    return null
+  }
 }
 
 function rowToSnapshot(row: Record<string, unknown>): HealthSnapshot {
-  return {
+  const snapshot: HealthSnapshot = {
     serial: row.serial as string,
     batteryPercent: row.battery_percent as number,
     temperatureCelsius: row.temperature_celsius as number,
@@ -111,4 +137,8 @@ function rowToSnapshot(row: Record<string, unknown>): HealthSnapshot {
     wifiConnected: (row.wifi_connected as number) === 1,
     collectedAt: row.collected_at as string,
   }
+  if (row.cpu_temperature_celsius != null) {
+    snapshot.cpuTemperatureCelsius = row.cpu_temperature_celsius as number
+  }
+  return snapshot
 }

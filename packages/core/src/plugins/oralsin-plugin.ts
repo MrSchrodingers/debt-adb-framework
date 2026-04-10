@@ -81,6 +81,7 @@ export class OralsinPlugin implements DispatchPlugin {
 
     try {
       const params: PluginEnqueueParams[] = []
+      const rejected: Array<{ index: number; idempotency_key: string; reason: string }> = []
 
       for (let i = 0; i < items.length; i++) {
         const item = items[i]
@@ -88,15 +89,12 @@ export class OralsinPlugin implements DispatchPlugin {
         const resolved = this.ctx.resolveSenderChain(item.senders)
 
         if (!resolved) {
-          return reply.status(422).send({
-            error: 'No sender mapping found for any sender phone number',
-            details: {
-              failed_item_index: i,
-              idempotency_key: item.idempotency_key,
-              attempted_senders: item.senders.map((s: { phone: string }) => s.phone),
-              suggestion: 'Configure sender mapping via POST /api/v1/sender-mapping',
-            },
+          rejected.push({
+            index: i,
+            idempotency_key: item.idempotency_key,
+            reason: `No sender mapping for: ${item.senders.map((s: { phone: string }) => s.phone).join(', ')}`,
           })
+          continue // Skip this item, process the rest
         }
 
         params.push({
@@ -123,15 +121,24 @@ export class OralsinPlugin implements DispatchPlugin {
         })
       }
 
+      if (params.length === 0) {
+        return reply.status(422).send({
+          error: 'No messages could be enqueued — all sender resolutions failed',
+          rejected,
+        })
+      }
+
       const messages = this.ctx.enqueue(params)
 
       return reply.status(201).send({
         enqueued: messages.length,
+        rejected: rejected.length,
         messages: messages.map((m) => ({
           id: m.id,
           idempotency_key: m.idempotencyKey,
           status: m.status,
         })),
+        ...(rejected.length > 0 ? { rejected_details: rejected } : {}),
       })
     } catch (err) {
       if (err instanceof Error && err.message.includes('UNIQUE constraint failed')) {

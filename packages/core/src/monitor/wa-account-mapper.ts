@@ -100,7 +100,37 @@ export class WaAccountMapper {
             result[pkg] = match[1]
           }
         } catch {
-          // Both methods failed — continue with no phone number
+          // 3rd attempt: root access to SharedPrefs
+          try {
+            const prefsFile = PREFS_FILE[pkg]
+            await this.adb.shell(
+              serial,
+              `su -c "cp /data/user/${profileId}/${pkg}/shared_prefs/${prefsFile} /sdcard/dispatch_wa_prefs_${profileId}.xml"`,
+            )
+            const prefs = await this.adb.shell(
+              serial,
+              `cat /sdcard/dispatch_wa_prefs_${profileId}.xml`,
+            )
+
+            const ccMatch = prefs.match(/<string name="cc">(\d+)<\/string>/)
+            const jidMatch = prefs.match(/<string name="registration_jid">(\d+)@/)
+            const lidMatch = prefs.match(/<string name="self_lid">(\d+)@/)
+            const number = jidMatch?.[1] ?? lidMatch?.[1]
+
+            if (number && ccMatch) {
+              result[pkg] = ccMatch[1] + number
+            } else if (number) {
+              result[pkg] = number
+            }
+
+            // Cleanup temp file
+            await this.adb.shell(
+              serial,
+              `rm -f /sdcard/dispatch_wa_prefs_${profileId}.xml`,
+            )
+          } catch {
+            // Root not available or WA not installed — continue with no phone number
+          }
         }
       }
     }
@@ -110,15 +140,16 @@ export class WaAccountMapper {
 
   private upsertAccounts(serial: string, accounts: WhatsAppAccount[]): void {
     const txn = this.db.transaction(() => {
-      this.db.prepare('DELETE FROM whatsapp_accounts WHERE device_serial = ?').run(serial)
-
-      const insert = this.db.prepare(`
+      const upsert = this.db.prepare(`
         INSERT INTO whatsapp_accounts (device_serial, profile_id, package_name, phone_number, updated_at)
         VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        ON CONFLICT(device_serial, profile_id, package_name) DO UPDATE SET
+          phone_number = COALESCE(excluded.phone_number, whatsapp_accounts.phone_number),
+          updated_at = excluded.updated_at
       `)
 
       for (const acc of accounts) {
-        insert.run(acc.deviceSerial, acc.profileId, acc.packageName, acc.phoneNumber)
+        upsert.run(acc.deviceSerial, acc.profileId, acc.packageName, acc.phoneNumber)
       }
     })
     txn()

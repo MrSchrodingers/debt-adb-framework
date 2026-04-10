@@ -27,15 +27,6 @@ export interface BanDetectionConfig {
   unpauseBufferMinutes: number
 }
 
-export type SendPhase =
-  | 'idle'
-  | 'registering_contact'
-  | 'opening_chat'
-  | 'typing'
-  | 'sending'
-  | 'screenshotting'
-  | 'recovering'
-
 export interface CanSendResult {
   canSend: boolean
   waitMs: number
@@ -65,17 +56,6 @@ export interface CrashDetection {
 export interface RecoveryResult {
   recovered: boolean
   action: 'force_stop' | 'back_reopen' | 'none'
-}
-
-export interface SenderState {
-  senderNumber: string
-  deviceSerial?: string
-  profileId?: number
-  banned: boolean
-  banExpiresAt: number | null
-  sendCountInWindow: number
-  lastSendAt: number | null
-  cooldownExpiresAt: number | null
 }
 
 /** Abstraction over rate limit storage (Redis in prod, Map in tests) */

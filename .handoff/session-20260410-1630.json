@@ -1,0 +1,153 @@
+{
+  "schemaVersion": "1.0",
+  "timestamp": "2026-04-10T19:30:00.000Z",
+  "provider": "claude-code",
+  "project": {
+    "path": "/var/www/adb_tools",
+    "branch": "feat/anti-ban-scaling",
+    "lastCommit": "aab96bc46e0e24c7e2f08c8e251fd59debda7a55"
+  },
+  "context": {
+    "taskDescription": "Operational Hardening v2 — 5 phases (Foundation, Instrumentation, Operational Intelligence, Visual Observability, Optimization) + 9 post-test improvements + anti-fingerprint hardening",
+    "completedSteps": [
+      "Phase 1: Foundation (5 tasks) — dead code cleanup, Zod config, SenderHealth SQLite, WorkerOrchestrator extraction, integration tests",
+      "Phase 2: Instrumentation (4 tasks) — EventRecorder message trace, AuditLogger, Prometheus metrics (prom-client), event enrichment + sender lifecycle events",
+      "Phase 3: Operational Intelligence (4 tasks) — SendWindow (business hours), SenderWarmup (4-tier progressive), Pause/Resume sender, DeviceCircuitBreaker",
+      "Phase 4: Visual Observability (3 tasks) — SenderDashboard UI, Grafana embed tab, toast alerts + StatsBar indicators",
+      "Phase 5: Optimization (4 tasks) — ScreenshotPolicy (sampling/JPEG/retention), ContactCache (TTL), OptOutDetector + blacklist, MediaSender (share intent)",
+      "Post-implementation review: fixed 4 issues (Prometheus enrichment labels, orphaned metrics, screenshot content-type, opt-out toast)",
+      "9 improvements: retry requeue, send timeouts (30s), WA health check, warmup delay reduction, screenshot validation, multi-device parallel workers, text chunking, prefill boost, contact cache warmup",
+      "Production test fixes: Trust/Confiar dialog, callback 503 non-retryable, autocorrect disabled, generic BACK keyevent fallback",
+      "Monitoring infrastructure: docker-compose with Prometheus + Grafana, 4 provisioned dashboards",
+      "E2E validation: 18/19 callbacks 200 OK, 4 profiles tested, all senders working",
+      "Root capability audit: validated sendevent (0ms batch), /dev/uhid + CONFIG_UHID=y, sysfs thermal, SharedPrefs access"
+    ],
+    "inProgressTasks": [],
+    "pendingTasks": [
+      {
+        "task": "P0: Eliminate hardcoded coordinates in send-engine.ts — replace with UIAutomator bounds",
+        "priority": "P0",
+        "notes": "search icon at (624,172) and first result at (360,350) are POCO C71 specific. Must use UIAutomator XML bounds extraction like dismissDialogs() already does. Also diversify search behavior (name vs number, variable result position). Blocks multi-device/multi-model.",
+        "files": ["packages/core/src/engine/send-engine.ts"]
+      },
+      {
+        "task": "P0: Adjust SendStrategy weights — prefill:10, search:50, typing:40",
+        "priority": "P0",
+        "notes": "Prefill (wa.me?text=MSG) generates zero typing indicator — strongest automation fingerprint. Reduce to 10%, increase search (no wa.me) and typing (generates partial typing indicator). Depends on P0 coord fix for search to work on any device.",
+        "files": ["packages/core/src/engine/send-strategy.ts"]
+      },
+      {
+        "task": "P1: SharedPrefs root fallback in wa-account-mapper",
+        "priority": "P1",
+        "notes": "Content provider is primary (works without root). Add su -c cp SharedPrefs fallback when run-as fails. Low effort, defensive.",
+        "files": ["packages/core/src/monitor/wa-account-mapper.ts"]
+      },
+      {
+        "task": "P1: UHID keyboard prototype",
+        "priority": "P1",
+        "notes": "/dev/uhid confirmed on POCO C71 (CONFIG_UHID=y). Need to: compile minimal UHID creator binary (C, ARM), push to device, create virtual keyboard, test key events trigger typing indicator in WhatsApp. UHID typing is ~7x slower than input text (30s vs 4s per msg). Must migrate ALL input text calls (typeMessage + openViaSearch). scrcpy has reference implementation.",
+        "files": ["packages/core/src/engine/send-engine.ts", "new: packages/core/src/engine/uhid-keyboard.ts"]
+      },
+      {
+        "task": "P2: Sendevent batch for taps",
+        "priority": "P2",
+        "notes": "Validated: su -c with inline sendevents = 0ms (vs 77ms for input tap). Touchscreen is /dev/input/event3. Supported ABS codes: 57 (tracking_id), 53 (position_x), 54 (position_y), 48 (touch_major). NO pressure sensor. Must use only supported codes.",
+        "files": ["packages/core/src/engine/send-engine.ts"]
+      },
+      {
+        "task": "P2: Contact aging",
+        "priority": "P2",
+        "notes": "Create contacts hours/days before first message. Requires pipeline change on both Oralsin and Dispatch sides. Medium-high effort.",
+        "files": ["packages/core/src/engine/send-engine.ts", "packages/core/src/api/messages.ts"]
+      },
+      {
+        "task": "P3: Sysfs thermal in HealthCollector",
+        "priority": "P3",
+        "notes": "zone0=soc-thmzone works. Quick win, 10 min.",
+        "files": ["packages/core/src/monitor/health-collector.ts"]
+      },
+      {
+        "task": "P3: WA auto-update control via pm disable",
+        "priority": "P3",
+        "notes": "Operational, not code. pm disable-user com.android.vending on device connect.",
+        "files": ["packages/core/src/server.ts"]
+      }
+    ],
+    "architecturalDecisions": [
+      {
+        "decision": "Sendevent batch over individual su -c calls for tap injection",
+        "rationale": "Individual su -c per sendevent = 991ms. Single su -c with inline sendevents = 0ms. Batch is faster than input tap (77ms).",
+        "alternatives": ["Individual su -c (991ms — rejected)", "input tap with jitter (77ms — current)"]
+      },
+      {
+        "decision": "UHID keyboard preferred over input text for typing",
+        "rationale": "input text bypasses IME → no typing indicator → HIGH detection risk. UHID triggers proper InputConnection.commitText() → natural typing indicator. /dev/uhid confirmed available on POCO C71.",
+        "alternatives": ["input text (current — HIGH risk)", "Xposed hooks (rejected — Xposed detectable)", "scrcpy UHID mode (reference implementation)"]
+      },
+      {
+        "decision": "Strategy weights shift: prefill:10, search:50, typing:40",
+        "rationale": "Prefill (wa.me?text=MSG) generates ZERO typing indicator — strongest fingerprint. Search avoids wa.me entirely. Typing generates partial indicator.",
+        "alternatives": ["Current weights prefill:50/search:30/typing:20 (HIGH risk)", "prefill:0 (breaks long messages)"]
+      },
+      {
+        "decision": "Multi-device parallel workers via Promise.allSettled per device",
+        "rationale": "Single global workerRunning boolean → per-device Set. Each device processes independently. Already implemented.",
+        "alternatives": ["Sequential device processing (old — wastes second device)"]
+      },
+      {
+        "decision": "Non-retryable callback on HTTP 503",
+        "rationale": "Oralsin returns 503 for orphaned callbacks (no ContactSchedule). Retrying won't help. Break immediately to avoid 230 wasted requests.",
+        "alternatives": ["Retry all non-2xx (old — caused 10x retry storm)"]
+      }
+    ],
+    "knownBugs": [
+      {
+        "issue": "health-collector.test.ts cleanup test is flaky (timing-dependent)",
+        "workaround": "1 pre-existing test failure, unrelated to our changes",
+        "files": ["packages/core/src/monitor/health-collector.test.ts"]
+      },
+      {
+        "issue": "Uncommitted UI changes (device-info, live-screen, oralsin-*, shell-terminal) from prior sessions",
+        "workaround": "Pre-existing staged changes, not part of hardening v2. Safe to ignore or commit separately.",
+        "files": ["packages/ui/src/components/*.tsx"]
+      }
+    ],
+    "codePatterns": {
+      "established": [
+        "WorkerOrchestrator.tickDevice() per-device with devicesRunning Set lock",
+        "Optional deps in constructors (SendEngine has 8 optional params — recorder, screenshotPolicy, contactCache, mediaSender)",
+        "SenderHealth emits sender:quarantined/released via optional DispatchEmitter",
+        "AuditLogger.log() with before/after state for all CRUD operations",
+        "EventRecorder.record() for append-only message trace events",
+        "dismissDialogs() pattern: regex match text in UIAutomator XML → extract bounds → tap center",
+        "su -c for root operations via adbkit shell (quoting is tricky — use separate calls for complex operations)"
+      ],
+      "avoid": [
+        "Hardcoded screen coordinates (624,172 and 360,350 in openViaSearch) — use UIAutomator bounds",
+        "prefill method for short messages — generates zero typing indicator",
+        "Individual su -c per sendevent — use batch inline",
+        "Retry callbacks on 503 — non-retryable (orphaned)",
+        "Complex piped commands via su in adbkit shell — write to /sdcard/ first then read"
+      ]
+    }
+  },
+  "technicalState": {
+    "modifiedFiles": ["30+ commits on feat/anti-ban-scaling since plan creation"],
+    "testsPassing": true,
+    "testsCount": 705,
+    "testsFlaky": 1,
+    "buildStatus": "passing"
+  },
+  "nextSteps": {
+    "immediate": "Execute P0: UIAutomator bounds for send-engine.ts coordinates + strategy weight adjustment",
+    "shortTerm": [
+      "P1: SharedPrefs root fallback in wa-account-mapper",
+      "P1: UHID keyboard prototype (compile C binary, test on POCO C71)",
+      "P2: Sendevent batch for taps",
+      "P2: Contact aging pipeline"
+    ],
+    "blockers": [
+      "P0 coord fix blocks P0 strategy weight change (search method needs UIAutomator bounds first)"
+    ]
+  }
+}

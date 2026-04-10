@@ -35,17 +35,33 @@ export class AdbBridge {
     return results
   }
 
-  async shell(serial: string, command: string): Promise<string> {
+  async shell(serial: string, command: string, timeoutMs = 30_000): Promise<string> {
     const device = this.client.getDevice(serial)
     const stream = await device.shell(command)
-    const buf = await Adb.util.readAll(stream)
-    return buf.toString().trim()
+    const result = await Promise.race([
+      Adb.util.readAll(stream),
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(() => {
+          try { stream.destroy() } catch { /* ignore */ }
+          reject(new Error(`ADB shell timeout after ${timeoutMs}ms: ${command.slice(0, 60)}`))
+        }, timeoutMs),
+      ),
+    ])
+    return result.toString().trim()
   }
 
-  async screenshot(serial: string): Promise<Buffer> {
+  async screenshot(serial: string, timeoutMs = 30_000): Promise<Buffer> {
     const device = this.client.getDevice(serial)
     const stream = await device.screencap()
-    return Adb.util.readAll(stream)
+    return Promise.race([
+      Adb.util.readAll(stream),
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(() => {
+          try { stream.destroy() } catch { /* ignore */ }
+          reject(new Error(`ADB screenshot timeout after ${timeoutMs}ms`))
+        }, timeoutMs),
+      ),
+    ])
   }
 
   async health(serial: string): Promise<{ battery: number; model: string }> {

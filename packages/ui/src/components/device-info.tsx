@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Cpu, Wifi, Smartphone, MessageCircle, RefreshCw } from 'lucide-react'
-import { CORE_URL } from '../config'
+import { CORE_URL, authHeaders } from '../config'
 
 interface DeviceInfoProps {
   serial: string
@@ -14,7 +14,7 @@ export function DeviceInfo({ serial, profileId }: DeviceInfoProps) {
   const fetchInfo = async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${CORE_URL}/api/v1/devices/${serial}/info`)
+      const res = await fetch(`${CORE_URL}/api/v1/devices/${serial}/info`, { headers: authHeaders() })
       if (res.ok) setInfo(await res.json())
     } catch {
       // offline

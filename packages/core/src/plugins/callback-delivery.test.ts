@@ -2,7 +2,25 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { CallbackDelivery } from './callback-delivery.js'
 import { PluginRegistry } from './plugin-registry.js'
-import type { ResultCallback, AckCallback, ResponseCallback, FailedCallbackRecord } from './types.js'
+import type { ResultCallback, AckCallback, ResponseCallback, FailedCallbackRecord, DeliveryInfo } from './types.js'
+
+/** Default delivery info with all required audit fields */
+const baseDelivery: DeliveryInfo = {
+  message_id: null,
+  provider: 'adb',
+  sender_phone: '5537999001122',
+  sender_session: 'oralsin-1-4',
+  pair_used: 'MG-Guaxupé',
+  used_fallback: false,
+  elapsed_ms: 5000,
+  device_serial: '9b01005930533036340030832250ac',
+  profile_id: 0,
+  char_count: 120,
+  contact_registered: false,
+  screenshot_url: '/api/v1/messages/msg-1/screenshot',
+  dialogs_dismissed: 0,
+  user_switched: false,
+}
 
 describe('CallbackDelivery', () => {
   let db: Database.Database
@@ -46,13 +64,10 @@ describe('CallbackDelivery', () => {
         status: 'sent',
         sent_at: '2026-04-02T15:48:57.354Z',
         delivery: {
+          ...baseDelivery,
           message_id: 'true_553788165296@c.us_3EB04863460F86E8B5FC44',
-          provider: 'adb',
-          sender_phone: '5537999001122',
-          sender_session: 'oralsin-1-4',
-          pair_used: 'MG-Guaxupé',
-          used_fallback: false,
           elapsed_ms: 29739,
+          contact_registered: true,
         },
         error: null,
         context: { clinic_id: 'uuid-1', schedule_id: 'uuid-2' },
@@ -99,15 +114,7 @@ describe('CallbackDelivery', () => {
         idempotency_key: 'test-key',
         status: 'sent',
         sent_at: '2026-04-02T15:00:00Z',
-        delivery: {
-          message_id: null,
-          provider: 'adb',
-          sender_phone: '5537999001122',
-          sender_session: 'oralsin-1-4',
-          pair_used: 'MG-Guaxupé',
-          used_fallback: false,
-          elapsed_ms: 5000,
-        },
+        delivery: { ...baseDelivery },
         error: null,
       })
 
@@ -127,15 +134,7 @@ describe('CallbackDelivery', () => {
         idempotency_key: 'test-key',
         status: 'sent',
         sent_at: '2026-04-02T15:00:00Z',
-        delivery: {
-          message_id: null,
-          provider: 'adb',
-          sender_phone: '5537999001122',
-          sender_session: 'oralsin-1-4',
-          pair_used: 'MG-Guaxupé',
-          used_fallback: false,
-          elapsed_ms: 5000,
-        },
+        delivery: { ...baseDelivery },
         error: null,
         context,
       })
@@ -147,10 +146,11 @@ describe('CallbackDelivery', () => {
   })
 
   describe('retry logic', () => {
-    it('retries 3 times on failure', async () => {
+    it('retries 4 times on failure', async () => {
       vi.useFakeTimers()
       registerOralsin()
       mockFetch
+        .mockRejectedValueOnce(new Error('ECONNREFUSED'))
         .mockRejectedValueOnce(new Error('ECONNREFUSED'))
         .mockRejectedValueOnce(new Error('ECONNREFUSED'))
         .mockRejectedValueOnce(new Error('ECONNREFUSED'))
@@ -159,23 +159,16 @@ describe('CallbackDelivery', () => {
         idempotency_key: 'test-key',
         status: 'sent',
         sent_at: '2026-04-02T15:00:00Z',
-        delivery: {
-          message_id: null,
-          provider: 'adb',
-          sender_phone: '5537999001122',
-          sender_session: 'oralsin-1-4',
-          pair_used: 'MG-Guaxupé',
-          used_fallback: false,
-          elapsed_ms: 5000,
-        },
+        delivery: { ...baseDelivery },
         error: null,
       })
-      // Advance timers for backoff delays (5s + 15s)
+      // Advance timers for backoff delays (5s + 30s + 120s)
       await vi.advanceTimersByTimeAsync(5_000)
-      await vi.advanceTimersByTimeAsync(15_000)
+      await vi.advanceTimersByTimeAsync(30_000)
+      await vi.advanceTimersByTimeAsync(120_000)
       await promise
 
-      expect(mockFetch).toHaveBeenCalledTimes(3)
+      expect(mockFetch).toHaveBeenCalledTimes(4)
       vi.useRealTimers()
     })
 
@@ -190,15 +183,7 @@ describe('CallbackDelivery', () => {
         idempotency_key: 'test-key',
         status: 'sent',
         sent_at: '2026-04-02T15:00:00Z',
-        delivery: {
-          message_id: null,
-          provider: 'adb',
-          sender_phone: '5537999001122',
-          sender_session: 'oralsin-1-4',
-          pair_used: 'MG-Guaxupé',
-          used_fallback: false,
-          elapsed_ms: 5000,
-        },
+        delivery: { ...baseDelivery },
         error: null,
       })
       // Advance timer for first backoff (5s before attempt 2)
@@ -209,7 +194,7 @@ describe('CallbackDelivery', () => {
       vi.useRealTimers()
     })
 
-    it('persists in failed_callbacks after 3 failures', async () => {
+    it('persists in failed_callbacks after 4 failures', async () => {
       vi.useFakeTimers()
       registerOralsin()
       mockFetch.mockRejectedValue(new Error('ECONNREFUSED'))
@@ -218,19 +203,12 @@ describe('CallbackDelivery', () => {
         idempotency_key: 'test-key',
         status: 'sent',
         sent_at: '2026-04-02T15:00:00Z',
-        delivery: {
-          message_id: null,
-          provider: 'adb',
-          sender_phone: '5537999001122',
-          sender_session: 'oralsin-1-4',
-          pair_used: 'MG-Guaxupé',
-          used_fallback: false,
-          elapsed_ms: 5000,
-        },
+        delivery: { ...baseDelivery },
         error: null,
       })
       await vi.advanceTimersByTimeAsync(5_000)
-      await vi.advanceTimersByTimeAsync(15_000)
+      await vi.advanceTimersByTimeAsync(30_000)
+      await vi.advanceTimersByTimeAsync(120_000)
       await promise
 
       const failed = delivery.listFailedCallbacks()
@@ -238,7 +216,7 @@ describe('CallbackDelivery', () => {
       expect(failed[0].plugin_name).toBe('oralsin')
       expect(failed[0].message_id).toBe('msg-1')
       expect(failed[0].callback_type).toBe('result')
-      expect(failed[0].attempts).toBe(3)
+      expect(failed[0].attempts).toBe(4)
       vi.useRealTimers()
     })
 
@@ -251,15 +229,7 @@ describe('CallbackDelivery', () => {
         idempotency_key: 'test-key',
         status: 'sent',
         sent_at: '2026-04-02T15:00:00Z',
-        delivery: {
-          message_id: null,
-          provider: 'adb',
-          sender_phone: '5537999001122',
-          sender_session: 'oralsin-1-4',
-          pair_used: 'MG-Guaxupé',
-          used_fallback: false,
-          elapsed_ms: 5000,
-        },
+        delivery: { ...baseDelivery },
         error: null,
       })
 
@@ -275,14 +245,22 @@ describe('CallbackDelivery', () => {
       await vi.advanceTimersByTimeAsync(1)
       expect(mockFetch).toHaveBeenCalledTimes(2)
 
-      // Before 15s more, attempt 3 should NOT have fired
-      await vi.advanceTimersByTimeAsync(14_999)
+      // Before 30s more, attempt 3 should NOT have fired
+      await vi.advanceTimersByTimeAsync(29_999)
       expect(mockFetch).toHaveBeenCalledTimes(2)
 
-      // At 15s, attempt 3 fires
+      // At 30s, attempt 3 fires
+      await vi.advanceTimersByTimeAsync(1)
+      expect(mockFetch).toHaveBeenCalledTimes(3)
+
+      // Before 120s more, attempt 4 should NOT have fired
+      await vi.advanceTimersByTimeAsync(119_999)
+      expect(mockFetch).toHaveBeenCalledTimes(3)
+
+      // At 120s, attempt 4 fires
       await vi.advanceTimersByTimeAsync(1)
       await promise
-      expect(mockFetch).toHaveBeenCalledTimes(3)
+      expect(mockFetch).toHaveBeenCalledTimes(4)
 
       vi.useRealTimers()
     })
@@ -349,13 +327,9 @@ describe('CallbackDelivery', () => {
         status: 'sent',
         sent_at: '2026-04-02T15:00:00Z',
         delivery: {
-          message_id: null,
-          provider: 'adb',
-          sender_phone: '5537999001122',
+          ...baseDelivery,
           sender_session: 'manual',
           pair_used: 'manual',
-          used_fallback: false,
-          elapsed_ms: 5000,
         },
         error: null,
       })
@@ -381,18 +355,10 @@ describe('CallbackDelivery', () => {
         idempotency_key: 'test-key',
         status: 'sent',
         sent_at: '2026-04-02T15:00:00Z',
-        delivery: {
-          message_id: null,
-          provider: 'adb',
-          sender_phone: '5537999001122',
-          sender_session: 'oralsin-1-4',
-          pair_used: 'MG-Guaxupé',
-          used_fallback: false,
-          elapsed_ms: 5000,
-        },
+        delivery: { ...baseDelivery },
         error: null,
       })
-      await vi.advanceTimersByTimeAsync(20_000)
+      await vi.advanceTimersByTimeAsync(155_000)
       await promise
       mockFetch.mockReset()
       vi.useRealTimers()

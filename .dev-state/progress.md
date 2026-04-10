@@ -1,9 +1,9 @@
 # Development Progress — DEBT ADB Framework
 
-> **Last updated**: 2026-04-06T14:45:00-03:00
-> **Current phase**: ALL 8 PHASES APPROVED
-> **Next action**: Production deployment planning
-> **Plan**: `plans/improvement-plan.md` — 4 tracks (Dashboard, Debt, UX, Hardening)
+> **Last updated**: 2026-04-08T13:35:00-03:00
+> **Current phase**: HARDENING COMPLETE — all 7 tasks done, E2E validated
+> **Next action**: Re-engage Oralsin bilateral testing
+> **Plan**: `docs/superpowers/plans/2026-04-07-dispatch-hardening.md` — 7/7 tasks done
 > **Tech docs**: `docs/tech/` — schema, API ref, UI patterns, conventions
 
 ## Phase Status
@@ -88,6 +88,16 @@ Grill ✅ COMPLETE. Key: Temporal.io + Redis, signal-driven dispatcher, behavior
 
 See `.dev-state/phase-2-grill.md` for 12 confirmed decisions.
 Grill ✅ COMPLETE. All decisions resolved.
+
+## Root Hiding Stack (Anti-Ban T3)
+
+Configured on POCO Serenity (9b01005930533036340030832250ac):
+- Magisk 28.1 + Zygisk (built-in)
+- DenyList: com.whatsapp, com.whatsapp.w4b, com.google.android.gms
+- PlayIntegrityFork v16 (osm0sis & chiteroman) — Play Integrity spoof at framework level
+- Zygisk-Assistant v2.1.4 (snake-4) — root hiding for DenyList apps
+- verifiedbootstate=orange at prop level (normal — PIF spoofs at Java level)
+- WhatsApp running post-install, PID confirmed
 
 ## Test Configuration
 

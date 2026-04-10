@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
+import type { AuditLogger } from '../config/audit-logger.js'
 
 // ── Types ──
 
@@ -294,7 +295,17 @@ const querySchema = z.object({
   deviceSerial: z.string().optional(),
 })
 
-export function registerAuditRoutes(server: FastifyInstance, db: Database.Database): void {
+const auditLogQuerySchema = z.object({
+  resource_type: z.string().optional(),
+  resource_id: z.string().optional(),
+  action: z.string().optional(),
+  start_date: z.string().optional(),
+  end_date: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+})
+
+export function registerAuditRoutes(server: FastifyInstance, db: Database.Database, auditLogger?: AuditLogger): void {
   const audit = new AuditService(db)
 
   server.get('/api/v1/audit/messages', async (request) => {
@@ -314,4 +325,24 @@ export function registerAuditRoutes(server: FastifyInstance, db: Database.Databa
     }
     return timeline
   })
+
+  // Operational audit log (administrative changes)
+  if (auditLogger) {
+    server.get('/api/v1/audit', async (request) => {
+      const query = request.query as Record<string, string>
+      const parsed = auditLogQuerySchema.safeParse(query)
+      if (!parsed.success) {
+        return { entries: [], total: 0 }
+      }
+      return auditLogger.query({
+        resourceType: parsed.data.resource_type,
+        resourceId: parsed.data.resource_id,
+        action: parsed.data.action,
+        startDate: parsed.data.start_date,
+        endDate: parsed.data.end_date,
+        limit: parsed.data.limit,
+        offset: parsed.data.offset,
+      })
+    })
+  }
 }

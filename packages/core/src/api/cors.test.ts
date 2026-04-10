@@ -27,7 +27,7 @@ describe('CORS configuration', () => {
 
     it('ignores empty strings in extra origins', () => {
       const origins = buildCorsOrigins(',,https://a.com,,')
-      expect(origins).toHaveLength(3) // localhost:5173, localhost:7890, https://a.com
+      expect(origins).toHaveLength(4) // localhost:5173, localhost:5174, localhost:7890, https://a.com
     })
   })
 

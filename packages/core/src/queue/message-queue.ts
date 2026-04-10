@@ -33,21 +33,94 @@ export class MessageQueue {
         ON messages(status, priority, created_at);
       CREATE INDEX IF NOT EXISTS idx_messages_sender_number
         ON messages(sender_number);
+      CREATE INDEX IF NOT EXISTS idx_messages_sender_daily
+        ON messages(sender_number, status, updated_at);
 
       CREATE TABLE IF NOT EXISTS contacts (
         phone TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         registered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       );
+
+      CREATE TABLE IF NOT EXISTS sender_health (
+        sender_number TEXT PRIMARY KEY,
+        consecutive_failures INTEGER NOT NULL DEFAULT 0,
+        quarantined_until TEXT,
+        last_failure_at TEXT,
+        last_success_at TEXT,
+        total_failures INTEGER NOT NULL DEFAULT 0,
+        total_successes INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS message_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id TEXT NOT NULL,
+        event TEXT NOT NULL,
+        metadata TEXT,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_message_events_msg ON message_events(message_id);
+
+      CREATE TABLE IF NOT EXISTS audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        actor TEXT NOT NULL DEFAULT 'api',
+        action TEXT NOT NULL,
+        resource_type TEXT NOT NULL,
+        resource_id TEXT,
+        before_state TEXT,
+        after_state TEXT,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_audit_log_resource ON audit_log(resource_type, resource_id);
+      CREATE INDEX IF NOT EXISTS idx_audit_log_time ON audit_log(created_at);
+
+      CREATE TABLE IF NOT EXISTS sender_warmup (
+        sender_number TEXT PRIMARY KEY,
+        activated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        skipped INTEGER NOT NULL DEFAULT 0,
+        skipped_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS blacklist (
+        phone_number TEXT PRIMARY KEY,
+        reason TEXT NOT NULL,
+        detected_message TEXT,
+        detected_pattern TEXT,
+        source_session TEXT,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      );
     `)
+
+    // Migration: add screenshot_path column if not present
+    const cols = this.db.prepare("PRAGMA table_info(messages)").all() as { name: string }[]
+    if (!cols.some(c => c.name === 'screenshot_path')) {
+      this.db.exec("ALTER TABLE messages ADD COLUMN screenshot_path TEXT")
+    }
+
+    // Migration: add media columns if not present
+    if (!cols.some(c => c.name === 'media_url')) {
+      this.db.exec("ALTER TABLE messages ADD COLUMN media_url TEXT")
+      this.db.exec("ALTER TABLE messages ADD COLUMN media_type TEXT")
+      this.db.exec("ALTER TABLE messages ADD COLUMN media_caption TEXT")
+    }
+  }
+
+  isBlacklisted(phone: string): boolean {
+    const row = this.db.prepare('SELECT 1 FROM blacklist WHERE phone_number = ?').get(phone)
+    return !!row
   }
 
   enqueue(params: EnqueueParams): Message {
+    if (this.isBlacklisted(params.to)) {
+      throw new Error(`Phone ${params.to} is blacklisted — message rejected`)
+    }
     const id = nanoid()
     const row = this.db.prepare(`
       INSERT INTO messages (id, to_number, body, idempotency_key, priority, sender_number,
-                            plugin_name, correlation_id, senders_config, context, max_retries)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            plugin_name, correlation_id, senders_config, context, max_retries,
+                            media_url, media_type, media_caption)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       RETURNING *
     `).get(
       id,
@@ -61,6 +134,9 @@ export class MessageQueue {
       params.sendersConfig ?? null,
       params.context ?? null,
       params.maxRetries ?? 3,
+      params.mediaUrl ?? null,
+      params.mediaType ?? null,
+      params.mediaCaption ?? null,
     ) as Record<string, unknown>
     return this.rowToMessage(row)
   }
@@ -68,12 +144,16 @@ export class MessageQueue {
   enqueueBatch(paramsList: EnqueueParams[]): Message[] {
     const insert = this.db.prepare(`
       INSERT INTO messages (id, to_number, body, idempotency_key, priority, sender_number,
-                            plugin_name, correlation_id, senders_config, context, max_retries)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            plugin_name, correlation_id, senders_config, context, max_retries,
+                            media_url, media_type, media_caption)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       RETURNING *
     `)
     const txn = this.db.transaction((list: EnqueueParams[]) => {
       return list.map((params) => {
+        if (this.isBlacklisted(params.to)) {
+          throw new Error(`Phone ${params.to} is blacklisted — message rejected`)
+        }
         const id = nanoid()
         const row = insert.get(
           id,
@@ -87,6 +167,9 @@ export class MessageQueue {
           params.sendersConfig ?? null,
           params.context ?? null,
           params.maxRetries ?? 3,
+          params.mediaUrl ?? null,
+          params.mediaType ?? null,
+          params.mediaCaption ?? null,
         ) as Record<string, unknown>
         return this.rowToMessage(row)
       })
@@ -279,9 +362,19 @@ export class MessageQueue {
     return row !== undefined
   }
 
+  getContactName(phone: string): string | null {
+    const row = this.db.prepare('SELECT name FROM contacts WHERE phone = ?').get(phone) as { name: string } | undefined
+    return row?.name ?? null
+  }
+
+  getAllContactPhones(): string[] {
+    const rows = this.db.prepare('SELECT phone FROM contacts').all() as { phone: string }[]
+    return rows.map(r => r.phone)
+  }
+
   saveContact(phone: string, name: string): void {
     this.db.prepare(
-      'INSERT OR IGNORE INTO contacts (phone, name) VALUES (?, ?)',
+      'INSERT INTO contacts (phone, name) VALUES (?, ?) ON CONFLICT(phone) DO UPDATE SET name = excluded.name',
     ).run(phone, name)
   }
 
@@ -307,6 +400,10 @@ export class MessageQueue {
       maxRetries: (row.max_retries as number) ?? 3,
       fallbackUsed: (row.fallback_used as number) ?? 0,
       fallbackProvider: (row.fallback_provider as string) ?? null,
+      screenshotPath: (row.screenshot_path as string) ?? null,
+      mediaUrl: (row.media_url as string) ?? null,
+      mediaType: (row.media_type as string) ?? null,
+      mediaCaption: (row.media_caption as string) ?? null,
     }
   }
 
@@ -393,9 +490,33 @@ export class MessageQueue {
     return txn.immediate()
   }
 
+  updateScreenshotPath(id: string, screenshotPath: string): void {
+    this.db.prepare(
+      "UPDATE messages SET screenshot_path = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+    ).run(screenshotPath, id)
+  }
+
   markFallbackUsed(id: string, provider: string): void {
     this.db.prepare(
       "UPDATE messages SET fallback_used = 1, fallback_provider = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
     ).run(provider, id)
+  }
+
+  getSenderDailyCount(senderNumber: string): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) as cnt FROM messages
+      WHERE sender_number = ? AND status = 'sent'
+        AND updated_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', 'start of day', '-3 hours')
+    `).get(senderNumber) as { cnt: number }
+    return row.cnt
+  }
+
+  isFirstContactWith(toNumber: string, senderNumber: string): boolean {
+    const row = this.db.prepare(`
+      SELECT 1 FROM messages
+      WHERE to_number = ? AND sender_number = ? AND status = 'sent'
+      LIMIT 1
+    `).get(toNumber, senderNumber)
+    return row === undefined
   }
 }

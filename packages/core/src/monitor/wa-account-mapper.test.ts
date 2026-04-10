@@ -136,6 +136,119 @@ describe('WaAccountMapper', () => {
       expect(accounts[0].phoneNumber).toBeNull()
     })
 
+    describe('root SharedPrefs fallback (3rd attempt)', () => {
+      const SHARED_PREFS_XML = `<map>
+<string name="cc">55</string>
+<string name="registration_jid">5543991938235@s.whatsapp.net</string>
+<string name="self_lid">5543991938235@lid</string>
+</map>`
+
+      const SHARED_PREFS_XML_LID_ONLY = `<map>
+<string name="cc">55</string>
+<string name="self_lid">5543991938235@lid</string>
+</map>`
+
+      it('extracts cc + registration_jid via root when content provider and run-as fail', async () => {
+        fakeShell.mockImplementation(async (_serial: string, cmd: string) => {
+          if (cmd.includes('pm list packages --user 0') && cmd.includes('whatsapp'))
+            return 'package:com.whatsapp'
+          if (cmd.includes('content query')) throw new Error('content provider unavailable')
+          if (cmd.includes('run-as')) throw new Error('run-as not allowed')
+          if (cmd.startsWith('su -c') && cmd.includes('cp')) return ''
+          if (cmd.startsWith('cat /sdcard/dispatch_wa_prefs_')) return SHARED_PREFS_XML
+          if (cmd.startsWith('rm -f')) return ''
+          return ''
+        })
+
+        const accounts = await mapper.mapAccounts('ABC123')
+
+        const wa = accounts.find((a) => a.packageName === 'com.whatsapp' && a.profileId === 0)
+        expect(wa).toBeDefined()
+        expect(wa!.phoneNumber).toBe('555543991938235')
+      })
+
+      it('extracts cc + self_lid when registration_jid is missing', async () => {
+        fakeShell.mockImplementation(async (_serial: string, cmd: string) => {
+          if (cmd.includes('pm list packages --user 0') && cmd.includes('whatsapp'))
+            return 'package:com.whatsapp'
+          if (cmd.includes('content query')) throw new Error('content provider unavailable')
+          if (cmd.includes('run-as')) throw new Error('run-as not allowed')
+          if (cmd.startsWith('su -c') && cmd.includes('cp')) return ''
+          if (cmd.startsWith('cat /sdcard/dispatch_wa_prefs_')) return SHARED_PREFS_XML_LID_ONLY
+          if (cmd.startsWith('rm -f')) return ''
+          return ''
+        })
+
+        const accounts = await mapper.mapAccounts('ABC123')
+
+        const wa = accounts.find((a) => a.packageName === 'com.whatsapp' && a.profileId === 0)
+        expect(wa).toBeDefined()
+        expect(wa!.phoneNumber).toBe('555543991938235')
+      })
+
+      it('cleans up temp file after extraction', async () => {
+        const shellCalls: string[] = []
+        fakeShell.mockImplementation(async (_serial: string, cmd: string) => {
+          shellCalls.push(cmd)
+          if (cmd.includes('pm list packages --user 0') && cmd.includes('whatsapp'))
+            return 'package:com.whatsapp'
+          if (cmd.includes('content query')) throw new Error('content provider unavailable')
+          if (cmd.includes('run-as')) throw new Error('run-as not allowed')
+          if (cmd.startsWith('su -c') && cmd.includes('cp')) return ''
+          if (cmd.startsWith('cat /sdcard/dispatch_wa_prefs_')) return SHARED_PREFS_XML
+          if (cmd.startsWith('rm -f')) return ''
+          return ''
+        })
+
+        await mapper.mapAccounts('ABC123')
+
+        const cleanupCalls = shellCalls.filter((c) => c.startsWith('rm -f /sdcard/dispatch_wa_prefs_'))
+        expect(cleanupCalls.length).toBeGreaterThanOrEqual(1)
+        expect(cleanupCalls[0]).toContain('dispatch_wa_prefs_0.xml')
+      })
+
+      it('fails gracefully when root is not available', async () => {
+        fakeShell.mockImplementation(async (_serial: string, cmd: string) => {
+          if (cmd.includes('pm list packages --user 0') && cmd.includes('whatsapp'))
+            return 'package:com.whatsapp'
+          if (cmd.includes('content query')) throw new Error('content provider unavailable')
+          if (cmd.includes('run-as')) throw new Error('run-as not allowed')
+          if (cmd.startsWith('su -c')) throw new Error('su: not found')
+          return ''
+        })
+
+        const accounts = await mapper.mapAccounts('ABC123')
+
+        const wa = accounts.find((a) => a.packageName === 'com.whatsapp' && a.profileId === 0)
+        expect(wa).toBeDefined()
+        expect(wa!.phoneNumber).toBeNull()
+      })
+
+      it('prefers registration_jid over self_lid when both are present', async () => {
+        const xmlBothKeys = `<map>
+<string name="cc">55</string>
+<string name="registration_jid">5543000000001@s.whatsapp.net</string>
+<string name="self_lid">5543000000002@lid</string>
+</map>`
+
+        fakeShell.mockImplementation(async (_serial: string, cmd: string) => {
+          if (cmd.includes('pm list packages --user 0') && cmd.includes('whatsapp'))
+            return 'package:com.whatsapp'
+          if (cmd.includes('content query')) throw new Error('content provider unavailable')
+          if (cmd.includes('run-as')) throw new Error('run-as not allowed')
+          if (cmd.startsWith('su -c') && cmd.includes('cp')) return ''
+          if (cmd.startsWith('cat /sdcard/dispatch_wa_prefs_')) return xmlBothKeys
+          if (cmd.startsWith('rm -f')) return ''
+          return ''
+        })
+
+        const accounts = await mapper.mapAccounts('ABC123')
+
+        const wa = accounts.find((a) => a.packageName === 'com.whatsapp' && a.profileId === 0)
+        expect(wa!.phoneNumber).toBe('555543000000001')
+      })
+    })
+
     it('updates existing accounts on re-map', async () => {
       fakeShell.mockImplementation(async (_serial: string, cmd: string) => {
         if (cmd.includes('pm list packages --user 0') && cmd.includes('whatsapp'))

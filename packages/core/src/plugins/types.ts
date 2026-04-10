@@ -127,6 +127,20 @@ export interface DeliveryInfo {
   pair_used: string
   used_fallback: boolean
   elapsed_ms: number
+  /** Android device serial that sent the message */
+  device_serial: string
+  /** Android user profile ID (0, 10, 11, 12) */
+  profile_id: number
+  /** Number of characters typed via ADB */
+  char_count: number
+  /** Whether a new contact was created on the Android device for this send */
+  contact_registered: boolean
+  /** Relative URL to the post-send screenshot (e.g. /api/v1/messages/:id/screenshot) */
+  screenshot_url: string | null
+  /** Number of WhatsApp dialogs dismissed before typing */
+  dialogs_dismissed: number
+  /** Whether the worker switched Android user before this send */
+  user_switched: boolean
 }
 
 export interface CallbackError {

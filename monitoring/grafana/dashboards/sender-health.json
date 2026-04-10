@@ -1,0 +1,66 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "panels": [
+    {
+      "title": "Daily Count per Sender",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "dispatch_sender_daily_count", "legendFormat": "{{sender}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 15, "lineWidth": 2 } } }
+    },
+    {
+      "title": "Sender Quarantined",
+      "type": "state-timeline",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "dispatch_sender_quarantined", "legendFormat": "{{sender}}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "options": { "0": { "text": "OK", "color": "green" }, "1": { "text": "Quarantined", "color": "red" } }, "type": "value" }
+          ]
+        }
+      }
+    },
+    {
+      "title": "Quarantine Events Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "increase(dispatch_quarantine_events_total[1h])", "legendFormat": "{{sender}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 30, "drawStyle": "bars" } } }
+    },
+    {
+      "title": "Messages Sent per Sender (24h)",
+      "type": "bargauge",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "sum(increase(dispatch_messages_sent_total[24h])) by (sender)", "legendFormat": "{{sender}}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 100 }, { "color": "red", "value": 150 }] }
+        }
+      }
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["dispatch", "senders"],
+  "templating": {
+    "list": [
+      { "name": "DS_PROMETHEUS", "type": "datasource", "query": "prometheus", "current": { "selected": true, "text": "Prometheus", "value": "Prometheus" } }
+    ]
+  },
+  "time": { "from": "now-24h", "to": "now" },
+  "title": "Sender Health",
+  "uid": "dispatch-sender-health"
+}

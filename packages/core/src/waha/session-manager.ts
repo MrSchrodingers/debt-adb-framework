@@ -160,6 +160,14 @@ export class SessionManager {
     await this.wahaClient.restartSession(sessionName)
   }
 
+  async stopSession(sessionName: string): Promise<void> {
+    await this.wahaClient.stopSession(sessionName)
+  }
+
+  async getQrCode(sessionName: string): Promise<string> {
+    return this.wahaClient.getQrCode(sessionName)
+  }
+
   startHealthPolling(intervalMs?: number): void {
     const interval = intervalMs ?? this.config.healthCheckIntervalMs ?? 60_000
     this.healthInterval = setInterval(() => {

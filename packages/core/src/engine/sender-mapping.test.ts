@@ -252,6 +252,112 @@ describe('SenderMapping', () => {
     })
   })
 
+  describe('pauseSender', () => {
+    it('sets paused=1 with reason and timestamp', () => {
+      mapping.create({
+        phoneNumber: '+554396837945',
+        deviceSerial: '9b01005930533036',
+      })
+
+      mapping.pauseSender('+554396837945', 'manual maintenance')
+
+      const row = db.prepare(
+        'SELECT paused, paused_at, paused_reason FROM sender_mapping WHERE phone_number = ?',
+      ).get('+554396837945') as { paused: number; paused_at: string | null; paused_reason: string | null }
+
+      expect(row.paused).toBe(1)
+      expect(row.paused_at).toBeTruthy()
+      expect(row.paused_reason).toBe('manual maintenance')
+    })
+
+    it('sets paused without reason', () => {
+      mapping.create({
+        phoneNumber: '+554396837945',
+        deviceSerial: '9b01005930533036',
+      })
+
+      mapping.pauseSender('+554396837945')
+
+      const row = db.prepare(
+        'SELECT paused, paused_reason FROM sender_mapping WHERE phone_number = ?',
+      ).get('+554396837945') as { paused: number; paused_reason: string | null }
+
+      expect(row.paused).toBe(1)
+      expect(row.paused_reason).toBeNull()
+    })
+  })
+
+  describe('resumeSender', () => {
+    it('clears paused state', () => {
+      mapping.create({
+        phoneNumber: '+554396837945',
+        deviceSerial: '9b01005930533036',
+      })
+
+      mapping.pauseSender('+554396837945', 'testing')
+      mapping.resumeSender('+554396837945')
+
+      const row = db.prepare(
+        'SELECT paused, paused_at, paused_reason FROM sender_mapping WHERE phone_number = ?',
+      ).get('+554396837945') as { paused: number; paused_at: string | null; paused_reason: string | null }
+
+      expect(row.paused).toBe(0)
+      expect(row.paused_at).toBeNull()
+      expect(row.paused_reason).toBeNull()
+    })
+  })
+
+  describe('isPaused', () => {
+    it('returns true for paused sender', () => {
+      mapping.create({
+        phoneNumber: '+554396837945',
+        deviceSerial: '9b01005930533036',
+      })
+
+      mapping.pauseSender('+554396837945')
+      expect(mapping.isPaused('+554396837945')).toBe(true)
+    })
+
+    it('returns false for non-paused sender', () => {
+      mapping.create({
+        phoneNumber: '+554396837945',
+        deviceSerial: '9b01005930533036',
+      })
+
+      expect(mapping.isPaused('+554396837945')).toBe(false)
+    })
+
+    it('returns false for unknown sender', () => {
+      expect(mapping.isPaused('+559999999999')).toBe(false)
+    })
+
+    it('returns false after resume', () => {
+      mapping.create({
+        phoneNumber: '+554396837945',
+        deviceSerial: '9b01005930533036',
+      })
+
+      mapping.pauseSender('+554396837945')
+      mapping.resumeSender('+554396837945')
+      expect(mapping.isPaused('+554396837945')).toBe(false)
+    })
+  })
+
+  describe('listAll includes paused fields', () => {
+    it('returns paused fields in records', () => {
+      mapping.create({
+        phoneNumber: '+554396837945',
+        deviceSerial: '9b01005930533036',
+      })
+      mapping.pauseSender('+554396837945', 'quota reached')
+
+      const all = mapping.listAll()
+      expect(all).toHaveLength(1)
+      expect(all[0].paused).toBe(1)
+      expect(all[0].paused_reason).toBe('quota reached')
+    })
+  })
+
   describe('resolveSenderChain', () => {
     it('returns first sender with active mapping', () => {
       mapping.create({
