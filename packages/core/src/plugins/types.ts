@@ -24,6 +24,8 @@ export interface PluginContext {
   getQueueStats(): QueueStats
   getSenderMapping(phone: string): SenderMappingRecord | null
   resolveSenderChain(senders: SenderConfig[]): ResolvedSender | null
+  /** Register a contact on the Android device without sending a message (for contact aging) */
+  registerContact(senderPhone: string, patientPhone: string, patientName: string): Promise<{ status: 'registered' | 'exists' | 'error'; error?: string }>
   on(event: DispatchEventName, handler: (data: unknown) => Promise<void>): void
   registerRoute(method: HttpMethod, path: string, handler: RouteHandler): void
   logger: PluginLogger

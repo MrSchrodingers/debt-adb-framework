@@ -305,7 +305,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const pluginEventBus = new PluginEventBus(pluginRegistry, emitter)
   const callbackDelivery = new CallbackDelivery(db, pluginRegistry, fetch)
   const pinoLogger = { child: (bindings: Record<string, unknown>) => ({ info: server.log.info.bind(server.log), warn: server.log.warn.bind(server.log), error: server.log.error.bind(server.log), debug: server.log.debug.bind(server.log) }) }
-  const pluginLoader = new PluginLoader(pluginRegistry, pluginEventBus, queue, db, pinoLogger, senderMapping)
+  const pluginLoader = new PluginLoader(pluginRegistry, pluginEventBus, queue, db, pinoLogger, senderMapping, engine)
 
   // Load plugins from config
   const pluginNames = (process.env.DISPATCH_PLUGINS || '').split(',').map(s => s.trim()).filter(Boolean)

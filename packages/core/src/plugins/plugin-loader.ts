@@ -3,6 +3,7 @@ import type { MessageQueue } from '../queue/message-queue.js'
 import type { PluginRegistry } from './plugin-registry.js'
 import type { PluginEventBus } from './plugin-event-bus.js'
 import type { SenderMapping } from '../engine/sender-mapping.js'
+import type { SendEngine } from '../engine/send-engine.js'
 import type {
   DispatchPlugin,
   PluginContext,
@@ -43,6 +44,7 @@ export class PluginLoader {
     private db: Database.Database,
     logger?: PluginLoggerFactory,
     private senderMapping?: SenderMapping,
+    private sendEngine?: SendEngine,
   ) {
     this.loggerFactory = logger ?? {
       child: (bindings) => ({
@@ -161,6 +163,22 @@ export class PluginLoader {
 
       resolveSenderChain: (senders) => {
         return this.senderMapping?.resolveSenderChain(senders) ?? null
+      },
+
+      registerContact: async (senderPhone: string, patientPhone: string, patientName: string) => {
+        if (!this.sendEngine || !this.senderMapping) {
+          return { status: 'error' as const, error: 'SendEngine or SenderMapping not available' }
+        }
+        const mapping = this.senderMapping.getByPhone(senderPhone)
+        if (!mapping) {
+          return { status: 'error' as const, error: `No sender mapping for ${senderPhone}` }
+        }
+        try {
+          const result = await this.sendEngine.registerContact(mapping.device_serial, patientPhone, patientName)
+          return { status: result }
+        } catch (err) {
+          return { status: 'error' as const, error: err instanceof Error ? err.message : String(err) }
+        }
       },
 
       on: (event: DispatchEventName, handler: (data: unknown) => Promise<void>): void => {

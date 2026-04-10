@@ -5,6 +5,8 @@ import { PluginRegistry } from './plugin-registry.js'
 import { PluginEventBus } from './plugin-event-bus.js'
 import { DispatchEmitter } from '../events/index.js'
 import { MessageQueue } from '../queue/message-queue.js'
+import { SenderMapping } from '../engine/sender-mapping.js'
+import type { SendEngine } from '../engine/send-engine.js'
 import type { DispatchPlugin, PluginContext, PluginEnqueueParams } from './types.js'
 
 // ── Test Helpers ──
@@ -282,6 +284,90 @@ describe('PluginLoader', () => {
       expect(stats.processing).toBe(0)
       expect(stats.failedLastHour).toBe(0)
       expect(stats.oldestPendingAgeSeconds).toBeGreaterThanOrEqual(0)
+    })
+  })
+
+  describe('PluginContext.registerContact', () => {
+    it('routes to correct device via sender mapping and registers contact', async () => {
+      const senderMapping = new SenderMapping(db)
+      senderMapping.initialize()
+      senderMapping.create({
+        phoneNumber: '+5543996835100',
+        deviceSerial: 'device-abc',
+        profileId: 0,
+        appPackage: 'com.whatsapp',
+      })
+
+      const mockEngine = {
+        registerContact: vi.fn().mockResolvedValue('registered'),
+      } as unknown as SendEngine
+
+      const loaderWithEngine = new PluginLoader(registry, eventBus, queue, db, undefined, senderMapping, mockEngine)
+
+      const plugin = makePlugin({ name: 'oralsin' })
+      let capturedCtx: PluginContext | null = null
+      ;(plugin.init as ReturnType<typeof vi.fn>).mockImplementation(async (ctx: PluginContext) => {
+        capturedCtx = ctx
+      })
+
+      await loaderWithEngine.loadPlugin(plugin, 'key-1', 'secret-1')
+
+      const result = await capturedCtx!.registerContact('+5543996835100', '5543991938235', 'Joao Silva')
+
+      expect(result.status).toBe('registered')
+      expect(mockEngine.registerContact).toHaveBeenCalledWith('device-abc', '5543991938235', 'Joao Silva')
+    })
+
+    it('returns exists when contact already on device', async () => {
+      const senderMapping = new SenderMapping(db)
+      senderMapping.initialize()
+      senderMapping.create({
+        phoneNumber: '+5543996835100',
+        deviceSerial: 'device-abc',
+        profileId: 0,
+      })
+
+      const mockEngine = {
+        registerContact: vi.fn().mockResolvedValue('exists'),
+      } as unknown as SendEngine
+
+      const loaderWithEngine = new PluginLoader(registry, eventBus, queue, db, undefined, senderMapping, mockEngine)
+
+      const plugin = makePlugin({ name: 'oralsin' })
+      let capturedCtx: PluginContext | null = null
+      ;(plugin.init as ReturnType<typeof vi.fn>).mockImplementation(async (ctx: PluginContext) => {
+        capturedCtx = ctx
+      })
+
+      await loaderWithEngine.loadPlugin(plugin, 'key-1', 'secret-1')
+
+      const result = await capturedCtx!.registerContact('+5543996835100', '5543991938235', 'Joao Silva')
+
+      expect(result.status).toBe('exists')
+    })
+
+    it('returns error when sender has no mapping', async () => {
+      const senderMapping = new SenderMapping(db)
+      senderMapping.initialize()
+      // No mapping created
+
+      const mockEngine = { registerContact: vi.fn() } as unknown as SendEngine
+
+      const loaderWithEngine = new PluginLoader(registry, eventBus, queue, db, undefined, senderMapping, mockEngine)
+
+      const plugin = makePlugin({ name: 'oralsin' })
+      let capturedCtx: PluginContext | null = null
+      ;(plugin.init as ReturnType<typeof vi.fn>).mockImplementation(async (ctx: PluginContext) => {
+        capturedCtx = ctx
+      })
+
+      await loaderWithEngine.loadPlugin(plugin, 'key-1', 'secret-1')
+
+      const result = await capturedCtx!.registerContact('+5599999999999', '5543991938235', 'Joao Silva')
+
+      expect(result.status).toBe('error')
+      expect(result.error).toContain('No sender mapping')
+      expect(mockEngine.registerContact).not.toHaveBeenCalled()
     })
   })
 })

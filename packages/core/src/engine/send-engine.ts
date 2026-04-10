@@ -59,6 +59,31 @@ export class SendEngine {
   }
 
   /**
+   * Register a contact on the Android device without sending a message.
+   * Used for contact aging — pre-register contacts days before the first send
+   * so WhatsApp doesn't see "contact created + message sent in the same second".
+   *
+   * @returns 'registered' if a new contact was created, 'exists' if already on device
+   */
+  async registerContact(deviceSerial: string, phone: string, name: string): Promise<'registered' | 'exists'> {
+    if (!DEVICE_SERIAL_RE.test(deviceSerial)) {
+      throw new Error('Rejected device serial: contains unsafe characters')
+    }
+    const phoneDigits = phone.replace(/[\s\-+()]/g, '')
+    if (!/^\d{10,15}$/.test(phoneDigits)) {
+      throw new Error(`Invalid phone number: ${phone}`)
+    }
+
+    // Save name to contacts DB so future sends can use it for search diversification
+    if (!this.queue.hasContact(phoneDigits)) {
+      this.queue.saveContact(phoneDigits, name)
+    }
+
+    const created = await this.ensureContact(deviceSerial, phoneDigits)
+    return created ? 'registered' : 'exists'
+  }
+
+  /**
    * @param isFirstInBatch — if true, does full cleanup (force-stop + screen wake).
    *   Subsequent messages in the same batch skip these for speed.
    * @param appPackage — Android package to use for sending (default: com.whatsapp).

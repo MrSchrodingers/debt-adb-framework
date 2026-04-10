@@ -1029,4 +1029,46 @@ describe('SendEngine', () => {
       expect(sendeventCall).toContain('sendevent /dev/input/event0 3 54 797')
     })
   })
+
+  describe('registerContact (P2-B contact aging)', () => {
+    it('creates contact on device and returns registered', async () => {
+      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
+      shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('phone_lookup')) return 'No result found.'
+        if (cmd.includes('raw_contacts') && cmd.includes('INSERT')) return ''
+        if (cmd.includes('raw_contacts') && cmd.includes('_id')) return 'Row: 0 _id=42'
+        if (cmd.includes('data') && cmd.includes('INSERT')) return ''
+        return ''
+      })
+
+      const result = await engine.registerContact('device-1', '5543991938235', 'Joao Silva')
+
+      expect(result).toBe('registered')
+      // Verify contact was saved in DB
+      expect(queue.hasContact('5543991938235')).toBe(true)
+      expect(queue.getContactName('5543991938235')).toBe('Joao Silva')
+    })
+
+    it('returns exists when contact already on device', async () => {
+      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
+      shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('phone_lookup')) return 'Row: 0 display_name=Joao Silva'
+        return ''
+      })
+
+      const result = await engine.registerContact('device-1', '5543991938235', 'Joao Silva')
+
+      expect(result).toBe('exists')
+    })
+
+    it('rejects invalid phone number', async () => {
+      await expect(engine.registerContact('device-1', 'not-a-number', 'Test'))
+        .rejects.toThrow('Invalid phone number')
+    })
+
+    it('rejects unsafe device serial', async () => {
+      await expect(engine.registerContact('device;rm', '5543991938235', 'Test'))
+        .rejects.toThrow('Rejected device serial')
+    })
+  })
 })

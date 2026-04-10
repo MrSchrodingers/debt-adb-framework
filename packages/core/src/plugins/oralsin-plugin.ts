@@ -11,6 +11,15 @@ const senderSchema = z.object({
   role: z.enum(['primary', 'backup', 'overflow', 'reserve']),
 })
 
+const preRegisterItemSchema = z.object({
+  patient_phone: z.string().min(10).max(15),
+  patient_name: z.string().min(1),
+  sender_phone: z.string().min(10),
+  sender_session: z.string().optional(),
+})
+
+const preRegisterRequestSchema = z.array(preRegisterItemSchema).min(1).max(500)
+
 const enqueueItemSchema = z.object({
   idempotency_key: z.string().min(1),
   correlation_id: z.string().optional(),
@@ -55,6 +64,7 @@ export class OralsinPlugin implements DispatchPlugin {
   async init(ctx: PluginContext): Promise<void> {
     this.ctx = ctx
     ctx.registerRoute('POST', '/enqueue', this.handleEnqueue.bind(this))
+    ctx.registerRoute('POST', '/contacts/pre-register', this.handlePreRegister.bind(this))
     ctx.registerRoute('GET', '/status', this.handleStatus.bind(this))
     ctx.registerRoute('GET', '/queue', this.handleQueue.bind(this))
     ctx.logger.info('Oralsin plugin initialized')
@@ -146,6 +156,45 @@ export class OralsinPlugin implements DispatchPlugin {
       }
       throw err
     }
+  }
+
+  private async handlePreRegister(request: { body: unknown; headers: Record<string, string> }, reply: { status: (code: number) => { send: (data: unknown) => unknown } }): Promise<unknown> {
+    if (!this.ctx) {
+      return reply.status(503).send({ error: 'Plugin not initialized' })
+    }
+
+    const parsed = preRegisterRequestSchema.safeParse(request.body)
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Validation failed', details: parsed.error.issues })
+    }
+
+    const results: Array<{ phone: string; status: string; reason?: string }> = []
+    let registered = 0
+    let skipped = 0
+    let errors = 0
+
+    for (const item of parsed.data) {
+      const result = await this.ctx.registerContact(
+        item.sender_phone,
+        item.patient_phone,
+        item.patient_name,
+      )
+
+      if (result.status === 'registered') {
+        registered++
+        results.push({ phone: item.patient_phone, status: 'registered' })
+      } else if (result.status === 'exists') {
+        skipped++
+        results.push({ phone: item.patient_phone, status: 'skipped', reason: 'already_exists' })
+      } else {
+        errors++
+        results.push({ phone: item.patient_phone, status: 'error', reason: result.error })
+      }
+    }
+
+    this.ctx.logger.info(`Pre-register batch: ${registered} registered, ${skipped} skipped, ${errors} errors`)
+
+    return reply.status(200).send({ registered, skipped, errors, details: results })
   }
 
   private async handleStatus(_request: unknown, reply: { status: (code: number) => { send: (data: unknown) => unknown } }): Promise<unknown> {
