@@ -7,6 +7,7 @@ import type { EventRecorder } from './event-recorder.js'
 import type { ScreenshotPolicy } from '../config/screenshot-policy.js'
 import type { ContactCache } from './contact-cache.js'
 import type { MediaSender } from './media-sender.js'
+import { ScreenshotValidator } from './screenshot-validator.js'
 
 /** Packages allowed in am start/force-stop commands. Reject everything else. */
 const ALLOWED_PACKAGES = new Set(['com.whatsapp', 'com.whatsapp.w4b'])
@@ -139,7 +140,7 @@ export class SendEngine {
         this.record(message.id, 'send_tapped', { method: 'media_share' })
       } else {
         // Text-only flow — select chat opening method (diversifies entryPointSource fingerprint)
-        method = this.strategy.selectMethod()
+        method = this.strategy.selectMethod(message.body.length)
         this.record(message.id, 'strategy_selected', { method, appPackage })
 
         if (method === 'prefill') {
@@ -182,6 +183,23 @@ export class SendEngine {
 
       // Wait for send confirmation
       await this.delay(2000)
+
+      // Post-send validation — check UI state via XML dump (observability-only)
+      try {
+        const postSendXml = await this.dumpUi(deviceSerial)
+        const validator = new ScreenshotValidator()
+        const validation = validator.validate(postSendXml)
+        this.record(message.id, 'post_send_validation', {
+          valid: validation.valid,
+          reason: validation.reason,
+          chatInputFound: validation.chatInputFound,
+          dialogDetected: validation.dialogDetected,
+          lastMessageVisible: validation.lastMessageVisible,
+        })
+      } catch {
+        // Validation is best-effort — don't fail the send if UI dump fails
+        this.record(message.id, 'post_send_validation', { valid: false, reason: 'UI dump failed' })
+      }
 
       // Screenshot handling — use policy if available
       const shouldCapture = this.screenshotPolicy
@@ -485,34 +503,35 @@ export class SendEngine {
   }
 
   /**
-   * Type message in word-level chunks with natural delays.
-   * ~3-5x faster than char-by-char while maintaining human-like pacing.
-   * Each word = 1 ADB call instead of N chars = N ADB calls.
+   * Type message in 50-char chunks with natural delays.
+   * Splits on newlines (sent via ENTER keyevent), then sends each line
+   * in chunks of up to 50 chars via `input text`. ~80% fewer ADB calls
+   * compared to word-by-word approach.
    */
   private async typeMessage(deviceSerial: string, text: string): Promise<void> {
-    // Split text into words, preserving spaces
-    const words = text.split(/(\s+)/)
+    const lines = text.split('\n')
 
-    for (const segment of words) {
-      if (!segment) continue
+    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+      const line = lines[lineIdx]
 
-      if (/^\s+$/.test(segment)) {
-        // Whitespace segment: type spaces via keyevent (more reliable)
-        for (const ch of segment) {
-          if (ch === '\n') {
-            await this.adb.shell(deviceSerial, 'input keyevent 66') // ENTER
-          } else {
-            await this.adb.shell(deviceSerial, 'input keyevent 62') // SPACE
+      if (line.length > 0) {
+        // Send line in chunks of up to 50 chars (ADB input text reliability limit)
+        for (let i = 0; i < line.length; i += 50) {
+          const chunk = line.slice(i, i + 50)
+          const escaped = chunk.replace(/'/g, "'\\''")
+          await this.adb.shell(deviceSerial, `input text '${escaped}'`)
+          // Human-like pause between chunks (100-250ms, gaussian)
+          if (i + 50 < line.length) {
+            await this.delay(this.gaussianDelay(150, 40))
           }
         }
-      } else {
-        // Word segment: type entire word in one shell call
-        const escaped = segment.replace(/'/g, "'\\''")
-        await this.adb.shell(deviceSerial, `input text '${escaped}'`)
       }
 
-      // Human-like pause between words (150-350ms, gaussian)
-      await this.delay(this.gaussianDelay(200, 60))
+      // Type newline between lines (not after last line)
+      if (lineIdx < lines.length - 1) {
+        await this.adb.shell(deviceSerial, 'input keyevent 66') // ENTER
+        await this.delay(this.gaussianDelay(100, 30))
+      }
     }
   }
 

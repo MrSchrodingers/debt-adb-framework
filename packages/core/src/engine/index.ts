@@ -35,6 +35,8 @@ export { ContactCache } from './contact-cache.js'
 export type { ContactCacheConfig } from './contact-cache.js'
 export { OptOutDetector } from './opt-out-detector.js'
 export type { OptOutResult, OptOutMatch, OptOutNoMatch } from './opt-out-detector.js'
+export { ScreenshotValidator } from './screenshot-validator.js'
+export type { ValidationResult } from './screenshot-validator.js'
 export { escapeForAdbContent } from './contact-utils.js'
 export type {
   RateLimitConfig,
