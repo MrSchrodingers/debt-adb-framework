@@ -10,10 +10,10 @@ export interface WarmupTier {
 }
 
 const WARMUP_TIERS: WarmupTier[] = [
-  { tier: 1, minDays: 0, maxDays: 2, dailyCap: 20, firstContactDelayMs: 90_000, recurringContactDelayMs: 60_000 },
-  { tier: 2, minDays: 3, maxDays: 6, dailyCap: 50, firstContactDelayMs: 60_000, recurringContactDelayMs: 45_000 },
-  { tier: 3, minDays: 7, maxDays: 13, dailyCap: 100, firstContactDelayMs: 45_000, recurringContactDelayMs: 30_000 },
-  { tier: 4, minDays: 14, maxDays: Infinity, dailyCap: 150, firstContactDelayMs: 45_000, recurringContactDelayMs: 15_000 },
+  { tier: 1, minDays: 0, maxDays: 2, dailyCap: 20, firstContactDelayMs: 45_000, recurringContactDelayMs: 30_000 },
+  { tier: 2, minDays: 3, maxDays: 6, dailyCap: 50, firstContactDelayMs: 35_000, recurringContactDelayMs: 25_000 },
+  { tier: 3, minDays: 7, maxDays: 13, dailyCap: 100, firstContactDelayMs: 30_000, recurringContactDelayMs: 20_000 },
+  { tier: 4, minDays: 14, maxDays: Infinity, dailyCap: 150, firstContactDelayMs: 30_000, recurringContactDelayMs: 15_000 },
 ]
 
 export class SenderWarmup {

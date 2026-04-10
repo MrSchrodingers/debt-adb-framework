@@ -134,8 +134,8 @@ describe('SenderWarmup', () => {
   describe('getEffectiveDelays', () => {
     it('returns tier 1 delays for new sender', () => {
       const delays = warmup.getEffectiveDelays('+5543991938235')
-      expect(delays.firstContactDelayMs).toBe(90_000)
-      expect(delays.recurringContactDelayMs).toBe(60_000)
+      expect(delays.firstContactDelayMs).toBe(45_000)
+      expect(delays.recurringContactDelayMs).toBe(30_000)
     })
 
     it('returns tier 2 delays for 4-day sender', () => {
@@ -148,8 +148,8 @@ describe('SenderWarmup', () => {
         .run(daysAgo, '+5543991938235')
 
       const delays = warmup.getEffectiveDelays('+5543991938235')
-      expect(delays.firstContactDelayMs).toBe(60_000)
-      expect(delays.recurringContactDelayMs).toBe(45_000)
+      expect(delays.firstContactDelayMs).toBe(35_000)
+      expect(delays.recurringContactDelayMs).toBe(25_000)
     })
 
     it('returns tier 3 delays for 10-day sender', () => {
@@ -162,8 +162,8 @@ describe('SenderWarmup', () => {
         .run(daysAgo, '+5543991938235')
 
       const delays = warmup.getEffectiveDelays('+5543991938235')
-      expect(delays.firstContactDelayMs).toBe(45_000)
-      expect(delays.recurringContactDelayMs).toBe(30_000)
+      expect(delays.firstContactDelayMs).toBe(30_000)
+      expect(delays.recurringContactDelayMs).toBe(20_000)
     })
 
     it('returns tier 4 delays for fully warmed sender', () => {
@@ -176,7 +176,7 @@ describe('SenderWarmup', () => {
         .run(daysAgo, '+5543991938235')
 
       const delays = warmup.getEffectiveDelays('+5543991938235')
-      expect(delays.firstContactDelayMs).toBe(45_000)
+      expect(delays.firstContactDelayMs).toBe(30_000)
       expect(delays.recurringContactDelayMs).toBe(15_000)
     })
   })
