@@ -538,6 +538,7 @@ export class SendEngine {
     // Tap first search result
     await this.sendeventTap(deviceSerial, firstResult.cx, firstResult.cy)
     await this.delay(2000)
+    await this.clearInputField(deviceSerial)
     await this.typeMessage(deviceSerial, body)
   }
 
@@ -585,6 +586,8 @@ export class SendEngine {
     // Tap the contact row
     await this.sendeventTap(deviceSerial, contactRow.cx, contactRow.cy)
     await this.delay(2000)
+    await this.waitForChatReady(deviceSerial)
+    await this.clearInputField(deviceSerial)
     await this.typeMessage(deviceSerial, body)
   }
 
@@ -595,6 +598,7 @@ export class SendEngine {
     )
     await this.delay(2000)
     await this.waitForChatReady(deviceSerial)
+    await this.clearInputField(deviceSerial)
     await this.typeMessage(deviceSerial, body)
   }
 
@@ -700,6 +704,19 @@ export class SendEngine {
     } else {
       await this.adb.shell(deviceSerial, 'input keyevent 66')
     }
+  }
+
+  /**
+   * Clear any residual text in the chat input field.
+   * Moves cursor to end, selects all, then deletes. Safe if field is already empty.
+   */
+  private async clearInputField(deviceSerial: string): Promise<void> {
+    // KEYCODE_MOVE_END (123) → CTRL+A via keyevent combo → KEYCODE_DEL (67)
+    await this.adb.shell(deviceSerial, 'input keyevent 123') // move to end
+    await this.adb.shell(deviceSerial, 'input keyevent --press KEYCODE_CTRL_LEFT KEYCODE_A') // select all
+    await this.delay(100)
+    await this.adb.shell(deviceSerial, 'input keyevent 67') // delete selection
+    await this.delay(200)
   }
 
   /**
