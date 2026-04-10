@@ -30,13 +30,27 @@ export class SendStrategy {
     })
   }
 
-  selectMethod(): ChatOpenMethod {
+  selectMethod(bodyLength?: number): ChatOpenMethod {
     const { prefillWeight, searchWeight, typingWeight } = this.config
-    const total = prefillWeight + searchWeight + typingWeight
+
+    // Short messages (<500 chars) strongly prefer prefill (faster, no typing needed)
+    // Medium messages (500-1500) use normal configured weights
+    // Long messages (>1500) reduce prefill (URL encoding makes deep link too long)
+    // Never boost prefill if it's explicitly disabled (weight = 0)
+    let adjustedPrefillWeight = prefillWeight
+    if (bodyLength !== undefined && prefillWeight > 0) {
+      if (bodyLength < 500) {
+        adjustedPrefillWeight = Math.max(prefillWeight, 80)
+      } else if (bodyLength > 1500) {
+        adjustedPrefillWeight = Math.min(prefillWeight, 10)
+      }
+    }
+
+    const total = adjustedPrefillWeight + searchWeight + typingWeight
     const roll = Math.random() * total
 
-    if (roll < prefillWeight) return 'prefill'
-    if (roll < prefillWeight + searchWeight) return 'search'
+    if (roll < adjustedPrefillWeight) return 'prefill'
+    if (roll < adjustedPrefillWeight + searchWeight) return 'search'
     return 'typing'
   }
 

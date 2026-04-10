@@ -29,6 +29,30 @@ describe('SendStrategy', () => {
         expect(strategy.selectMethod()).toBe('prefill')
       }
     })
+
+    it('heavily favors prefill for short messages (<500 chars)', () => {
+      // Even with low prefill weight config, short messages should boost to 80%
+      const strategy = new SendStrategy({ prefillWeight: 20, searchWeight: 40, typingWeight: 40 })
+      const counts: Record<string, number> = { prefill: 0, search: 0, typing: 0 }
+      for (let i = 0; i < 1000; i++) {
+        counts[strategy.selectMethod(100)]++
+      }
+      // With adjusted weight=80 out of total 80+40+40=160, prefill ~50%
+      // But since it's boosted from 20→80, it should be significantly more than the 20% base
+      expect(counts.prefill).toBeGreaterThan(350)
+    })
+
+    it('reduces prefill for long messages (>1500 chars)', () => {
+      // Even with high prefill weight config, long messages should cap at 10%
+      const strategy = new SendStrategy({ prefillWeight: 80, searchWeight: 10, typingWeight: 10 })
+      const counts: Record<string, number> = { prefill: 0, search: 0, typing: 0 }
+      for (let i = 0; i < 1000; i++) {
+        counts[strategy.selectMethod(2000)]++
+      }
+      // With adjusted weight=10 out of total 10+10+10=30, prefill ~33%
+      // Should be much less than the normal 80% base
+      expect(counts.prefill).toBeLessThan(500)
+    })
   })
 
   describe('generateTypingIndicator', () => {

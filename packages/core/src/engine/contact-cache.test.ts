@@ -134,6 +134,25 @@ describe('ContactCache', () => {
     })
   })
 
+  describe('warmUp', () => {
+    it('pre-populates cache for a device with known phones', () => {
+      const phones = ['5543991938235', '5543999999999', '5543988887777']
+      cache.warmUp('device1', phones)
+
+      expect(cache.isVerified('device1', '5543991938235')).toBe(true)
+      expect(cache.isVerified('device1', '5543999999999')).toBe(true)
+      expect(cache.isVerified('device1', '5543988887777')).toBe(true)
+      // Different device should not be affected
+      expect(cache.isVerified('device2', '5543991938235')).toBe(false)
+      expect(cache.getStats().size).toBe(3)
+    })
+
+    it('handles empty phone list without error', () => {
+      cache.warmUp('device1', [])
+      expect(cache.getStats().size).toBe(0)
+    })
+  })
+
   describe('custom TTL', () => {
     it('respects shorter TTL', () => {
       const shortCache = new ContactCache({ ttlMs: 5_000 }) // 5 seconds

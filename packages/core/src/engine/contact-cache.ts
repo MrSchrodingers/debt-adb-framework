@@ -58,6 +58,17 @@ export class ContactCache {
     return { hits: this.hits, misses: this.misses, size: this.cache.size }
   }
 
+  /**
+   * Pre-populate the cache for a device with known phone numbers.
+   * Eliminates cold-start cache misses on server boot — first batch
+   * of messages won't trigger N redundant ADB content queries.
+   */
+  warmUp(deviceSerial: string, knownPhones: string[]): void {
+    for (const phone of knownPhones) {
+      this.markVerified(deviceSerial, phone)
+    }
+  }
+
   /** Remove all cached entries and reset counters. */
   clear(): void {
     this.cache.clear()

@@ -604,6 +604,11 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         server.log.warn({ serial, cmd, err: (err as Error).message }, 'Keep-awake command failed')
       })
     }
+
+    // Warm contact cache from DB — eliminates cold-start cache misses
+    const contacts = queue.getAllContactPhones()
+    contactCache.warmUp(serial, contacts)
+    server.log.info({ serial, contacts: contacts.length }, 'Contact cache warmed')
   })
 
   // Device discovery polling (5s) — managed by DeviceManager

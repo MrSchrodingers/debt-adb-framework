@@ -306,6 +306,80 @@ describe('SendEngine', () => {
     })
   })
 
+  describe('typeMessage — chunked input text', () => {
+    it('sends a short message in a single input text call', async () => {
+      const msg = queue.enqueue({
+        to: '5543991938235',
+        body: 'Hello world test',
+        idempotencyKey: 'chunk-1',
+        senderNumber: '5543996835100',
+      })
+      stubShellForSend(mockAdb)
+
+      await engine.send(msg, 'device-1')
+
+      const calls = (mockAdb.shell as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[1] as string)
+      // prefill strategy with short msg should use wa.me?text= (no typeMessage at all)
+      // but if body is short and prefill is used, no input text calls for body
+      const inputTextCalls = calls.filter((cmd: string) => cmd.startsWith("input text '"))
+      // With prefill + short body (<2000 URL length), no typing happens — body is in the URL
+      expect(inputTextCalls).toHaveLength(0)
+    })
+
+    it('uses chunked input text for typing strategy', async () => {
+      const longBody = 'A'.repeat(120) // 120 chars → should produce 3 chunks (50+50+20)
+      const msg = queue.enqueue({
+        to: '5543991938235',
+        body: longBody,
+        idempotencyKey: 'chunk-2',
+        senderNumber: '5543996835100',
+      })
+      // Force typing strategy
+      const typingStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 0, typingWeight: 100 })
+      const typingEngine = new SendEngine(mockAdb, queue, emitter, typingStrategy)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.spyOn(typingEngine as any, 'delay').mockResolvedValue(undefined)
+      stubShellForSend(mockAdb)
+
+      await typingEngine.send(msg, 'device-1')
+
+      const calls = (mockAdb.shell as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[1] as string)
+      const inputTextCalls = calls.filter((cmd: string) => cmd.includes("input text '"))
+      // 120 chars / 50 per chunk = 3 chunks
+      expect(inputTextCalls).toHaveLength(3)
+      expect(inputTextCalls[0]).toBe(`input text '${longBody.slice(0, 50)}'`)
+      expect(inputTextCalls[1]).toBe(`input text '${longBody.slice(50, 100)}'`)
+      expect(inputTextCalls[2]).toBe(`input text '${longBody.slice(100, 120)}'`)
+    })
+
+    it('handles newlines with ENTER keyevent between lines', async () => {
+      const bodyWithNewline = 'Line one\nLine two'
+      const msg = queue.enqueue({
+        to: '5543991938235',
+        body: bodyWithNewline,
+        idempotencyKey: 'chunk-3',
+        senderNumber: '5543996835100',
+      })
+      // Force typing strategy
+      const typingStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 0, typingWeight: 100 })
+      const typingEngine = new SendEngine(mockAdb, queue, emitter, typingStrategy)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.spyOn(typingEngine as any, 'delay').mockResolvedValue(undefined)
+      stubShellForSend(mockAdb)
+
+      await typingEngine.send(msg, 'device-1')
+
+      const calls = (mockAdb.shell as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[1] as string)
+      const inputTextCalls = calls.filter((cmd: string) => cmd.includes("input text '"))
+      const enterCalls = calls.filter((cmd: string) => cmd === 'input keyevent 66')
+      // 2 lines → 2 input text calls + at least 1 ENTER keyevent between them
+      expect(inputTextCalls).toHaveLength(2)
+      expect(inputTextCalls[0]).toBe("input text 'Line one'")
+      expect(inputTextCalls[1]).toBe("input text 'Line two'")
+      expect(enterCalls.length).toBeGreaterThanOrEqual(1)
+    })
+  })
+
   describe('pre-send health check', () => {
     it('always sends KEYCODE_WAKEUP proactively', async () => {
       const msg = enqueueMsg('health-1')

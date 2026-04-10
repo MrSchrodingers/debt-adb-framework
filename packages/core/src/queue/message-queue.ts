@@ -367,6 +367,11 @@ export class MessageQueue {
     return row?.name ?? null
   }
 
+  getAllContactPhones(): string[] {
+    const rows = this.db.prepare('SELECT phone FROM contacts').all() as { phone: string }[]
+    return rows.map(r => r.phone)
+  }
+
   saveContact(phone: string, name: string): void {
     this.db.prepare(
       'INSERT INTO contacts (phone, name) VALUES (?, ?) ON CONFLICT(phone) DO UPDATE SET name = excluded.name',
