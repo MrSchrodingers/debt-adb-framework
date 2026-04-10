@@ -153,6 +153,9 @@ export class CallbackDelivery {
         })
         if (response.ok) return
         lastError = `HTTP ${response.status}`
+        // 4xx = client error (non-retryable), 503 = orphaned/not-found (non-retryable)
+        if (response.status >= 400 && response.status < 500) break
+        if (response.status === 503) break
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err)
       }
