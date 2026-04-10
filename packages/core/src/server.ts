@@ -605,6 +605,11 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       })
     }
 
+    // Disable Play Store to prevent WA auto-updates that could break automation
+    adb.shell(serial, 'pm disable-user --user 0 com.android.vending').catch((err) => {
+      server.log.warn({ serial, err: (err as Error).message }, 'Failed to disable Play Store')
+    })
+
     // Warm contact cache from DB — eliminates cold-start cache misses
     const contacts = queue.getAllContactPhones()
     contactCache.warmUp(serial, contacts)
