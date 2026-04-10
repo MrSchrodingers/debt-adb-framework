@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, Fragment } from 'react'
-import { ChevronLeft, ChevronRight, Check, CheckCheck, AlertCircle } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Check, CheckCheck, AlertCircle, X, ZoomIn } from 'lucide-react'
 import { CORE_URL, API_KEY, authHeaders } from '../config'
 import { formatRelativeTime } from '../utils/time'
 
@@ -137,7 +137,7 @@ function formatLatency(createdAt: string, updatedAt: string): string {
   return `${hours}h ${mins % 60}min`
 }
 
-function ExpandedRow({ msg }: { msg: OralsinMessage }) {
+function ExpandedRow({ msg, onZoomScreenshot }: { msg: OralsinMessage; onZoomScreenshot: (url: string) => void }) {
   return (
     <tr className="border-b border-zinc-800/40 bg-zinc-950/60">
       <td colSpan={7} className="px-4 py-4">
@@ -160,16 +160,24 @@ function ExpandedRow({ msg }: { msg: OralsinMessage }) {
             </div>
           )}
 
-          {/* Screenshot proof */}
+          {/* Screenshot proof — click to zoom */}
           {(msg.status === 'sent' || msg.status === 'delivered' || msg.status === 'read') && (
             <div className="space-y-1">
               <div className="text-zinc-500 uppercase tracking-wider font-medium">Screenshot</div>
-              <img
-                src={`${CORE_URL}/api/v1/messages/${msg.id}/screenshot${API_KEY ? `?key=${API_KEY}` : ''}`}
-                alt="Screenshot do envio"
-                className="rounded-lg border border-zinc-800 max-h-48 object-contain bg-zinc-900"
-                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
-              />
+              <div
+                className="relative group cursor-pointer w-fit"
+                onClick={() => onZoomScreenshot(`${CORE_URL}/api/v1/messages/${msg.id}/screenshot${API_KEY ? `?key=${API_KEY}` : ''}`)}
+              >
+                <img
+                  src={`${CORE_URL}/api/v1/messages/${msg.id}/screenshot${API_KEY ? `?key=${API_KEY}` : ''}`}
+                  alt="Screenshot do envio"
+                  className="rounded-lg border border-zinc-800 max-h-48 object-contain bg-zinc-900"
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                />
+                <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity rounded-lg">
+                  <ZoomIn className="h-6 w-6 text-white" />
+                </div>
+              </div>
             </div>
           )}
 
@@ -224,6 +232,7 @@ export function OralsinMessages() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [loading, setLoading] = useState(false)
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [zoomedScreenshot, setZoomedScreenshot] = useState<string | null>(null)
 
   const fetchMessages = useCallback(async () => {
     setLoading(true)
@@ -366,7 +375,7 @@ export function OralsinMessages() {
                       {formatRelativeTime(msg.createdAt)}
                     </td>
                   </tr>
-                  {expandedId === msg.id && <ExpandedRow key={`${msg.id}-expanded`} msg={msg} />}
+                  {expandedId === msg.id && <ExpandedRow key={`${msg.id}-expanded`} msg={msg} onZoomScreenshot={setZoomedScreenshot} />}
                 </Fragment>
               ))}
             </tbody>
@@ -405,6 +414,27 @@ export function OralsinMessages() {
               <ChevronRight className="h-4 w-4" />
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Screenshot zoom modal */}
+      {zoomedScreenshot && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+          onClick={() => setZoomedScreenshot(null)}
+        >
+          <button
+            onClick={() => setZoomedScreenshot(null)}
+            className="absolute top-4 right-4 rounded-full bg-zinc-800 border border-zinc-700 p-2 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700 transition z-10"
+          >
+            <X className="h-5 w-5" />
+          </button>
+          <img
+            src={zoomedScreenshot}
+            alt="Screenshot ampliado"
+            className="max-h-[90vh] max-w-[90vw] object-contain rounded-lg shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          />
         </div>
       )}
     </div>
