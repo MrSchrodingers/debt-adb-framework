@@ -26,6 +26,7 @@ const CHAT_READY_XML = `<hierarchy>
 function stubShellForSend(mockAdb: AdbBridge): void {
   const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
   shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+    if (cmd.includes('pidof')) return '12345'
     if (cmd.includes('uiautomator dump')) return ''
     if (cmd.includes('cat /sdcard/dispatch-ui.xml')) return CHAT_READY_XML
     if (cmd.includes('content query --uri content://com.android.contacts/phone_lookup')) {
@@ -130,6 +131,7 @@ describe('SendEngine', () => {
 
       let dumpCount = 0
       shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('pidof')) return '12345'
         if (cmd.includes('uiautomator dump')) return ''
         if (cmd.includes('cat /sdcard/dispatch-ui.xml')) {
           dumpCount++
@@ -166,6 +168,7 @@ describe('SendEngine', () => {
 
       let dumpCount = 0
       shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('pidof')) return '12345'
         if (cmd.includes('uiautomator dump')) return ''
         if (cmd.includes('cat /sdcard/dispatch-ui.xml')) {
           dumpCount++
@@ -196,6 +199,7 @@ describe('SendEngine', () => {
 
       let dumpCount = 0
       shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('pidof')) return '12345'
         if (cmd.includes('uiautomator dump')) return ''
         if (cmd.includes('cat /sdcard/dispatch-ui.xml')) {
           dumpCount++
@@ -224,6 +228,7 @@ describe('SendEngine', () => {
       const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
 
       shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('pidof')) return '12345'
         if (cmd.includes('uiautomator dump')) return ''
         if (cmd.includes('cat /sdcard/dispatch-ui.xml')) {
           return '<hierarchy><node text="Loading..." /></hierarchy>'
@@ -279,6 +284,28 @@ describe('SendEngine', () => {
     })
   })
 
+  describe('withTimeout', () => {
+    it('rejects when operation exceeds timeout', async () => {
+      // Access the private method via prototype for unit testing
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const engineAny = engine as any
+      const slow = new Promise<string>((resolve) => {
+        setTimeout(() => resolve('done'), 60_000)
+      })
+
+      await expect(engineAny.withTimeout(slow, 50, 'testOp')).rejects.toThrow('Timeout: testOp exceeded 50ms')
+    })
+
+    it('resolves when operation completes within timeout', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const engineAny = engine as any
+      const fast = Promise.resolve('ok')
+
+      const result = await engineAny.withTimeout(fast, 5000, 'fastOp')
+      expect(result).toBe('ok')
+    })
+  })
+
   describe('pre-send health check', () => {
     it('always sends KEYCODE_WAKEUP proactively', async () => {
       const msg = enqueueMsg('health-1')
@@ -295,6 +322,7 @@ describe('SendEngine', () => {
       const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
 
       shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('pidof')) return '12345'
         if (cmd.includes('dumpsys window')) return 'mDreamingLockscreen=true'
         if (cmd.includes('uiautomator dump')) return ''
         if (cmd.includes('cat /sdcard/dispatch-ui.xml')) return CHAT_READY_XML

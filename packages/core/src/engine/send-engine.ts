@@ -40,6 +40,18 @@ export class SendEngine {
     this.recorder?.record(messageId, event, metadata)
   }
 
+  private async withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout>
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Timeout: ${label} exceeded ${ms}ms`)), ms)
+    })
+    try {
+      return await Promise.race([promise, timeout])
+    } finally {
+      clearTimeout(timer!)
+    }
+  }
+
   get isProcessing(): boolean {
     return this.processing
   }
@@ -73,6 +85,19 @@ export class SendEngine {
       if (!/^\d{10,15}$/.test(phoneDigits)) {
         throw new Error(`Invalid phone number: ${message.to}`)
       }
+
+      // Quick WhatsApp health check — verify the app is launchable
+      const waRunning = await this.adb.shell(deviceSerial, `pidof ${appPackage}`).catch(() => '')
+      if (!waRunning.trim()) {
+        // WA not running — try to start it first
+        await this.adb.shell(deviceSerial, `am start -n ${appPackage}/com.whatsapp.HomeActivity`).catch(() => {})
+        await this.delay(3000)
+        const waRunning2 = await this.adb.shell(deviceSerial, `pidof ${appPackage}`).catch(() => '')
+        if (!waRunning2.trim()) {
+          throw new Error(`WhatsApp (${appPackage}) not responding — app may need reinstall`)
+        }
+      }
+      this.record(message.id, 'wa_health_check', { running: true, appPackage })
 
       if (isFirstInBatch) {
         await this.ensureScreenReady(deviceSerial)
@@ -131,7 +156,7 @@ export class SendEngine {
           dialogsDismissed = await this.waitForChatReady(deviceSerial)
           this.record(message.id, 'chat_opened', { method, dialogsDismissed })
           if (!usePreFill) {
-            await this.typeMessage(deviceSerial, message.body)
+            await this.withTimeout(this.typeMessage(deviceSerial, message.body), 30_000, 'typeMessage')
           }
           this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
         } else if (method === 'search') {
@@ -139,12 +164,12 @@ export class SendEngine {
             await this.adb.shell(deviceSerial, `am start -n ${appPackage}/com.whatsapp.HomeActivity`)
             await this.delay(3000)
           }
-          await this.openViaSearch(deviceSerial, phoneDigits, message.body)
+          await this.withTimeout(this.openViaSearch(deviceSerial, phoneDigits, message.body), 30_000, 'openViaSearch')
           dialogsDismissed = 0
           this.record(message.id, 'chat_opened', { method, dialogsDismissed })
           this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
         } else {
-          await this.openViaTyping(deviceSerial, phoneDigits, message.body, appPackage)
+          await this.withTimeout(this.openViaTyping(deviceSerial, phoneDigits, message.body, appPackage), 30_000, 'openViaTyping')
           dialogsDismissed = 0
           this.record(message.id, 'chat_opened', { method, dialogsDismissed })
           this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })

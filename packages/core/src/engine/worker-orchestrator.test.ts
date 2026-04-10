@@ -294,7 +294,56 @@ describe('WorkerOrchestrator', () => {
     expect(status!.totalFailures).toBe(1)
   })
 
-  // 7. suppresses log spam for capped sender
+  // 7. requeues message on ADB+WAHA failure when attempts < maxRetries
+  it('requeues message on ADB+WAHA failure when attempts < maxRetries', async () => {
+    seedDeviceOnline(deps)
+    seedSenderMapping(deps)
+    const msg = enqueueTestMessage(deps)
+
+    // Verify message starts at attempts=0 with maxRetries=3
+    expect(msg.attempts).toBe(0)
+    expect(msg.maxRetries).toBe(3)
+
+    // ADB send fails
+    vi.spyOn(deps.engine, 'send').mockRejectedValue(new Error('ADB failed'))
+    // WAHA fallback also fails
+    vi.spyOn(deps.wahaFallback, 'send').mockRejectedValue(new Error('WAHA down'))
+
+    await orchestrator.tick()
+
+    const updated = deps.queue.getById(msg.id)
+    expect(updated).not.toBeNull()
+    // Should be requeued (not permanently_failed) since attempts(0)+1 < maxRetries(3)
+    expect(updated!.status).toBe('queued')
+    expect(updated!.attempts).toBe(1)
+  })
+
+  // 8. permanently fails message when attempts >= maxRetries
+  it('permanently fails message when attempts >= maxRetries', async () => {
+    seedDeviceOnline(deps)
+    seedSenderMapping(deps)
+    const msg = enqueueTestMessage(deps)
+
+    // Simulate message already at attempts=2 (maxRetries=3 → 2+1 >= 3 → permanent fail)
+    deps.db.prepare('UPDATE messages SET attempts = 2 WHERE id = ?').run(msg.id)
+
+    // ADB send fails
+    vi.spyOn(deps.engine, 'send').mockRejectedValue(new Error('ADB failed'))
+    // WAHA fallback also fails
+    vi.spyOn(deps.wahaFallback, 'send').mockRejectedValue(new Error('WAHA down'))
+
+    const failedEvents: unknown[] = []
+    deps.emitter.on('message:failed', (data) => failedEvents.push(data))
+
+    await orchestrator.tick()
+
+    const updated = deps.queue.getById(msg.id)
+    expect(updated).not.toBeNull()
+    expect(updated!.status).toBe('permanently_failed')
+    expect(failedEvents).toHaveLength(1)
+  })
+
+  // 9. suppresses log spam for capped sender
   it('suppresses log spam for capped sender', async () => {
     const cappedGuard = new RateLimitGuard({ maxPerSenderPerDay: 0 })
     deps = createDeps(db, { rateLimitGuard: cappedGuard })

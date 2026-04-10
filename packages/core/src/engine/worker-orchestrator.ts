@@ -78,11 +78,18 @@ export class WorkerOrchestrator {
         usedFallback = true
       } catch (wahaErr) {
         logger.error({ messageId: message.id, err: wahaErr }, 'Worker: WAHA fallback also failed')
-        queue.updateStatus(message.id, 'permanently_failed')
-        emitter.emit('message:failed', {
-          id: message.id,
-          error: `ADB and WAHA fallback both failed: ${wahaErr instanceof Error ? wahaErr.message : String(wahaErr)}`,
-        })
+        if (message.attempts + 1 < message.maxRetries) {
+          const requeued = queue.requeueForRetry(message.id)
+          logger.warn({ messageId: message.id, attempts: requeued.attempts, maxRetries: message.maxRetries }, 'Worker: message requeued for retry')
+        } else {
+          queue.updateStatus(message.id, 'permanently_failed')
+          emitter.emit('message:failed', {
+            id: message.id,
+            error: `ADB and WAHA fallback both failed after ${message.maxRetries} attempts: ${wahaErr instanceof Error ? wahaErr.message : String(wahaErr)}`,
+            attempts: message.attempts + 1,
+            senderNumber: message.senderNumber ?? undefined,
+          })
+        }
       }
     }
 
