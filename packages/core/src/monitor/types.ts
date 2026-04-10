@@ -2,6 +2,7 @@ export interface HealthSnapshot {
   serial: string
   batteryPercent: number
   temperatureCelsius: number
+  cpuTemperatureCelsius?: number
   ramAvailableMb: number
   storageFreeBytes: number
   wifiConnected: boolean

@@ -75,6 +75,67 @@ describe('HealthCollector', () => {
       expect(snapshot.batteryPercent).toBe(-1)
       expect(snapshot.temperatureCelsius).toBe(-1)
     })
+
+    it('reads CPU temperature from sysfs thermal_zone0', async () => {
+      fakeShell.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('dumpsys battery')) return 'level: 72\ntemperature: 310'
+        if (cmd.includes('/proc/meminfo')) return 'MemAvailable:   1024000 kB'
+        if (cmd.includes('df /data')) return 'Filesystem  1K-blocks  Used  Available\n/dev/block  32000000  20000000  12000000'
+        if (cmd.includes('dumpsys wifi')) return 'Wi-Fi is enabled'
+        if (cmd.includes('thermal_zone0/temp')) return '42500'
+        return ''
+      })
+
+      const snapshot = await collector.collect('ABC123')
+
+      expect(snapshot.cpuTemperatureCelsius).toBeCloseTo(42.5)
+    })
+
+    it('sets cpuTemperatureCelsius undefined when sysfs read fails', async () => {
+      fakeShell.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('dumpsys battery')) return 'level: 72\ntemperature: 310'
+        if (cmd.includes('/proc/meminfo')) return 'MemAvailable:   1024000 kB'
+        if (cmd.includes('df /data')) return 'Filesystem  1K-blocks  Used  Available\n/dev/block  32000000  20000000  12000000'
+        if (cmd.includes('dumpsys wifi')) return 'Wi-Fi is enabled'
+        if (cmd.includes('thermal_zone0/temp')) throw new Error('Permission denied')
+        return ''
+      })
+
+      const snapshot = await collector.collect('ABC123')
+
+      expect(snapshot.cpuTemperatureCelsius).toBeUndefined()
+    })
+
+    it('persists cpuTemperatureCelsius to SQLite', async () => {
+      fakeShell.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('dumpsys battery')) return 'level: 85\ntemperature: 280'
+        if (cmd.includes('/proc/meminfo')) return 'MemAvailable:   2048000 kB'
+        if (cmd.includes('df /data')) return 'Filesystem  1K-blocks  Used  Available\n/dev/block  32000000  16000000  16000000'
+        if (cmd.includes('dumpsys wifi')) return 'Wi-Fi is enabled'
+        if (cmd.includes('thermal_zone0/temp')) return '38000'
+        return ''
+      })
+
+      await collector.collect('ABC123')
+
+      const row = db.prepare('SELECT cpu_temperature_celsius FROM health_snapshots WHERE serial = ?').get('ABC123') as { cpu_temperature_celsius: number | null }
+      expect(row.cpu_temperature_celsius).toBeCloseTo(38.0)
+    })
+
+    it('handles empty sysfs output gracefully', async () => {
+      fakeShell.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('dumpsys battery')) return 'level: 72\ntemperature: 310'
+        if (cmd.includes('/proc/meminfo')) return 'MemAvailable:   1024000 kB'
+        if (cmd.includes('df /data')) return 'Filesystem  1K-blocks  Used  Available\n/dev/block  32000000  20000000  12000000'
+        if (cmd.includes('dumpsys wifi')) return 'Wi-Fi is enabled'
+        if (cmd.includes('thermal_zone0/temp')) return ''
+        return ''
+      })
+
+      const snapshot = await collector.collect('ABC123')
+
+      expect(snapshot.cpuTemperatureCelsius).toBeUndefined()
+    })
   })
 
   describe('getHistory', () => {
