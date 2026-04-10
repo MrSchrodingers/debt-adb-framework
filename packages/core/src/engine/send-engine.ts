@@ -345,6 +345,26 @@ export class SendEngine {
       return true
     }
 
+    // "Confiar" / "Trust" (unknown contact warning — WhatsApp shows this for new numbers)
+    const trustMatch = xml.match(/text="(Confiar|Trust|Confiar neste contato|Trust this contact)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/)
+    if (trustMatch) {
+      const cx = Math.round((Number(trustMatch[2]) + Number(trustMatch[4])) / 2)
+      const cy = Math.round((Number(trustMatch[3]) + Number(trustMatch[5])) / 2)
+      await this.adb.shell(deviceSerial, `input tap ${cx} ${cy}`)
+      await this.delay(1500)
+      return true
+    }
+
+    // "OK" button on trust/safety dialogs
+    const okMatch = xml.match(/text="(OK|Ok)"[^>]*clickable="true"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/)
+    if (okMatch && (xml.includes('confiar') || xml.includes('trust') || xml.includes('segurança') || xml.includes('safety'))) {
+      const cx = Math.round((Number(okMatch[2]) + Number(okMatch[4])) / 2)
+      const cy = Math.round((Number(okMatch[3]) + Number(okMatch[5])) / 2)
+      await this.adb.shell(deviceSerial, `input tap ${cx} ${cy}`)
+      await this.delay(1000)
+      return true
+    }
+
     // "Permitir" (notification permission)
     const allowMatch = xml.match(/text="(Permitir|Allow)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/)
     if (allowMatch) {
