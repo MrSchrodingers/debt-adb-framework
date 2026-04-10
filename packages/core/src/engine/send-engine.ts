@@ -402,8 +402,9 @@ export class SendEngine {
         return dismissedCount
       }
 
-      // Not ready yet — wait and retry
-      await this.delay(1000)
+      // Unknown state — try BACK keyevent as generic dialog dismissal
+      await this.adb.shell(deviceSerial, 'input keyevent 4')
+      await this.delay(1500)
     }
 
     // All retries exhausted — throw transient error
