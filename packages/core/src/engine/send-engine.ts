@@ -25,6 +25,7 @@ export interface SendResult {
 
 export class SendEngine {
   private processing = false
+  private touchDeviceCache = new Map<string, string | null>()
 
   constructor(
     private adb: AdbBridge,
@@ -368,7 +369,7 @@ export class SendEngine {
       if (waMatch) {
         const cx = Math.round((Number(waMatch[1]) + Number(waMatch[3])) / 2)
         const cy = Math.round((Number(waMatch[2]) + Number(waMatch[4])) / 2)
-        await this.adb.shell(deviceSerial, `input tap ${cx} ${cy}`)
+        await this.sendeventTap(deviceSerial, cx, cy)
         await this.delay(1000)
       }
       // Tap "Sempre" / "Always" if present
@@ -377,7 +378,7 @@ export class SendEngine {
       if (alwaysMatch) {
         const cx = Math.round((Number(alwaysMatch[2]) + Number(alwaysMatch[4])) / 2)
         const cy = Math.round((Number(alwaysMatch[3]) + Number(alwaysMatch[5])) / 2)
-        await this.adb.shell(deviceSerial, `input tap ${cx} ${cy}`)
+        await this.sendeventTap(deviceSerial, cx, cy)
         await this.delay(1500)
       }
       return true
@@ -388,7 +389,7 @@ export class SendEngine {
     if (continueMatch) {
       const cx = Math.round((Number(continueMatch[2]) + Number(continueMatch[4])) / 2)
       const cy = Math.round((Number(continueMatch[3]) + Number(continueMatch[5])) / 2)
-      await this.adb.shell(deviceSerial, `input tap ${cx} ${cy}`)
+      await this.sendeventTap(deviceSerial, cx, cy)
       await this.delay(1500)
       return true
     }
@@ -398,7 +399,7 @@ export class SendEngine {
     if (trustMatch) {
       const cx = Math.round((Number(trustMatch[2]) + Number(trustMatch[4])) / 2)
       const cy = Math.round((Number(trustMatch[3]) + Number(trustMatch[5])) / 2)
-      await this.adb.shell(deviceSerial, `input tap ${cx} ${cy}`)
+      await this.sendeventTap(deviceSerial, cx, cy)
       await this.delay(1500)
       return true
     }
@@ -408,7 +409,7 @@ export class SendEngine {
     if (okMatch && (xml.includes('confiar') || xml.includes('trust') || xml.includes('segurança') || xml.includes('safety'))) {
       const cx = Math.round((Number(okMatch[2]) + Number(okMatch[4])) / 2)
       const cy = Math.round((Number(okMatch[3]) + Number(okMatch[5])) / 2)
-      await this.adb.shell(deviceSerial, `input tap ${cx} ${cy}`)
+      await this.sendeventTap(deviceSerial, cx, cy)
       await this.delay(1000)
       return true
     }
@@ -418,7 +419,7 @@ export class SendEngine {
     if (allowMatch) {
       const cx = Math.round((Number(allowMatch[2]) + Number(allowMatch[4])) / 2)
       const cy = Math.round((Number(allowMatch[3]) + Number(allowMatch[5])) / 2)
-      await this.adb.shell(deviceSerial, `input tap ${cx} ${cy}`)
+      await this.sendeventTap(deviceSerial, cx, cy)
       await this.delay(1000)
       return true
     }
@@ -481,7 +482,7 @@ export class SendEngine {
     }
 
     // Tap search icon
-    await this.adb.shell(deviceSerial, `input tap ${searchIcon.cx} ${searchIcon.cy}`)
+    await this.sendeventTap(deviceSerial, searchIcon.cx, searchIcon.cy)
     await this.delay(1000)
 
     // Diversify search query: 70% digits, 30% contact name (if available)
@@ -508,7 +509,7 @@ export class SendEngine {
     }
 
     // Tap first search result
-    await this.adb.shell(deviceSerial, `input tap ${firstResult.cx} ${firstResult.cy}`)
+    await this.sendeventTap(deviceSerial, firstResult.cx, firstResult.cy)
     await this.delay(2000)
     await this.typeMessage(deviceSerial, body)
   }
@@ -555,7 +556,7 @@ export class SendEngine {
     }
 
     // Tap the contact row
-    await this.adb.shell(deviceSerial, `input tap ${contactRow.cx} ${contactRow.cy}`)
+    await this.sendeventTap(deviceSerial, contactRow.cx, contactRow.cy)
     await this.delay(2000)
     await this.typeMessage(deviceSerial, body)
   }
@@ -636,7 +637,7 @@ export class SendEngine {
       const [, x1, y1, x2, y2] = match.map(Number)
       const cx = Math.round((x1 + x2) / 2)
       const cy = Math.round((y1 + y2) / 2)
-      await this.adb.shell(deviceSerial, `input tap ${cx} ${cy}`)
+      await this.sendeventTap(deviceSerial, cx, cy)
     } else {
       await this.adb.shell(deviceSerial, 'input keyevent 66')
     }
@@ -673,6 +674,78 @@ export class SendEngine {
         await this.delay(this.gaussianDelay(100, 30))
       }
     }
+  }
+
+  /**
+   * Detect the touchscreen input device by scanning /dev/input/eventN.
+   * Checks the ABS capabilities bitmask for ABS_MT_POSITION_X (bit 53) and ABS_MT_POSITION_Y (bit 54).
+   * Result is cached per device serial to avoid repeated filesystem scans.
+   */
+  private async detectTouchDevice(deviceSerial: string): Promise<string | null> {
+    if (this.touchDeviceCache.has(deviceSerial)) {
+      return this.touchDeviceCache.get(deviceSerial)!
+    }
+
+    for (let i = 0; i <= 10; i++) {
+      const caps = await this.adb.shell(deviceSerial,
+        `su -c "cat /sys/class/input/event${i}/device/capabilities/abs 2>/dev/null"`,
+      ).catch(() => '')
+      if (caps.trim()) {
+        // Parse hex bitmask — check for ABS_MT_POSITION_X (bit 53) + ABS_MT_POSITION_Y (bit 54)
+        const val = BigInt('0x' + caps.trim().replace(/\s+/g, ''))
+        if ((val & (1n << 53n)) && (val & (1n << 54n))) {
+          const device = `/dev/input/event${i}`
+          this.touchDeviceCache.set(deviceSerial, device)
+          return device
+        }
+      }
+    }
+
+    this.touchDeviceCache.set(deviceSerial, null)
+    return null
+  }
+
+  /**
+   * Tap via Linux sendevent on the touchscreen input device.
+   * Bypasses Android's input injection framework, eliminating the POLICY_FLAG_INJECTED flag
+   * that WhatsApp could detect. Falls back to `input tap` when root or touch device is unavailable.
+   *
+   * Event codes:
+   * - ABS_MT_TRACKING_ID (3,57): 0 to start, 0xFFFFFFFF to end
+   * - ABS_MT_POSITION_X (3,53): x coordinate
+   * - ABS_MT_POSITION_Y (3,54): y coordinate
+   * - ABS_MT_TOUCH_MAJOR (3,48): finger contact area (5-10)
+   * - BTN_TOUCH (1,330): 1 down, 0 up
+   * - SYN_REPORT (0,0,0): sync
+   */
+  private async sendeventTap(deviceSerial: string, x: number, y: number): Promise<void> {
+    const touchDevice = await this.detectTouchDevice(deviceSerial)
+    if (!touchDevice) {
+      // No touch device detected — fall back to input tap
+      await this.adb.shell(deviceSerial, `input tap ${x} ${y}`)
+      return
+    }
+
+    // Realistic finger contact area variation
+    const touchMajor = 5 + Math.floor(Math.random() * 6) // 5-10
+    // Slight position jitter (+/- 3px)
+    const jx = x + Math.floor(Math.random() * 7) - 3
+    const jy = y + Math.floor(Math.random() * 7) - 3
+    // Realistic hold time: 60-140ms
+    const holdUs = 60000 + Math.floor(Math.random() * 80000)
+
+    await this.adb.shell(deviceSerial,
+      `su -c "sendevent ${touchDevice} 3 57 0; ` +
+      `sendevent ${touchDevice} 3 53 ${jx}; ` +
+      `sendevent ${touchDevice} 3 54 ${jy}; ` +
+      `sendevent ${touchDevice} 3 48 ${touchMajor}; ` +
+      `sendevent ${touchDevice} 1 330 1; ` +
+      `sendevent ${touchDevice} 0 0 0; ` +
+      `usleep ${holdUs}; ` +
+      `sendevent ${touchDevice} 3 57 4294967295; ` +
+      `sendevent ${touchDevice} 1 330 0; ` +
+      `sendevent ${touchDevice} 0 0 0"`,
+    )
   }
 
   private gaussianDelay(mean: number, stddev: number): number {

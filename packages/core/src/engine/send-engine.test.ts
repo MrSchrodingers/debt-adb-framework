@@ -374,8 +374,8 @@ describe('SendEngine', () => {
         idempotencyKey: 'chunk-2',
         senderNumber: '5543996835100',
       })
-      // Force typing strategy
-      const typingStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 0, typingWeight: 100 })
+      // Force typing strategy (explicitly zero all others to avoid flaky chatlist selection)
+      const typingStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 0, typingWeight: 100, chatlistWeight: 0 })
       const typingEngine = new SendEngine(mockAdb, queue, emitter, typingStrategy)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.spyOn(typingEngine as any, 'delay').mockResolvedValue(undefined)
@@ -400,8 +400,8 @@ describe('SendEngine', () => {
         idempotencyKey: 'chunk-3',
         senderNumber: '5543996835100',
       })
-      // Force typing strategy
-      const typingStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 0, typingWeight: 100 })
+      // Force typing strategy (explicitly zero all others to avoid flaky chatlist selection)
+      const typingStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 0, typingWeight: 100, chatlistWeight: 0 })
       const typingEngine = new SendEngine(mockAdb, queue, emitter, typingStrategy)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.spyOn(typingEngine as any, 'delay').mockResolvedValue(undefined)
@@ -461,7 +461,7 @@ describe('SendEngine', () => {
         idempotencyKey: 'search-1',
         senderNumber: '5543996835100',
       })
-      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0 })
+      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0, chatlistWeight: 0 })
       const searchEngine = new SendEngine(mockAdb, queue, emitter, searchStrategy)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.spyOn(searchEngine as any, 'delay').mockResolvedValue(undefined)
@@ -487,7 +487,7 @@ describe('SendEngine', () => {
         idempotencyKey: 'search-2',
         senderNumber: '5543996835100',
       })
-      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0 })
+      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0, chatlistWeight: 0 })
       const searchEngine = new SendEngine(mockAdb, queue, emitter, searchStrategy)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.spyOn(searchEngine as any, 'delay').mockResolvedValue(undefined)
@@ -514,7 +514,7 @@ describe('SendEngine', () => {
         idempotencyKey: 'search-3',
         senderNumber: '5543996835100',
       })
-      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0 })
+      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0, chatlistWeight: 0 })
       const searchEngine = new SendEngine(mockAdb, queue, emitter, searchStrategy)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.spyOn(searchEngine as any, 'delay').mockResolvedValue(undefined)
@@ -546,7 +546,7 @@ describe('SendEngine', () => {
         idempotencyKey: 'search-4',
         senderNumber: '5543996835100',
       })
-      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0 })
+      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0, chatlistWeight: 0 })
       const searchEngine = new SendEngine(mockAdb, queue, emitter, searchStrategy)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.spyOn(searchEngine as any, 'delay').mockResolvedValue(undefined)
@@ -586,7 +586,7 @@ describe('SendEngine', () => {
         idempotencyKey: 'search-5',
         senderNumber: '5543996835100',
       })
-      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0 })
+      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0, chatlistWeight: 0 })
       const searchEngine = new SendEngine(mockAdb, queue, emitter, searchStrategy)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.spyOn(searchEngine as any, 'delay').mockResolvedValue(undefined)
@@ -609,7 +609,7 @@ describe('SendEngine', () => {
       // Save a contact name so openViaChatList can find it
       queue.saveContact('5543991938235', 'João Silva')
 
-      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0 })
+      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0, chatlistWeight: 0 })
       const chatListEngine = new SendEngine(mockAdb, queue, emitter, searchStrategy)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.spyOn(chatListEngine as any, 'delay').mockResolvedValue(undefined)
@@ -641,7 +641,7 @@ describe('SendEngine', () => {
     it('falls back to openViaSearch when contact not in chat list', async () => {
       queue.saveContact('5543991938235', 'Unknown Person')
 
-      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0 })
+      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0, chatlistWeight: 0 })
       const chatListEngine = new SendEngine(mockAdb, queue, emitter, searchStrategy)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.spyOn(chatListEngine as any, 'delay').mockResolvedValue(undefined)
@@ -673,7 +673,7 @@ describe('SendEngine', () => {
 
     it('falls back to openViaSearch when no contact name in DB', async () => {
       // Don't save any contact name for this phone
-      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0 })
+      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0, chatlistWeight: 0 })
       const chatListEngine = new SendEngine(mockAdb, queue, emitter, searchStrategy)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.spyOn(chatListEngine as any, 'delay').mockResolvedValue(undefined)
@@ -805,6 +805,228 @@ describe('SendEngine', () => {
         resourceId: 'com.whatsapp:id/menuitem_search',
       })
       expect(result).toBeNull()
+    })
+  })
+
+  describe('sendeventTap — anti-fingerprint touch input (P2-A)', () => {
+    /**
+     * ABS capabilities bitmask that has bits 53 (ABS_MT_POSITION_X) and 54 (ABS_MT_POSITION_Y) set.
+     * BigInt: (1n << 53n) | (1n << 54n) = 0x60000000000000
+     * In hex string form that the kernel exposes via sysfs:
+     */
+    const TOUCH_ABS_CAPS = '60000000000000'
+
+    it('generates correct sendevent sequence when touch device is detected', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const engineAny = engine as any
+      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
+
+      shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        // event3 has touchscreen capabilities
+        if (cmd.includes('cat /sys/class/input/event3/device/capabilities/abs')) {
+          return TOUCH_ABS_CAPS
+        }
+        // Other eventN return empty
+        if (cmd.includes('/sys/class/input/event')) return ''
+        return ''
+      })
+
+      // Seed Math.random for deterministic jitter/touchMajor
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.5)
+
+      await engineAny.sendeventTap('device-1', 500, 800)
+
+      randomSpy.mockRestore()
+
+      const calls = shellMock.mock.calls.map((c: unknown[]) => c[1] as string)
+      // Should NOT have fallback input tap
+      expect(calls.some((cmd: string) => cmd.startsWith('input tap'))).toBe(false)
+      // Should have sendevent command with /dev/input/event3
+      const sendeventCall = calls.find((cmd: string) => cmd.includes('sendevent /dev/input/event3'))
+      expect(sendeventCall).toBeDefined()
+      // Check key event codes in the command
+      expect(sendeventCall).toContain('sendevent /dev/input/event3 3 57 0')   // ABS_MT_TRACKING_ID start
+      expect(sendeventCall).toContain('sendevent /dev/input/event3 3 53')     // ABS_MT_POSITION_X
+      expect(sendeventCall).toContain('sendevent /dev/input/event3 3 54')     // ABS_MT_POSITION_Y
+      expect(sendeventCall).toContain('sendevent /dev/input/event3 3 48')     // ABS_MT_TOUCH_MAJOR
+      expect(sendeventCall).toContain('sendevent /dev/input/event3 1 330 1')  // BTN_TOUCH down
+      expect(sendeventCall).toContain('sendevent /dev/input/event3 0 0 0')    // SYN_REPORT
+      expect(sendeventCall).toContain('usleep')                               // hold time
+      expect(sendeventCall).toContain('sendevent /dev/input/event3 3 57 4294967295') // tracking end
+      expect(sendeventCall).toContain('sendevent /dev/input/event3 1 330 0')  // BTN_TOUCH up
+    })
+
+    it('falls back to input tap when no touch device is found', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const engineAny = engine as any
+      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
+
+      // All eventN return empty (no touchscreen)
+      shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('/sys/class/input/event')) return ''
+        return ''
+      })
+
+      await engineAny.sendeventTap('device-1', 300, 600)
+
+      const calls = shellMock.mock.calls.map((c: unknown[]) => c[1] as string)
+      expect(calls.some((cmd: string) => cmd === 'input tap 300 600')).toBe(true)
+      expect(calls.some((cmd: string) => cmd.includes('sendevent'))).toBe(false)
+    })
+
+    it('caches detected touch device per serial', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const engineAny = engine as any
+      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
+
+      shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('cat /sys/class/input/event2/device/capabilities/abs')) {
+          return TOUCH_ABS_CAPS
+        }
+        if (cmd.includes('/sys/class/input/event')) return ''
+        return ''
+      })
+
+      // First call — scans eventN
+      await engineAny.sendeventTap('device-A', 100, 200)
+      const callsAfterFirst = shellMock.mock.calls.length
+
+      // Second call — should use cache, no new eventN scans
+      await engineAny.sendeventTap('device-A', 150, 250)
+      const callsAfterSecond = shellMock.mock.calls.length
+
+      // First call: 3 shell calls for event0, event1, event2 (found) + 1 sendevent = 4
+      // Second call: 0 scan calls (cached) + 1 sendevent = 1
+      const newCallsOnSecond = callsAfterSecond - callsAfterFirst
+      expect(newCallsOnSecond).toBe(1) // Only the sendevent command, no scanning
+    })
+
+    it('caches null result (no touch device) per serial', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const engineAny = engine as any
+      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
+
+      // No touch device on any eventN
+      shellMock.mockImplementation(async () => '')
+
+      await engineAny.sendeventTap('device-B', 100, 200)
+      const callsAfterFirst = shellMock.mock.calls.length
+
+      await engineAny.sendeventTap('device-B', 150, 250)
+      const callsAfterSecond = shellMock.mock.calls.length
+
+      // First call: 11 scan calls (event0-10, all empty) + 1 fallback input tap = 12
+      // Second call: 0 scan calls (cached null) + 1 fallback input tap = 1
+      const newCallsOnSecond = callsAfterSecond - callsAfterFirst
+      expect(newCallsOnSecond).toBe(1) // Only the fallback input tap, no scanning
+    })
+
+    it('uses separate cache entries for different device serials', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const engineAny = engine as any
+      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
+
+      shellMock.mockImplementation(async (serial: string, cmd: string) => {
+        // device-X has touch on event3, device-Y has no touch
+        if (serial === 'device-X' && cmd.includes('cat /sys/class/input/event3/device/capabilities/abs')) {
+          return TOUCH_ABS_CAPS
+        }
+        if (cmd.includes('/sys/class/input/event')) return ''
+        return ''
+      })
+
+      await engineAny.sendeventTap('device-X', 100, 200)
+      await engineAny.sendeventTap('device-Y', 100, 200)
+
+      const calls = shellMock.mock.calls.map((c: unknown[]) => ({ serial: c[0], cmd: c[1] as string }))
+
+      // device-X should get sendevent (touch device found)
+      const xSendevent = calls.find(c => c.serial === 'device-X' && c.cmd.includes('sendevent /dev/input/event3'))
+      expect(xSendevent).toBeDefined()
+
+      // device-Y should get fallback input tap (no touch device)
+      const yFallback = calls.find(c => c.serial === 'device-Y' && c.cmd === 'input tap 100 200')
+      expect(yFallback).toBeDefined()
+    })
+
+    it('detectTouchDevice finds device with correct ABS capabilities', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const engineAny = engine as any
+      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
+
+      shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        // Only event5 has the correct capabilities
+        if (cmd.includes('cat /sys/class/input/event5/device/capabilities/abs')) {
+          return TOUCH_ABS_CAPS
+        }
+        if (cmd.includes('/sys/class/input/event')) return ''
+        return ''
+      })
+
+      const result = await engineAny.detectTouchDevice('device-1')
+      expect(result).toBe('/dev/input/event5')
+    })
+
+    it('detectTouchDevice returns null when no touchscreen is found', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const engineAny = engine as any
+      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
+
+      // All eventN return capabilities without MT position bits
+      shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('/sys/class/input/event')) return '3' // has ABS bits, but not MT
+        return ''
+      })
+
+      const result = await engineAny.detectTouchDevice('device-none')
+      expect(result).toBeNull()
+    })
+
+    it('detectTouchDevice skips devices that reject shell command', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const engineAny = engine as any
+      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
+
+      shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        // event0-4 throw errors, event5 has touch
+        const eventMatch = cmd.match(/event(\d+)/)
+        if (eventMatch) {
+          const idx = Number(eventMatch[1])
+          if (idx < 5) throw new Error('Permission denied')
+          if (idx === 5) return TOUCH_ABS_CAPS
+        }
+        return ''
+      })
+
+      const result = await engineAny.detectTouchDevice('device-err')
+      expect(result).toBe('/dev/input/event5')
+    })
+
+    it('applies position jitter within +/- 3px range', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const engineAny = engine as any
+      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
+
+      shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('cat /sys/class/input/event0/device/capabilities/abs')) {
+          return TOUCH_ABS_CAPS
+        }
+        if (cmd.includes('/sys/class/input/event')) return ''
+        return ''
+      })
+
+      // random() = 0.0 → jitter = -3; random() = 1.0 → jitter = +3
+      // Test with random() = 0.0 (minimum jitter)
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0)
+      await engineAny.sendeventTap('jitter-test', 500, 800)
+      randomSpy.mockRestore()
+
+      const calls = shellMock.mock.calls.map((c: unknown[]) => c[1] as string)
+      const sendeventCall = calls.find((cmd: string) => cmd.includes('sendevent /dev/input/event0 3 53'))
+      // x=500, jitter = 500 + floor(0*7) - 3 = 497
+      expect(sendeventCall).toContain('sendevent /dev/input/event0 3 53 497')
+      // y=800, jitter = 800 + floor(0*7) - 3 = 797
+      expect(sendeventCall).toContain('sendevent /dev/input/event0 3 54 797')
     })
   })
 })
