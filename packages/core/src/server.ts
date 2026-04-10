@@ -593,6 +593,11 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       'svc power stayon usb',
       'locksettings set-disabled true',
       'input keyevent KEYCODE_WAKEUP',
+      // Disable autocorrect/autocomplete — prevents keyboard from altering message text
+      'settings put secure spell_checker_enabled 0',
+      'settings put system text_auto_replace 0',
+      'settings put system text_auto_caps 0',
+      'settings put system text_auto_punctuate 0',
     ]
     for (const cmd of commands) {
       adb.shell(serial, cmd).catch((err) => {

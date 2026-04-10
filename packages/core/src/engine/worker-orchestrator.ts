@@ -123,6 +123,9 @@ export class WorkerOrchestrator {
       const currentUser = parseInt(output.trim(), 10)
       if (currentUser === profileId) {
         this.currentForegroundUser = profileId
+        // Disable autocorrect for this user profile (prevents keyboard altering messages)
+        await this.deps.adb.shell(deviceSerial, 'settings put secure spell_checker_enabled 0').catch(() => {})
+        await this.deps.adb.shell(deviceSerial, 'settings put system text_auto_replace 0').catch(() => {})
         // Wait 2s for UI stabilization after switch
         await new Promise(r => setTimeout(r, 2000))
         return true
