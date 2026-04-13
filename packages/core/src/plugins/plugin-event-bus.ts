@@ -2,7 +2,7 @@ import type { DispatchEmitter, DispatchEventName, DispatchEventMap } from '../ev
 import type { PluginRegistry } from './plugin-registry.js'
 
 type PluginHandler = (data: unknown) => Promise<void>
-type ErrorHandler = (err: Error) => void
+type ErrorHandler = (pluginName: string, event: string, err: Error) => void
 
 const HANDLER_TIMEOUT_MS = 5_000
 
@@ -10,7 +10,6 @@ export class PluginEventBus {
   private handlers = new Map<string, Map<DispatchEventName, PluginHandler>>()
   private errorHandlers: ErrorHandler[] = []
   private listeners = new Map<DispatchEventName, (data: unknown) => void>()
-  private pluginEnabled = new Map<string, boolean>()
 
   constructor(
     private registry: PluginRegistry,
@@ -22,7 +21,6 @@ export class PluginEventBus {
       this.handlers.set(pluginName, new Map())
     }
     this.handlers.get(pluginName)!.set(event, handler)
-    this.pluginEnabled.set(pluginName, true)
 
     if (!this.listeners.has(event)) {
       const listener = (data: unknown) => {
@@ -31,10 +29,6 @@ export class PluginEventBus {
       this.emitter.on(event as keyof DispatchEventMap, listener as never)
       this.listeners.set(event, listener)
     }
-  }
-
-  setPluginEnabled(pluginName: string, enabled: boolean): void {
-    this.pluginEnabled.set(pluginName, enabled)
   }
 
   onError(handler: ErrorHandler): void {
@@ -48,7 +42,6 @@ export class PluginEventBus {
     this.handlers.clear()
     this.errorHandlers.length = 0
     this.listeners.clear()
-    this.pluginEnabled.clear()
   }
 
   private async dispatchToPlugins(event: DispatchEventName, data: unknown): Promise<void> {
@@ -58,9 +51,11 @@ export class PluginEventBus {
       const handler = eventHandlers.get(event)
       if (!handler) continue
 
-      if (!this.pluginEnabled.get(pluginName)) continue
+      // R9: Use registry as source of truth instead of local pluginEnabled map
+      const pluginRecord = this.registry.getPlugin(pluginName)
+      if (!pluginRecord || pluginRecord.enabled !== 1) continue
 
-      dispatches.push(this.executeWithTimeout(pluginName, handler, data))
+      dispatches.push(this.executeWithTimeout(pluginName, event, handler, data))
     }
 
     await Promise.allSettled(dispatches)
@@ -68,20 +63,25 @@ export class PluginEventBus {
 
   private async executeWithTimeout(
     pluginName: string,
+    event: DispatchEventName,
     handler: PluginHandler,
     data: unknown,
   ): Promise<void> {
+    // Q1: Fix timer leak — clear timeout in finally
+    let timeoutHandle: ReturnType<typeof setTimeout>
     try {
       const result = handler(data)
       const timeout = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error(`Plugin ${pluginName} handler timeout after ${HANDLER_TIMEOUT_MS}ms`)), HANDLER_TIMEOUT_MS)
+        timeoutHandle = setTimeout(() => reject(new Error(`Plugin ${pluginName} handler timeout after ${HANDLER_TIMEOUT_MS}ms`)), HANDLER_TIMEOUT_MS)
       })
       await Promise.race([result, timeout])
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err))
       for (const h of this.errorHandlers) {
-        h(error)
+        h(pluginName, event, error)
       }
+    } finally {
+      clearTimeout(timeoutHandle!)
     }
   }
 }

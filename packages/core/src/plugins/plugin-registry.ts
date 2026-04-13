@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import { nanoid } from 'nanoid'
-import type { PluginRecord } from './types.js'
+import type { PluginRecord, PluginStatus } from './types.js'
 
 export interface RegisterPluginParams {
   name: string
@@ -43,8 +43,8 @@ export class PluginRegistry {
         events TEXT NOT NULL DEFAULT '[]',
         enabled INTEGER NOT NULL DEFAULT 1,
         status TEXT NOT NULL DEFAULT 'active',
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       );
 
       CREATE TABLE IF NOT EXISTS failed_callbacks (
@@ -56,11 +56,13 @@ export class PluginRegistry {
         webhook_url TEXT NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 0,
         last_error TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        last_attempt_at TEXT NOT NULL DEFAULT (datetime('now'))
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        last_attempt_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       );
       CREATE INDEX IF NOT EXISTS idx_failed_callbacks_plugin
         ON failed_callbacks(plugin_name);
+      CREATE INDEX IF NOT EXISTS idx_failed_callbacks_retry
+        ON failed_callbacks(attempts, created_at);
     `)
 
     this.prepareStatements()
@@ -73,29 +75,31 @@ export class PluginRegistry {
       ON CONFLICT(name) DO UPDATE SET
         version = excluded.version,
         webhook_url = excluded.webhook_url,
+        api_key = excluded.api_key,
+        hmac_secret = excluded.hmac_secret,
         events = excluded.events,
-        updated_at = datetime('now')
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     `)
     this.stmtGetPlugin = this.db.prepare('SELECT * FROM plugins WHERE name = ?')
     this.stmtListPlugins = this.db.prepare('SELECT * FROM plugins ORDER BY name')
     this.stmtUpdateWebhookUrl = this.db.prepare(
-      "UPDATE plugins SET webhook_url = ?, updated_at = datetime('now') WHERE name = ?",
+      "UPDATE plugins SET webhook_url = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE name = ?",
     )
     this.stmtUpdateEvents = this.db.prepare(
-      "UPDATE plugins SET events = ?, updated_at = datetime('now') WHERE name = ?",
+      "UPDATE plugins SET events = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE name = ?",
     )
     this.stmtDisable = this.db.prepare(
-      "UPDATE plugins SET enabled = 0, status = 'disabled', updated_at = datetime('now') WHERE name = ?",
+      "UPDATE plugins SET enabled = 0, status = 'disabled', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE name = ?",
     )
     this.stmtEnable = this.db.prepare(
-      "UPDATE plugins SET enabled = 1, status = 'active', updated_at = datetime('now') WHERE name = ?",
+      "UPDATE plugins SET enabled = 1, status = 'active', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE name = ?",
     )
     this.stmtDelete = this.db.prepare('DELETE FROM plugins WHERE name = ?')
     this.stmtRotateApiKey = this.db.prepare(
-      "UPDATE plugins SET api_key = ?, updated_at = datetime('now') WHERE name = ?",
+      "UPDATE plugins SET api_key = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE name = ?",
     )
     this.stmtSetStatus = this.db.prepare(
-      "UPDATE plugins SET status = ?, updated_at = datetime('now') WHERE name = ?",
+      "UPDATE plugins SET status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE name = ?",
     )
     this.stmtGetByApiKey = this.db.prepare(
       'SELECT * FROM plugins WHERE api_key = ? AND enabled = 1',
@@ -149,7 +153,7 @@ export class PluginRegistry {
     return newKey
   }
 
-  setPluginStatus(name: string, status: string): void {
+  setPluginStatus(name: string, status: PluginStatus): void {
     this.stmtSetStatus.run(status, name)
   }
 

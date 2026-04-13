@@ -107,14 +107,14 @@ describe('PluginLoader', () => {
       expect(record!.status).toBe('active')
     })
 
-    it('core continues if plugin init() throws', async () => {
+    it('sets error status and re-throws if plugin init() throws', async () => {
       const plugin = makePlugin({
         name: 'broken-plugin',
         init: vi.fn<(ctx: PluginContext) => Promise<void>>().mockRejectedValue(new Error('init crash')),
       })
 
-      // Should not throw
-      await loader.loadPlugin(plugin, 'key-1', 'secret-1')
+      // R2: loadPlugin now re-throws after logging and setting error status
+      await expect(loader.loadPlugin(plugin, 'key-1', 'secret-1')).rejects.toThrow('init crash')
 
       const record = registry.getPlugin('broken-plugin')
       expect(record!.status).toBe('error')
@@ -219,7 +219,12 @@ describe('PluginLoader', () => {
       const row = db.prepare('SELECT context FROM messages WHERE idempotency_key = ?').get('context-test') as {
         context: string
       }
-      expect(JSON.parse(row.context)).toEqual(context)
+      // Decision #17: patient_id and template_id are merged into context from patient/message params
+      expect(JSON.parse(row.context)).toEqual({
+        ...context,
+        patient_id: 'patient-uuid-1',
+        template_id: 'overdue_reminder_v2',
+      })
     })
 
     it('merges send_options with defaults (max_retries and priority only)', async () => {
@@ -247,7 +252,7 @@ describe('PluginLoader', () => {
       expect(row.max_retries).toBe(5)
     })
 
-    it('rejects duplicate idempotency_key', async () => {
+    it('skips duplicate idempotency_key', async () => {
       const plugin = makePlugin({ name: 'oralsin' })
       let capturedCtx: PluginContext | null = null
       ;(plugin.init as ReturnType<typeof vi.fn>).mockImplementation(async (ctx: PluginContext) => {
@@ -256,9 +261,11 @@ describe('PluginLoader', () => {
 
       await loader.loadPlugin(plugin, 'key-1', 'secret-1')
 
-      capturedCtx!.enqueue([makeEnqueueParams({ idempotencyKey: 'dup-key' })])
+      const first = capturedCtx!.enqueue([makeEnqueueParams({ idempotencyKey: 'dup-key' })])
+      expect(first).toHaveLength(1)
 
-      expect(() => capturedCtx!.enqueue([makeEnqueueParams({ idempotencyKey: 'dup-key' })])).toThrow()
+      const second = capturedCtx!.enqueue([makeEnqueueParams({ idempotencyKey: 'dup-key' })])
+      expect(second).toHaveLength(0)
     })
   })
 

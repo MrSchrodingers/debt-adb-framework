@@ -73,11 +73,20 @@ export class PluginLoader {
 
     const ctx = this.createContext(plugin.name)
 
+    // Q3: validate pluginName against registry
+    const registered = this.registry.getPlugin(plugin.name)
+    if (!registered) throw new Error(`Plugin ${plugin.name} not registered after upsert`)
+
     try {
       await plugin.init(ctx)
       this.loadedPlugins.set(plugin.name, plugin)
-    } catch {
+    } catch (err) {
+      // R2: log + re-throw on init error
       this.registry.setPluginStatus(plugin.name, 'error')
+      this.loggerFactory.child({ plugin: plugin.name }).error('Plugin init failed', {
+        err: err instanceof Error ? err.message : String(err),
+      })
+      throw err
     }
   }
 
@@ -90,8 +99,15 @@ export class PluginLoader {
   }
 
   async destroyAll(): Promise<void> {
-    for (const [name] of this.loadedPlugins) {
-      await this.unloadPlugin(name)
+    for (const [name, plugin] of this.loadedPlugins) {
+      try {
+        await plugin.destroy()
+        this.loadedPlugins.delete(name)
+      } catch (err) {
+        this.loggerFactory.child({ plugin: name }).warn('Plugin destroy failed', {
+          err: err instanceof Error ? err.message : String(err),
+        })
+      }
     }
   }
 
@@ -104,27 +120,33 @@ export class PluginLoader {
 
     return {
       enqueue: (msgs: PluginEnqueueParams[]): PluginMessage[] => {
-        const params = msgs.map((m) => ({
-          to: m.patient.phone,
-          body: m.message.text,
-          idempotencyKey: m.idempotencyKey,
-          priority: PRIORITY_MAP[m.sendOptions?.priority ?? 'normal'] ?? 5,
-          senderNumber: m.resolvedSenderPhone ?? m.senders[0]?.phone ?? null,
-          pluginName,
-          correlationId: m.correlationId ?? undefined,
-          sendersConfig: JSON.stringify(m.senders),
-          context: m.context ? JSON.stringify(m.context) : null,
-          maxRetries: m.sendOptions?.maxRetries ?? 3,
-        }))
-
-        // Save patient contacts with real names for ADB send
-        for (const m of msgs) {
-          if (m.patient.phone && m.patient.name) {
-            this.queue.saveContact(m.patient.phone, m.patient.name)
+        const params = msgs.map((m) => {
+          // P1/Decision #17: Merge patientId and templateId into context
+          const mergedContext = {
+            ...m.context,
+            ...(m.patient.patientId ? { patient_id: m.patient.patientId } : {}),
+            ...(m.message.templateId ? { template_id: m.message.templateId } : {}),
           }
-        }
+          const hasContext = Object.keys(mergedContext).length > 0
 
-        const messages = this.queue.enqueueBatch(params)
+          return {
+            to: m.patient.phone,
+            body: m.message.text,
+            idempotencyKey: m.idempotencyKey,
+            priority: PRIORITY_MAP[m.sendOptions?.priority ?? 'normal'] ?? 5,
+            // P10: Only use resolvedSenderPhone — no senders[0] fallback
+            senderNumber: m.resolvedSenderPhone ?? undefined,
+            pluginName,
+            correlationId: m.correlationId ?? undefined,
+            sendersConfig: JSON.stringify(m.senders),
+            context: hasContext ? JSON.stringify(mergedContext) : undefined,
+            maxRetries: m.sendOptions?.maxRetries ?? 3,
+            contactName: m.patient.name ?? undefined,
+          }
+        })
+
+        // D5: saveContact is now inside enqueueBatch transaction via contactName param
+        const { enqueued: messages } = this.queue.enqueueBatch(params)
 
         return messages.map((msg) => ({
           id: msg.id,

@@ -12,6 +12,7 @@ export interface EnqueueParams {
   mediaUrl?: string
   mediaType?: string
   mediaCaption?: string
+  contactName?: string
 }
 
 export interface Message {
@@ -33,6 +34,7 @@ export interface Message {
   context: string | null
   wahaMessageId: string | null
   maxRetries: number
+  sentAt: string | null
   fallbackUsed: number
   fallbackProvider: string | null
   screenshotPath: string | null
@@ -49,6 +51,27 @@ export type MessageStatus =
   | 'failed'
   | 'permanently_failed'
   | 'waiting_device'
+
+export const VALID_TRANSITIONS: Record<MessageStatus, MessageStatus[]> = {
+  queued: ['locked', 'waiting_device', 'permanently_failed'],
+  locked: ['sending', 'queued'],
+  sending: ['sent', 'failed', 'queued', 'permanently_failed'],
+  sent: [],
+  failed: ['queued', 'permanently_failed'],
+  permanently_failed: ['queued'],
+  waiting_device: ['queued', 'permanently_failed'],
+}
+
+export interface SkippedItem {
+  idempotencyKey: string
+  reason: 'blacklisted' | 'duplicate'
+  to?: string
+}
+
+export interface BatchResult {
+  enqueued: Message[]
+  skipped: SkippedItem[]
+}
 
 export interface PaginatedFilters {
   limit?: number

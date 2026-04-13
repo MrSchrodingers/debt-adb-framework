@@ -9,3 +9,6 @@ scrape_configs:
       - targets: ["host.docker.internal:7890"]
         labels:
           instance: "dispatch-core"
+    # S13: /metrics now requires API key authentication
+    headers:
+      X-API-Key: "${DISPATCH_API_KEY}"

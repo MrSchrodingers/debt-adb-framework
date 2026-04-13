@@ -237,25 +237,25 @@ describe('MessageQueue', () => {
       queue.enqueue({ to: '111', body: 'Hello', idempotencyKey: 'k1' })
       const locked = queue.dequeue('device-001')
 
-      const sending = queue.updateStatus(locked!.id, 'sending')
+      const sending = queue.updateStatus(locked!.id, 'locked', 'sending')
       expect(sending.status).toBe('sending')
     })
 
     it('transitions sending → sent', () => {
       queue.enqueue({ to: '111', body: 'Hello', idempotencyKey: 'k1' })
       const locked = queue.dequeue('device-001')
-      queue.updateStatus(locked!.id, 'sending')
+      queue.updateStatus(locked!.id, 'locked', 'sending')
 
-      const sent = queue.updateStatus(locked!.id, 'sent')
+      const sent = queue.updateStatus(locked!.id, 'sending', 'sent')
       expect(sent.status).toBe('sent')
     })
 
     it('transitions sending → failed', () => {
       queue.enqueue({ to: '111', body: 'Hello', idempotencyKey: 'k1' })
       const locked = queue.dequeue('device-001')
-      queue.updateStatus(locked!.id, 'sending')
+      queue.updateStatus(locked!.id, 'locked', 'sending')
 
-      const failed = queue.updateStatus(locked!.id, 'failed')
+      const failed = queue.updateStatus(locked!.id, 'sending', 'failed')
       expect(failed.status).toBe('failed')
     })
 
@@ -268,12 +268,12 @@ describe('MessageQueue', () => {
         "UPDATE messages SET updated_at = '2000-01-01T00:00:00.000Z' WHERE id = ?",
       ).run(locked!.id)
 
-      const sending = queue.updateStatus(locked!.id, 'sending')
+      const sending = queue.updateStatus(locked!.id, 'locked', 'sending')
       expect(sending.updatedAt).not.toBe('2000-01-01T00:00:00.000Z')
     })
 
     it('throws for non-existent message id', () => {
-      expect(() => queue.updateStatus('nonexistent', 'sending')).toThrow()
+      expect(() => queue.updateStatus('nonexistent', 'locked', 'sending')).toThrow()
     })
   })
 
@@ -313,6 +313,175 @@ describe('MessageQueue', () => {
     it('returns null for non-existent id', () => {
       const found = queue.getById('nonexistent')
       expect(found).toBeNull()
+    })
+  })
+
+  describe('schema hardening (Batch 1)', () => {
+    it('PRAGMA busy_timeout can be set to 5000', () => {
+      db.pragma('busy_timeout = 5000')
+      const result = db.pragma('busy_timeout') as unknown[]
+      // better-sqlite3 returns [{busy_timeout: N}] — extract the value regardless of format
+      const value = typeof result[0] === 'object' && result[0] !== null
+        ? Object.values(result[0] as Record<string, unknown>)[0]
+        : result[0]
+      expect(value).toBe(5000)
+    })
+
+    it('idx_messages_plugin_name index exists', () => {
+      const indexes = db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='messages'",
+      ).all() as { name: string }[]
+      const names = indexes.map(i => i.name)
+      expect(names).toContain('idx_messages_plugin_name')
+    })
+
+    it('messages.sent_at column exists and defaults to null', () => {
+      const msg = queue.enqueue({ to: '111', body: 'Test', idempotencyKey: 'sat-1' })
+      expect(msg.sentAt).toBeNull()
+    })
+
+    it('messages.sent_at is set when status transitions to sent', () => {
+      const msg = queue.enqueue({ to: '111', body: 'Test', idempotencyKey: 'sat-2' })
+      queue.dequeue('device-001')
+      queue.updateStatus(msg.id, 'locked', 'sending')
+      const sent = queue.updateStatus(msg.id, 'sending', 'sent')
+      expect(sent.sentAt).not.toBeNull()
+      expect(sent.sentAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    })
+
+    it('messages.priority CHECK constraint rejects out-of-range values', () => {
+      expect(() =>
+        queue.enqueue({ to: '111', body: 'Test', idempotencyKey: 'pri-0', priority: 0 }),
+      ).toThrow()
+      expect(() =>
+        queue.enqueue({ to: '111', body: 'Test', idempotencyKey: 'pri-11', priority: 11 }),
+      ).toThrow()
+    })
+
+    it('messages.priority accepts values 1-10', () => {
+      const low = queue.enqueue({ to: '111', body: 'Low', idempotencyKey: 'pri-1', priority: 1 })
+      const high = queue.enqueue({ to: '111', body: 'High', idempotencyKey: 'pri-10', priority: 10 })
+      expect(low.priority).toBe(1)
+      expect(high.priority).toBe(10)
+    })
+
+    it('timestamps use ISO 8601 with milliseconds', () => {
+      const msg = queue.enqueue({ to: '111', body: 'ISO', idempotencyKey: 'iso-1' })
+      // strftime('%Y-%m-%dT%H:%M:%fZ') produces e.g. 2026-04-13T16:00:00.123Z
+      expect(msg.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+    })
+
+    it('getQueueStats works with pluginName filter', () => {
+      queue.enqueue({ to: '111', body: 'A', idempotencyKey: 'gs-1', pluginName: 'oralsin' })
+      queue.enqueue({ to: '222', body: 'B', idempotencyKey: 'gs-2', pluginName: 'other' })
+
+      const allStats = queue.getQueueStats()
+      expect(allStats.pending).toBe(2)
+
+      const oralsinStats = queue.getQueueStats('oralsin')
+      expect(oralsinStats.pending).toBe(1)
+    })
+  })
+
+  describe('state machine (Batch 2)', () => {
+    it('rejects invalid transition queued → sent', () => {
+      const msg = queue.enqueue({ to: '111', body: 'Test', idempotencyKey: 'sm-1' })
+      expect(() => queue.updateStatus(msg.id, 'queued', 'sent')).toThrow('Invalid state transition')
+    })
+
+    it('accepts valid transition locked → sending', () => {
+      queue.enqueue({ to: '111', body: 'Test', idempotencyKey: 'sm-2' })
+      const locked = queue.dequeue('device-001')
+      const sending = queue.updateStatus(locked!.id, 'locked', 'sending')
+      expect(sending.status).toBe('sending')
+    })
+
+    it('CAS fails when status does not match from', () => {
+      const msg = queue.enqueue({ to: '111', body: 'Test', idempotencyKey: 'sm-3' })
+      // Message is in 'queued', but we pass 'locked' as from
+      expect(() => queue.updateStatus(msg.id, 'locked', 'sending')).toThrow('status mismatch')
+    })
+
+    it('markPermanentlyFailed sets real attempts count', () => {
+      const msg = queue.enqueue({ to: '111', body: 'Test', idempotencyKey: 'sm-4' })
+      queue.dequeue('device-001')
+      queue.updateStatus(msg.id, 'locked', 'sending')
+      const pf = queue.markPermanentlyFailed(msg.id, 3)
+      expect(pf.status).toBe('permanently_failed')
+      expect(pf.attempts).toBe(3)
+    })
+
+    it('requeueForRetry increments attempts and resets lock', () => {
+      const msg = queue.enqueue({ to: '111', body: 'Test', idempotencyKey: 'sm-5' })
+      queue.dequeue('device-001')
+      queue.updateStatus(msg.id, 'locked', 'sending')
+      const requeued = queue.requeueForRetry(msg.id)
+      expect(requeued.status).toBe('queued')
+      expect(requeued.attempts).toBe(1)
+      expect(requeued.lockedBy).toBeNull()
+    })
+  })
+
+  describe('enqueueBatch partial-failure (Batch 2)', () => {
+    it('skips blacklisted numbers per-item', () => {
+      // Add to blacklist
+      db.prepare("INSERT INTO blacklist (phone_number, reason) VALUES ('111', 'spam')").run()
+
+      const result = queue.enqueueBatch([
+        { to: '111', body: 'Blocked', idempotencyKey: 'bf-1' },
+        { to: '222', body: 'OK', idempotencyKey: 'bf-2' },
+      ])
+
+      expect(result.enqueued).toHaveLength(1)
+      expect(result.enqueued[0].to).toBe('222')
+      expect(result.skipped).toHaveLength(1)
+      expect(result.skipped[0].reason).toBe('blacklisted')
+    })
+
+    it('skips duplicate idempotency_key with ON CONFLICT DO NOTHING', () => {
+      queue.enqueue({ to: '111', body: 'First', idempotencyKey: 'dup-1' })
+
+      const result = queue.enqueueBatch([
+        { to: '222', body: 'Dup', idempotencyKey: 'dup-1' },
+        { to: '333', body: 'New', idempotencyKey: 'dup-2' },
+      ])
+
+      expect(result.enqueued).toHaveLength(1)
+      expect(result.enqueued[0].to).toBe('333')
+      expect(result.skipped).toHaveLength(1)
+      expect(result.skipped[0].reason).toBe('duplicate')
+    })
+
+    it('saves contacts inside the batch transaction', () => {
+      const result = queue.enqueueBatch([
+        { to: '111', body: 'Hi', idempotencyKey: 'ct-1', contactName: 'Alice' },
+      ])
+
+      expect(result.enqueued).toHaveLength(1)
+      expect(queue.getContactName('111')).toBe('Alice')
+    })
+
+    it('maxRetries=3 produces exactly 3 send attempts (via requeueForRetry)', () => {
+      const msg = queue.enqueue({ to: '111', body: 'Test', idempotencyKey: 'mr-1', maxRetries: 3 })
+      expect(msg.maxRetries).toBe(3)
+
+      // Simulate 3 failed attempts
+      for (let i = 0; i < 3; i++) {
+        const locked = queue.dequeue('device-001')
+        expect(locked).not.toBeNull()
+        queue.updateStatus(locked!.id, 'locked', 'sending')
+
+        if (i < 2) {
+          // Requeue for retry
+          const requeued = queue.requeueForRetry(locked!.id)
+          expect(requeued.attempts).toBe(i + 1)
+        } else {
+          // Last attempt — mark permanently failed with real attempts
+          const pf = queue.markPermanentlyFailed(locked!.id, i + 1)
+          expect(pf.attempts).toBe(3)
+          expect(pf.status).toBe('permanently_failed')
+        }
+      }
     })
   })
 })

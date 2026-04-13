@@ -104,7 +104,7 @@ export class SendEngine {
     let method: string = 'unknown' // enrichment: populated in text/media branch, used in emit
 
     try {
-      this.queue.updateStatus(message.id, 'sending')
+      this.queue.updateStatus(message.id, 'locked', 'sending')
       this.emitter.emit('message:sending', { id: message.id, deviceSerial })
 
       // Normalize and validate phone number (accept +55, spaces, hyphens — strip to digits)
@@ -260,7 +260,7 @@ export class SendEngine {
       }
 
       const durationMs = Date.now() - startTime
-      this.queue.updateStatus(message.id, 'sent')
+      this.queue.updateStatus(message.id, 'sending', 'sent')
       this.emitter.emit('message:sent', {
         id: message.id,
         sentAt: new Date().toISOString(),
@@ -275,15 +275,8 @@ export class SendEngine {
 
       return { screenshot, durationMs, contactRegistered, dialogsDismissed }
     } catch (err) {
-      try { this.queue.updateStatus(message.id, 'failed') } catch { /* DB may be closed */ }
-      this.emitter.emit('message:failed', {
-        id: message.id,
-        error: err instanceof Error ? err.message : String(err),
-        attempts: message.attempts,
-        senderNumber: message.senderNumber ?? undefined,
-        lastStrategyMethod: method,
-      })
-
+      // Status transitions on failure are handled by the caller (worker-orchestrator or manual send)
+      // so we only clean up device state here and re-throw
       try { await this.ensureCleanState(deviceSerial, appPackage) } catch { /* device may be disconnected */ }
 
       throw err

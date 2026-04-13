@@ -57,7 +57,9 @@ describe('Oralsin Plugin Monitoring API', () => {
     })
 
     if (overrides.status && overrides.status !== 'queued') {
-      queue.updateStatus(msg.id, overrides.status as 'sent' | 'failed')
+      queue.updateStatus(msg.id, 'queued', 'locked')
+      queue.updateStatus(msg.id, 'locked', 'sending')
+      queue.updateStatus(msg.id, 'sending', overrides.status as 'sent' | 'failed')
     }
 
     if (overrides.fallbackUsed !== undefined || overrides.fallbackProvider !== undefined) {

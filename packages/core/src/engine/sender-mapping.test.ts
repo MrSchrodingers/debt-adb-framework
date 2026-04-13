@@ -48,7 +48,7 @@ describe('SenderMapping', () => {
       })
 
       expect(result.id).toBeDefined()
-      expect(result.phone_number).toBe('+554396837945')
+      expect(result.phone_number).toBe('554396837945')
       expect(result.device_serial).toBe('9b01005930533036')
       expect(result.profile_id).toBe(0)
       expect(result.app_package).toBe('com.whatsapp')
@@ -99,7 +99,7 @@ describe('SenderMapping', () => {
 
       const result = mapping.getByPhone('+554396837945')
       expect(result).not.toBeNull()
-      expect(result!.phone_number).toBe('+554396837945')
+      expect(result!.phone_number).toBe('554396837945')
     })
 
     it('returns null for unknown phone', () => {
@@ -114,7 +114,7 @@ describe('SenderMapping', () => {
         profileId: 0,
         appPackage: 'com.whatsapp',
       })
-      mapping.deactivate('+554396837945')
+      mapping.deactivate('554396837945')
 
       const result = mapping.getByPhone('+554396837945')
       expect(result).toBeNull()
@@ -153,11 +153,11 @@ describe('SenderMapping', () => {
         profileId: 0,
         appPackage: 'com.whatsapp.w4b',
       })
-      mapping.deactivate('+554396837844')
+      mapping.deactivate('554396837844')
 
       const all = mapping.listAll()
       expect(all).toHaveLength(1)
-      expect(all[0].phone_number).toBe('+554396837945')
+      expect(all[0].phone_number).toBe('554396837945')
     })
   })
 
@@ -170,7 +170,7 @@ describe('SenderMapping', () => {
         appPackage: 'com.whatsapp',
       })
 
-      const updated = mapping.update('+554396837945', {
+      const updated = mapping.update('554396837945', {
         deviceSerial: 'NEW_DEVICE_001',
         profileId: 10,
       })
@@ -195,10 +195,10 @@ describe('SenderMapping', () => {
         appPackage: 'com.whatsapp',
       })
 
-      mapping.deactivate('+554396837945')
+      mapping.deactivate('554396837945')
 
       // Direct query to verify (getByPhone filters inactive)
-      const row = db.prepare('SELECT active FROM sender_mapping WHERE phone_number = ?').get('+554396837945') as { active: number }
+      const row = db.prepare('SELECT active FROM sender_mapping WHERE phone_number = ?').get('554396837945') as { active: number }
       expect(row.active).toBe(0)
     })
   })
@@ -212,10 +212,10 @@ describe('SenderMapping', () => {
         appPackage: 'com.whatsapp',
       })
 
-      const deleted = mapping.remove('+554396837945')
+      const deleted = mapping.remove('554396837945')
       expect(deleted).toBe(true)
 
-      const row = db.prepare('SELECT * FROM sender_mapping WHERE phone_number = ?').get('+554396837945')
+      const row = db.prepare('SELECT * FROM sender_mapping WHERE phone_number = ?').get('554396837945')
       expect(row).toBeUndefined()
     })
 
@@ -259,11 +259,11 @@ describe('SenderMapping', () => {
         deviceSerial: '9b01005930533036',
       })
 
-      mapping.pauseSender('+554396837945', 'manual maintenance')
+      mapping.pauseSender('554396837945', 'manual maintenance')
 
       const row = db.prepare(
         'SELECT paused, paused_at, paused_reason FROM sender_mapping WHERE phone_number = ?',
-      ).get('+554396837945') as { paused: number; paused_at: string | null; paused_reason: string | null }
+      ).get('554396837945') as { paused: number; paused_at: string | null; paused_reason: string | null }
 
       expect(row.paused).toBe(1)
       expect(row.paused_at).toBeTruthy()
@@ -276,11 +276,11 @@ describe('SenderMapping', () => {
         deviceSerial: '9b01005930533036',
       })
 
-      mapping.pauseSender('+554396837945')
+      mapping.pauseSender('554396837945')
 
       const row = db.prepare(
         'SELECT paused, paused_reason FROM sender_mapping WHERE phone_number = ?',
-      ).get('+554396837945') as { paused: number; paused_reason: string | null }
+      ).get('554396837945') as { paused: number; paused_reason: string | null }
 
       expect(row.paused).toBe(1)
       expect(row.paused_reason).toBeNull()
@@ -294,12 +294,12 @@ describe('SenderMapping', () => {
         deviceSerial: '9b01005930533036',
       })
 
-      mapping.pauseSender('+554396837945', 'testing')
-      mapping.resumeSender('+554396837945')
+      mapping.pauseSender('554396837945', 'testing')
+      mapping.resumeSender('554396837945')
 
       const row = db.prepare(
         'SELECT paused, paused_at, paused_reason FROM sender_mapping WHERE phone_number = ?',
-      ).get('+554396837945') as { paused: number; paused_at: string | null; paused_reason: string | null }
+      ).get('554396837945') as { paused: number; paused_at: string | null; paused_reason: string | null }
 
       expect(row.paused).toBe(0)
       expect(row.paused_at).toBeNull()
@@ -314,8 +314,8 @@ describe('SenderMapping', () => {
         deviceSerial: '9b01005930533036',
       })
 
-      mapping.pauseSender('+554396837945')
-      expect(mapping.isPaused('+554396837945')).toBe(true)
+      mapping.pauseSender('554396837945')
+      expect(mapping.isPaused('554396837945')).toBe(true)
     })
 
     it('returns false for non-paused sender', () => {
@@ -324,11 +324,11 @@ describe('SenderMapping', () => {
         deviceSerial: '9b01005930533036',
       })
 
-      expect(mapping.isPaused('+554396837945')).toBe(false)
+      expect(mapping.isPaused('554396837945')).toBe(false)
     })
 
     it('returns false for unknown sender', () => {
-      expect(mapping.isPaused('+559999999999')).toBe(false)
+      expect(mapping.isPaused('559999999999')).toBe(false)
     })
 
     it('returns false after resume', () => {
@@ -337,9 +337,9 @@ describe('SenderMapping', () => {
         deviceSerial: '9b01005930533036',
       })
 
-      mapping.pauseSender('+554396837945')
-      mapping.resumeSender('+554396837945')
-      expect(mapping.isPaused('+554396837945')).toBe(false)
+      mapping.pauseSender('554396837945')
+      mapping.resumeSender('554396837945')
+      expect(mapping.isPaused('554396837945')).toBe(false)
     })
   })
 
@@ -349,7 +349,7 @@ describe('SenderMapping', () => {
         phoneNumber: '+554396837945',
         deviceSerial: '9b01005930533036',
       })
-      mapping.pauseSender('+554396837945', 'quota reached')
+      mapping.pauseSender('554396837945', 'quota reached')
 
       const all = mapping.listAll()
       expect(all).toHaveLength(1)
@@ -374,7 +374,7 @@ describe('SenderMapping', () => {
 
       const result = mapping.resolveSenderChain(senders)
       expect(result).not.toBeNull()
-      expect(result!.mapping.phone_number).toBe('+554396837945')
+      expect(result!.mapping.phone_number).toBe('554396837945')
       expect(result!.sender.role).toBe('primary')
     })
 
@@ -394,7 +394,7 @@ describe('SenderMapping', () => {
 
       const result = mapping.resolveSenderChain(senders)
       expect(result).not.toBeNull()
-      expect(result!.mapping.phone_number).toBe('+554396837844')
+      expect(result!.mapping.phone_number).toBe('554396837844')
       expect(result!.sender.role).toBe('overflow')
     })
 

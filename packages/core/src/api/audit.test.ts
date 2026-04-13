@@ -100,7 +100,9 @@ describe('AuditService', () => {
 
     it('filters by status', () => {
       const msg = queue.enqueue({ to: '5543991938235', body: 'Will be sent', idempotencyKey: 'ks1' })
-      queue.updateStatus(msg.id, 'sent')
+      queue.updateStatus(msg.id, 'queued', 'locked')
+      queue.updateStatus(msg.id, 'locked', 'sending')
+      queue.updateStatus(msg.id, 'sending', 'sent')
       queue.enqueue({ to: '5543991938235', body: 'Still queued', idempotencyKey: 'ks2' })
 
       const result = audit.listCombined({ status: 'sent' })
@@ -155,8 +157,9 @@ describe('AuditService', () => {
       const msg = queue.enqueue({ to: '5543991938235', body: 'Timeline test', idempotencyKey: 'kt1' })
 
       // Simulate status transitions
-      queue.updateStatus(msg.id, 'sending')
-      queue.updateStatus(msg.id, 'sent')
+      queue.updateStatus(msg.id, 'queued', 'locked')
+      queue.updateStatus(msg.id, 'locked', 'sending')
+      queue.updateStatus(msg.id, 'sending', 'sent')
 
       // Add a WAHA capture for correlation
       history.insert({

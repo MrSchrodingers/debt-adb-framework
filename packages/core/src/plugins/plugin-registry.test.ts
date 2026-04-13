@@ -260,4 +260,28 @@ describe('PluginRegistry', () => {
       expect(plugin).toBeNull()
     })
   })
+
+  describe('schema hardening (Batch 1)', () => {
+    it('plugins timestamps use ISO 8601 with milliseconds', () => {
+      registry.register({
+        name: 'oralsin',
+        version: '1.0.0',
+        webhookUrl: 'https://oralsin.example.com/webhook',
+        apiKey: 'key-1',
+        hmacSecret: 'secret-1',
+        events: ['message:sent'],
+      })
+      const plugin = registry.getPlugin('oralsin')
+      expect(plugin!.created_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+      expect(plugin!.updated_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+    })
+
+    it('idx_failed_callbacks_retry index exists', () => {
+      const indexes = db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='failed_callbacks'",
+      ).all() as { name: string }[]
+      const names = indexes.map(i => i.name)
+      expect(names).toContain('idx_failed_callbacks_retry')
+    })
+  })
 })

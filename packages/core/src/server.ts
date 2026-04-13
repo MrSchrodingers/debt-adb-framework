@@ -1,4 +1,5 @@
 import { readdir, unlink, stat } from 'node:fs/promises'
+import { timingSafeEqual } from 'node:crypto'
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import Database from 'better-sqlite3'
@@ -19,10 +20,10 @@ import { RateLimitGuard } from './config/rate-limits.js'
 import { parseConfig } from './config/config-schema.js'
 import { AuditLogger } from './config/audit-logger.js'
 import { ScreenshotPolicy } from './config/screenshot-policy.js'
-import { metricsRegistry, messagesSentTotal, messagesFailedTotal, messagesQueuedTotal, sendDurationSeconds, interMessageDelaySeconds, queueDepth, devicesOnline, senderDailyCount, quarantineEventsTotal, senderQuarantined } from './config/metrics.js'
+import { metricsRegistry, messagesSentTotal, messagesFailedTotal, messagesQueuedTotal, sendDurationSeconds, interMessageDelaySeconds, queueDepth, devicesOnline, senderDailyCount, quarantineEventsTotal, senderQuarantined, callbacksTotal, pluginErrorsTotal, queueDepthByPlugin } from './config/metrics.js'
 import { OralsinPlugin } from './plugins/oralsin-plugin.js'
 import type { DispatchEventName } from './events/index.js'
-import type { DispatchPlugin } from './plugins/types.js'
+import type { DispatchPlugin, PluginRecord } from './plugins/types.js'
 
 export interface DispatchCore {
   server: ReturnType<typeof Fastify>
@@ -42,6 +43,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const loggerConfig = buildLoggerConfig(process.env.NODE_ENV, process.env.LOG_FILE)
   const server = Fastify({
     logger: loggerConfig,
+    bodyLimit: 1_048_576, // S8: 1MB body limit
   })
   const corsOrigins = buildCorsOrigins(process.env.DISPATCH_ALLOWED_ORIGINS)
   await server.register(cors, { origin: corsOrigins })
@@ -51,6 +53,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   const db = new Database(process.env.DB_PATH || 'dispatch.db')
   db.pragma('journal_mode = WAL')
+  db.pragma('busy_timeout = 5000')
+  db.pragma('wal_autocheckpoint = 400')
 
   const queue = new MessageQueue(db)
   queue.initialize()
@@ -264,7 +268,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
     // Re-queue failed messages, then lock via dequeue to prevent auto-worker collision
     if (message.status === 'failed') {
-      queue.updateStatus(id, 'queued')
+      queue.updateStatus(id, 'failed', 'queued')
     }
     const locked = queue.dequeue(online.serial)
     if (!locked || locked.id !== id) {
@@ -275,6 +279,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       const result = await engine.send(locked, online.serial)
       return { status: 'sent', durationMs: result.durationMs }
     } catch (err) {
+      // Set failed status since there's no orchestrator WAHA fallback for manual sends
+      try { queue.updateStatus(id, 'sending', 'failed') } catch { /* ignore CAS mismatch */ }
       return reply.status(500).send({
         error: 'Send failed',
         detail: err instanceof Error ? err.message : String(err),
@@ -303,6 +309,13 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const pluginRegistry = new PluginRegistry(db)
   pluginRegistry.initialize()
   const pluginEventBus = new PluginEventBus(pluginRegistry, emitter)
+
+  // A3/Decision #20: Wire onError with log + metric
+  pluginEventBus.onError((pluginName, event, error) => {
+    server.log.error({ plugin: pluginName, event, err: error }, 'Plugin handler error')
+    pluginErrorsTotal.inc({ plugin: pluginName, event })
+  })
+
   const callbackDelivery = new CallbackDelivery(db, pluginRegistry, fetch)
   const pinoLogger = { child: (bindings: Record<string, unknown>) => ({ info: server.log.info.bind(server.log), warn: server.log.warn.bind(server.log), error: server.log.error.bind(server.log), debug: server.log.debug.bind(server.log) }) }
   const pluginLoader = new PluginLoader(pluginRegistry, pluginEventBus, queue, db, pinoLogger, senderMapping, engine)
@@ -322,8 +335,12 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     const plugin = factory()
     const apiKey = process.env[`PLUGIN_${name.toUpperCase()}_API_KEY`] || ''
     const hmacSecret = process.env[`PLUGIN_${name.toUpperCase()}_HMAC_SECRET`] || ''
-    await pluginLoader.loadPlugin(plugin, apiKey, hmacSecret)
-    server.log.info({ plugin: name }, 'Plugin loaded')
+    try {
+      await pluginLoader.loadPlugin(plugin, apiKey, hmacSecret)
+      server.log.info({ plugin: name }, 'Plugin loaded')
+    } catch (err) {
+      server.log.error({ plugin: name, err }, 'Plugin failed to load, skipping')
+    }
   }
 
   // Register plugin routes on Fastify (generic — works for any plugin)
@@ -334,10 +351,18 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     const fullPath = `/api/v1/plugins/${route.pluginName}${route.path}`
     const method = route.method.toLowerCase() as 'get' | 'post' | 'put' | 'patch' | 'delete'
 
+    // S7: validate plugin route paths
+    if (!/^\/[a-zA-Z0-9/_-]*$/.test(route.path)) {
+      server.log.error({ plugin: route.pluginName, path: route.path }, 'Invalid plugin route path, skipping')
+      continue
+    }
+
     server[method](fullPath, async (req, reply) => {
-      if (apiKey && method === 'post') {
-        const providedKey = (req.headers as Record<string, string>)['x-api-key']
-        if (providedKey !== apiKey) {
+      // S1/S2: timingSafeEqual auth for ALL HTTP methods
+      if (apiKey) {
+        const providedKey = (req.headers as Record<string, string>)['x-api-key'] ?? ''
+        if (providedKey.length !== apiKey.length ||
+            !timingSafeEqual(Buffer.from(providedKey), Buffer.from(apiKey))) {
           return reply.status(401).send({ error: 'Invalid API key' })
         }
       }
@@ -393,7 +418,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
           },
           error: null,
           fallback_reason: msg.fallbackUsed ? { original_error: 'adb_failed', original_session: senderSession, quarantined: false } : undefined,
-          context: msg.context ? JSON.parse(msg.context) : undefined,
+          context: msg.context ? (() => { try { return JSON.parse(msg.context!) } catch { return undefined } })() : undefined,
         })
       }
     })
@@ -413,7 +438,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
             message: data.error,
             retryable: msg.attempts < msg.maxRetries,
           },
-          context: msg.context ? JSON.parse(msg.context) : undefined,
+          context: msg.context ? (() => { try { return JSON.parse(msg.context!) } catch { return undefined } })() : undefined,
         })
       }
     })
@@ -529,16 +554,22 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     }
   })
 
+  // S4: Strip secrets from admin GET responses
+  const sanitizePlugin = (p: PluginRecord) => {
+    const { api_key: _ak, hmac_secret: _hs, ...safe } = p
+    return safe
+  }
+
   // Admin routes for plugin management
   server.get('/api/v1/admin/plugins', async (_req, reply) => {
-    return reply.send(pluginRegistry.listPlugins())
+    return reply.send(pluginRegistry.listPlugins().map(sanitizePlugin))
   })
 
   server.get('/api/v1/admin/plugins/:name', async (req, reply) => {
     const { name } = req.params as { name: string }
     const plugin = pluginRegistry.getPlugin(name)
     if (!plugin) return reply.status(404).send({ error: 'Plugin not found' })
-    return reply.send(plugin)
+    return reply.send(sanitizePlugin(plugin))
   })
 
   server.patch('/api/v1/admin/plugins/:name', async (req, reply) => {
@@ -553,8 +584,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       action: 'update',
       resourceType: 'plugin',
       resourceId: name,
-      beforeState: beforeState ? { status: beforeState.status, webhookUrl: beforeState.webhookUrl, events: beforeState.events } : null,
-      afterState: afterState ? { status: afterState.status, webhookUrl: afterState.webhookUrl, events: afterState.events } : null,
+      beforeState: beforeState ? { status: beforeState.status, webhookUrl: beforeState.webhook_url, events: beforeState.events } : null,
+      afterState: afterState ? { status: afterState.status, webhookUrl: afterState.webhook_url, events: afterState.events } : null,
     })
     return reply.send(afterState)
   })
@@ -567,7 +598,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       action: 'delete',
       resourceType: 'plugin',
       resourceId: name,
-      beforeState: beforeState ? { status: beforeState.status, webhookUrl: beforeState.webhookUrl, events: beforeState.events } : null,
+      beforeState: beforeState ? { status: beforeState.status, webhookUrl: beforeState.webhook_url, events: beforeState.events } : null,
     })
     return reply.status(204).send()
   })

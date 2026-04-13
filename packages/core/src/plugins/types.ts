@@ -42,7 +42,7 @@ export interface PluginLogger {
 }
 
 export type PluginStatus = 'active' | 'error' | 'disabled'
-export type CallbackType = 'result' | 'ack' | 'response'
+export type CallbackType = 'result' | 'ack' | 'response' | 'interim_failure' | 'expired'
 
 // ── Plugin Record (SQLite row) ──
 
@@ -155,8 +155,30 @@ export interface CallbackError {
 
 export interface FallbackReason {
   original_error: string
+  original_message?: string
   original_session: string
   quarantined: boolean
+}
+
+export interface InterimFailureCallback {
+  event: 'interim_failure'
+  idempotency_key: string
+  correlation_id?: string
+  status: 'interim_failed'
+  error: { code: string; message: string; retryable: boolean }
+  failed_sender: { phone: string; session: string; pair: string } | null
+  next_sender: { phone: string; session: string; pair: string; role: string } | null
+  attempt: number
+  context?: Record<string, unknown>
+}
+
+export interface ExpiredCallback {
+  event: 'expired'
+  idempotency_key: string
+  correlation_id?: string
+  status: 'expired'
+  error: { code: 'ttl_expired'; message: string; retryable: false }
+  context?: Record<string, unknown>
 }
 
 export interface AckCallback {

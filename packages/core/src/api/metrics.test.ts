@@ -32,7 +32,9 @@ describe('Metrics', () => {
     })
 
     if (overrides.status && overrides.status !== 'queued') {
-      queue.updateStatus(msg.id, overrides.status as 'sent' | 'failed')
+      queue.updateStatus(msg.id, 'queued', 'locked')
+      queue.updateStatus(msg.id, 'locked', 'sending')
+      queue.updateStatus(msg.id, 'sending', overrides.status as 'sent' | 'failed')
     }
 
     // Allow manual timestamp overrides for testing

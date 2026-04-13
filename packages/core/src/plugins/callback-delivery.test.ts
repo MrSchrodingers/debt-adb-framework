@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import Database from 'better-sqlite3'
+import { createHmac } from 'node:crypto'
 import { CallbackDelivery } from './callback-delivery.js'
 import { PluginRegistry } from './plugin-registry.js'
 import type { ResultCallback, AckCallback, ResponseCallback, FailedCallbackRecord, DeliveryInfo } from './types.js'
@@ -122,6 +123,35 @@ describe('CallbackDelivery', () => {
       const headers = init.headers as Record<string, string>
       expect(headers['X-Dispatch-Signature']).toBeDefined()
       expect(headers['X-Dispatch-Signature'].length).toBeGreaterThan(0)
+    })
+
+    it('T3: HMAC signature matches exact cryptographic computation', async () => {
+      registerOralsin()
+      mockFetch.mockResolvedValueOnce(new Response('OK', { status: 200 }))
+
+      const payload: ResultCallback = {
+        idempotency_key: 'hmac-verify-key',
+        status: 'sent',
+        sent_at: '2026-04-13T20:00:00Z',
+        delivery: { ...baseDelivery, elapsed_ms: 7777 },
+        error: null,
+        context: { clinic_id: 'uuid-1' },
+      }
+
+      await delivery.sendResultCallback('oralsin', 'msg-hmac', payload)
+
+      const [, init] = mockFetch.mock.calls[0]
+      const headers = init.headers as Record<string, string>
+      const body = init.body as string
+
+      // Compute expected HMAC independently
+      const expectedHmac = createHmac('sha256', 'test-hmac-secret')
+        .update(body)
+        .digest('hex')
+
+      expect(headers['X-Dispatch-Signature']).toBe(expectedHmac)
+      // Verify it is a valid 64-char hex string (SHA-256 output)
+      expect(headers['X-Dispatch-Signature']).toMatch(/^[a-f0-9]{64}$/)
     })
 
     it('includes context pass-through in callback body', async () => {
@@ -264,6 +294,136 @@ describe('CallbackDelivery', () => {
 
       vi.useRealTimers()
     })
+
+    it('T9: stops retrying on 400 after first attempt (non-retryable)', async () => {
+      vi.useFakeTimers()
+      registerOralsin()
+      mockFetch.mockResolvedValue(new Response('Bad Request', { status: 400 }))
+
+      const promise = delivery.sendResultCallback('oralsin', 'msg-400', {
+        idempotency_key: 'test-400',
+        status: 'sent',
+        sent_at: '2026-04-13T20:00:00Z',
+        delivery: { ...baseDelivery },
+        error: null,
+      })
+
+      // Advance past all possible backoff windows
+      await vi.advanceTimersByTimeAsync(200_000)
+      await promise
+
+      // 400 = client error, should NOT retry after first attempt
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+
+      // Should still be persisted as failed
+      const failed = delivery.listFailedCallbacks()
+      expect(failed).toHaveLength(1)
+      expect(failed[0].last_error).toContain('HTTP 400')
+      vi.useRealTimers()
+    })
+
+    it('T9: retries on 503 with short backoff [0, 1s, 2s, 4s] (Decision #40)', async () => {
+      vi.useFakeTimers()
+      registerOralsin()
+      // First attempt returns 503, then 3 more 503 retries with short backoff
+      mockFetch.mockResolvedValue(new Response('Service Unavailable', { status: 503 }))
+
+      const promise = delivery.sendResultCallback('oralsin', 'msg-503', {
+        idempotency_key: 'test-503',
+        status: 'sent',
+        sent_at: '2026-04-13T20:00:00Z',
+        delivery: { ...baseDelivery },
+        error: null,
+      })
+
+      // Attempt 1 fires immediately (backoff[0] = 0)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+
+      // 503 triggers short backoff inline: [0, 1s, 2s, 4s]
+      // 503 retry 1 at +1s
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(mockFetch).toHaveBeenCalledTimes(2)
+
+      // 503 retry 2 at +2s
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(mockFetch).toHaveBeenCalledTimes(3)
+
+      // 503 retry 3 at +4s
+      await vi.advanceTimersByTimeAsync(4_000)
+      expect(mockFetch).toHaveBeenCalledTimes(4)
+
+      // Advance remaining to drain — no more retries after 503 exhausted
+      await vi.advanceTimersByTimeAsync(200_000)
+      await promise
+
+      // Total: 1 original + 3 short backoff retries = 4 calls
+      expect(mockFetch).toHaveBeenCalledTimes(4)
+
+      // Persisted as failed
+      const failed = delivery.listFailedCallbacks()
+      expect(failed).toHaveLength(1)
+      expect(failed[0].last_error).toContain('HTTP 503')
+      vi.useRealTimers()
+    })
+
+    it('T9: 503 succeeds on second short-backoff retry', async () => {
+      vi.useFakeTimers()
+      registerOralsin()
+      mockFetch
+        .mockResolvedValueOnce(new Response('Service Unavailable', { status: 503 })) // attempt 1
+        .mockResolvedValueOnce(new Response('Service Unavailable', { status: 503 })) // 503 retry 1
+        .mockResolvedValueOnce(new Response('OK', { status: 200 })) // 503 retry 2 succeeds
+
+      const promise = delivery.sendResultCallback('oralsin', 'msg-503-ok', {
+        idempotency_key: 'test-503-ok',
+        status: 'sent',
+        sent_at: '2026-04-13T20:00:00Z',
+        delivery: { ...baseDelivery },
+        error: null,
+      })
+
+      // Attempt 1 fires immediately
+      await vi.advanceTimersByTimeAsync(0)
+      // 503 retry 1 at +1s
+      await vi.advanceTimersByTimeAsync(1_000)
+      // 503 retry 2 at +2s
+      await vi.advanceTimersByTimeAsync(2_000)
+      await promise
+
+      expect(mockFetch).toHaveBeenCalledTimes(3)
+
+      // No failed callbacks — it succeeded
+      const failed = delivery.listFailedCallbacks()
+      expect(failed).toHaveLength(0)
+      vi.useRealTimers()
+    })
+
+    it('retries all 4 times on 500 (server error)', async () => {
+      vi.useFakeTimers()
+      registerOralsin()
+      mockFetch.mockResolvedValue(new Response('Internal Server Error', { status: 500 }))
+
+      const promise = delivery.sendResultCallback('oralsin', 'msg-500', {
+        idempotency_key: 'test-500',
+        status: 'sent',
+        sent_at: '2026-04-13T20:00:00Z',
+        delivery: { ...baseDelivery },
+        error: null,
+      })
+
+      await vi.advanceTimersByTimeAsync(5_000)
+      await vi.advanceTimersByTimeAsync(30_000)
+      await vi.advanceTimersByTimeAsync(120_000)
+      await promise
+
+      expect(mockFetch).toHaveBeenCalledTimes(4)
+
+      const failed = delivery.listFailedCallbacks()
+      expect(failed).toHaveLength(1)
+      expect(failed[0].last_error).toContain('HTTP 500')
+      vi.useRealTimers()
+    })
   })
 
   describe('sendAckCallback', () => {
@@ -372,6 +532,154 @@ describe('CallbackDelivery', () => {
       // Should be removed from failed list
       const remaining = delivery.listFailedCallbacks()
       expect(remaining).toHaveLength(0)
+    })
+
+    it('T12: increments attempts and updates last_error on failed retry', async () => {
+      vi.useFakeTimers()
+      registerOralsin()
+      // Create a failed callback first
+      mockFetch.mockRejectedValue(new Error('ECONNREFUSED'))
+      const promise = delivery.sendResultCallback('oralsin', 'msg-retry-fail', {
+        idempotency_key: 'test-retry-fail',
+        status: 'sent',
+        sent_at: '2026-04-13T20:00:00Z',
+        delivery: { ...baseDelivery },
+        error: null,
+      })
+      await vi.advanceTimersByTimeAsync(155_000)
+      await promise
+      mockFetch.mockReset()
+      vi.useRealTimers()
+
+      const failedBefore = delivery.listFailedCallbacks()
+      expect(failedBefore).toHaveLength(1)
+      const originalAttempts = failedBefore[0].attempts
+      const failedId = failedBefore[0].id
+
+      // Retry with a different error
+      mockFetch.mockRejectedValueOnce(new Error('ETIMEDOUT'))
+      await delivery.retryFailedCallback(failedId)
+
+      // Verify: attempts incremented, last_error updated
+      const failedAfter = delivery.listFailedCallbacks()
+      expect(failedAfter).toHaveLength(1)
+      expect(failedAfter[0].attempts).toBe(originalAttempts + 1)
+      expect(failedAfter[0].last_error).toBe('ETIMEDOUT')
+    })
+
+    it('T12: updates last_error with HTTP status on non-ok response during retry', async () => {
+      vi.useFakeTimers()
+      registerOralsin()
+      // Create a failed callback first
+      mockFetch.mockRejectedValue(new Error('ECONNREFUSED'))
+      const promise = delivery.sendResultCallback('oralsin', 'msg-retry-http', {
+        idempotency_key: 'test-retry-http',
+        status: 'sent',
+        sent_at: '2026-04-13T20:00:00Z',
+        delivery: { ...baseDelivery },
+        error: null,
+      })
+      await vi.advanceTimersByTimeAsync(155_000)
+      await promise
+      mockFetch.mockReset()
+      vi.useRealTimers()
+
+      const failedBefore = delivery.listFailedCallbacks()
+      const failedId = failedBefore[0].id
+
+      // Retry returns 500
+      mockFetch.mockResolvedValueOnce(new Response('Internal Server Error', { status: 500 }))
+      await delivery.retryFailedCallback(failedId)
+
+      const failedAfter = delivery.listFailedCallbacks()
+      expect(failedAfter).toHaveLength(1)
+      expect(failedAfter[0].last_error).toContain('HTTP 500')
+      expect(failedAfter[0].last_error).toContain('Internal Server Error')
+    })
+
+    it('throws for non-existent failed callback id', async () => {
+      await expect(
+        delivery.retryFailedCallback('nonexistent-id'),
+      ).rejects.toThrow('Failed callback not found: nonexistent-id')
+    })
+  })
+
+  describe('AbortSignal timeout', () => {
+    it('aborts fetch when it exceeds HTTP timeout', async () => {
+      registerOralsin()
+
+      // Mock fetch that captures the signal and hangs
+      mockFetch.mockImplementation(
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            // Listen for abort signal
+            if (init.signal) {
+              init.signal.addEventListener('abort', () => {
+                reject(new DOMException('The operation was aborted', 'AbortError'))
+              })
+            }
+          }),
+      )
+
+      // Create delivery with very short timeout for testing
+      const env = process.env.DISPATCH_HTTP_TIMEOUT_MS
+      process.env.DISPATCH_HTTP_TIMEOUT_MS = '50'
+      const shortTimeoutDelivery = new CallbackDelivery(db, registry, mockFetch)
+
+      // This should fail due to timeout and eventually persist to failed_callbacks
+      vi.useFakeTimers()
+      const promise = shortTimeoutDelivery.sendResultCallback('oralsin', 'msg-timeout', {
+        idempotency_key: 'test-timeout',
+        status: 'sent',
+        sent_at: '2026-04-13T20:00:00Z',
+        delivery: { ...baseDelivery },
+        error: null,
+      })
+
+      // Each attempt times out at 50ms, then backoff delays
+      // Advance enough for all 4 attempts + backoffs
+      for (let i = 0; i < 20; i++) {
+        await vi.advanceTimersByTimeAsync(50)
+      }
+      await vi.advanceTimersByTimeAsync(5_000)
+      for (let i = 0; i < 20; i++) {
+        await vi.advanceTimersByTimeAsync(50)
+      }
+      await vi.advanceTimersByTimeAsync(30_000)
+      for (let i = 0; i < 20; i++) {
+        await vi.advanceTimersByTimeAsync(50)
+      }
+      await vi.advanceTimersByTimeAsync(120_000)
+      for (let i = 0; i < 20; i++) {
+        await vi.advanceTimersByTimeAsync(50)
+      }
+      await promise
+
+      // Verify: the AbortError was caught and propagated
+      const failed = shortTimeoutDelivery.listFailedCallbacks()
+      expect(failed).toHaveLength(1)
+      expect(failed[0].last_error).toContain('abort')
+
+      process.env.DISPATCH_HTTP_TIMEOUT_MS = env
+      vi.useRealTimers()
+    })
+
+    it('passes AbortSignal to fetchFn', async () => {
+      registerOralsin()
+      mockFetch.mockResolvedValueOnce(new Response('OK', { status: 200 }))
+
+      await delivery.sendResultCallback('oralsin', 'msg-signal', {
+        idempotency_key: 'test-signal',
+        status: 'sent',
+        sent_at: '2026-04-13T20:00:00Z',
+        delivery: { ...baseDelivery },
+        error: null,
+      })
+
+      // Verify the fetch was called with a signal property
+      const [, init] = mockFetch.mock.calls[0]
+      expect(init.signal).toBeDefined()
+      expect(init.signal).toBeInstanceOf(AbortSignal)
     })
   })
 })

@@ -137,6 +137,10 @@ describe('parseConfig', () => {
     const config = parseConfig({
       ...minimalEnv,
       DISPATCH_PLUGINS: 'oralsin, custom-plugin',
+      PLUGIN_ORALSIN_API_KEY: 'test-key',
+      PLUGIN_ORALSIN_HMAC_SECRET: 'test-secret',
+      PLUGIN_ORALSIN_WEBHOOK_URL: 'https://test.debt.com.br/webhook',
+      DISPATCH_WEBHOOK_ALLOWED_DOMAINS: 'debt.com.br',
     })
     expect(config.plugins).toEqual(['oralsin', 'custom-plugin'])
   })

@@ -57,7 +57,7 @@ export class ReceiptTracker {
         waha_message_id TEXT,
         delivered_emitted INTEGER NOT NULL DEFAULT 0,
         read_emitted INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       );
       CREATE INDEX IF NOT EXISTS idx_pending_corr_lookup
         ON pending_correlations(to_number_normalized, sender_number_normalized, sent_at);

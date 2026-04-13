@@ -50,6 +50,11 @@ export interface ResolvedSender {
 export class SenderMapping {
   constructor(private db: Database.Database) {}
 
+  /** Decision #39: Normalize phone to digits-only (Postel's Law) */
+  private normalizePhone(phone: string): string {
+    return phone.replace(/\D/g, '')
+  }
+
   initialize(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sender_mapping (
@@ -86,7 +91,7 @@ export class SenderMapping {
       RETURNING *
     `).get(
       id,
-      params.phoneNumber,
+      this.normalizePhone(params.phoneNumber),
       params.deviceSerial,
       params.profileId ?? 0,
       params.appPackage ?? 'com.whatsapp',
@@ -99,7 +104,7 @@ export class SenderMapping {
   getByPhone(phoneNumber: string): SenderMappingRecord | null {
     const row = this.db.prepare(
       'SELECT * FROM sender_mapping WHERE phone_number = ? AND active = 1',
-    ).get(phoneNumber) as SenderMappingRecord | undefined
+    ).get(this.normalizePhone(phoneNumber)) as SenderMappingRecord | undefined
     return row ?? null
   }
 
@@ -198,7 +203,8 @@ export class SenderMapping {
   resolveSenderChain(senders: SenderConfig[]): ResolvedSender | null {
     for (const sender of senders) {
       const record = this.getByPhone(sender.phone)
-      if (record) {
+      // Q2: skip paused senders
+      if (record && record.paused === 0) {
         return { mapping: record, sender }
       }
     }
