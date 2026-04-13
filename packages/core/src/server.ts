@@ -266,7 +266,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
     // Re-queue failed messages, then lock via dequeue to prevent auto-worker collision
     if (message.status === 'failed') {
-      queue.updateStatus(id, 'queued')
+      queue.updateStatus(id, 'failed', 'queued')
     }
     const locked = queue.dequeue(online.serial)
     if (!locked || locked.id !== id) {
@@ -277,6 +277,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       const result = await engine.send(locked, online.serial)
       return { status: 'sent', durationMs: result.durationMs }
     } catch (err) {
+      // Set failed status since there's no orchestrator WAHA fallback for manual sends
+      try { queue.updateStatus(id, 'sending', 'failed') } catch { /* ignore CAS mismatch */ }
       return reply.status(500).send({
         error: 'Send failed',
         detail: err instanceof Error ? err.message : String(err),

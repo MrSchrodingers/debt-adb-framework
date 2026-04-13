@@ -115,16 +115,11 @@ export class PluginLoader {
           sendersConfig: JSON.stringify(m.senders),
           context: m.context ? JSON.stringify(m.context) : null,
           maxRetries: m.sendOptions?.maxRetries ?? 3,
+          contactName: m.patient.name ?? undefined,
         }))
 
-        // Save patient contacts with real names for ADB send
-        for (const m of msgs) {
-          if (m.patient.phone && m.patient.name) {
-            this.queue.saveContact(m.patient.phone, m.patient.name)
-          }
-        }
-
-        const messages = this.queue.enqueueBatch(params)
+        // D5: saveContact is now inside enqueueBatch transaction via contactName param
+        const { enqueued: messages } = this.queue.enqueueBatch(params)
 
         return messages.map((msg) => ({
           id: msg.id,

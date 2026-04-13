@@ -132,8 +132,9 @@ describe('WAHA-ADB Independence', () => {
     expect(first).not.toBeNull()
     expect(first!.body).toBe('Message 1')
 
-    // Simulate send completion
-    queue.updateStatus(first!.id, 'sent')
+    // Simulate send completion (locked → sending → sent)
+    queue.updateStatus(first!.id, 'locked', 'sending')
+    queue.updateStatus(first!.id, 'sending', 'sent')
 
     const second = queue.dequeue('POCO-001')
     expect(second).not.toBeNull()

@@ -247,7 +247,7 @@ describe('PluginLoader', () => {
       expect(row.max_retries).toBe(5)
     })
 
-    it('rejects duplicate idempotency_key', async () => {
+    it('skips duplicate idempotency_key', async () => {
       const plugin = makePlugin({ name: 'oralsin' })
       let capturedCtx: PluginContext | null = null
       ;(plugin.init as ReturnType<typeof vi.fn>).mockImplementation(async (ctx: PluginContext) => {
@@ -256,9 +256,11 @@ describe('PluginLoader', () => {
 
       await loader.loadPlugin(plugin, 'key-1', 'secret-1')
 
-      capturedCtx!.enqueue([makeEnqueueParams({ idempotencyKey: 'dup-key' })])
+      const first = capturedCtx!.enqueue([makeEnqueueParams({ idempotencyKey: 'dup-key' })])
+      expect(first).toHaveLength(1)
 
-      expect(() => capturedCtx!.enqueue([makeEnqueueParams({ idempotencyKey: 'dup-key' })])).toThrow()
+      const second = capturedCtx!.enqueue([makeEnqueueParams({ idempotencyKey: 'dup-key' })])
+      expect(second).toHaveLength(0)
     })
   })
 

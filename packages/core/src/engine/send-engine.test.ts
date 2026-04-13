@@ -100,13 +100,19 @@ describe('SendEngine', () => {
     vi.spyOn(engine as any, 'delay').mockResolvedValue(undefined)
   })
 
-  /** Enqueue and return the real DB message */
+  /** Enqueue and return the real DB message (status = 'queued') */
   const enqueueMsg = (key = 'key-1') =>
     queue.enqueue({ to: '5543991938235', body: 'Hi', idempotencyKey: key, senderNumber: '5543996835100' })
+
+  /** Lock a queued message so send() can transition locked → sending */
+  const lockMsg = (id: string) => {
+    db.prepare("UPDATE messages SET status = 'locked', locked_by = 'test-device' WHERE id = ?").run(id)
+  }
 
   describe('send() — user switching at batch level', () => {
     it('does NOT call am switch-user (handled by worker loop)', async () => {
       const msg = enqueueMsg()
+      lockMsg(msg.id)
       stubShellForSend(mockAdb)
 
       await engine.send(msg, 'device-1')
@@ -118,6 +124,7 @@ describe('SendEngine', () => {
 
     it('does NOT include --user flag in am start (user already switched)', async () => {
       const msg = enqueueMsg()
+      lockMsg(msg.id)
       stubShellForSend(mockAdb)
 
       await engine.send(msg, 'device-1')
@@ -130,6 +137,7 @@ describe('SendEngine', () => {
 
     it('force-stops WhatsApp in ensureCleanState', async () => {
       const msg = enqueueMsg('clean-1')
+      lockMsg(msg.id)
       stubShellForSend(mockAdb)
 
       await engine.send(msg, 'device-1')
@@ -140,6 +148,7 @@ describe('SendEngine', () => {
 
     it('emits message:sending and message:sent events', async () => {
       const msg = enqueueMsg()
+      lockMsg(msg.id)
       stubShellForSend(mockAdb)
 
       const events: string[] = []
@@ -153,6 +162,7 @@ describe('SendEngine', () => {
 
     it('returns screenshot buffer, duration, and audit metadata', async () => {
       const msg = enqueueMsg()
+      lockMsg(msg.id)
       stubShellForSend(mockAdb)
 
       const result = await engine.send(msg, 'device-1')
@@ -167,6 +177,7 @@ describe('SendEngine', () => {
   describe('dialog detection', () => {
     it('dismisses "Enviar para" chooser and taps WhatsApp + Sempre', async () => {
       const msg = enqueueMsg('dialog-1')
+      lockMsg(msg.id)
       const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
 
       let dumpCount = 0
@@ -204,6 +215,7 @@ describe('SendEngine', () => {
 
     it('dismisses "Continuar" button', async () => {
       const msg = enqueueMsg('dialog-2')
+      lockMsg(msg.id)
       const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
 
       let dumpCount = 0
@@ -235,6 +247,7 @@ describe('SendEngine', () => {
 
     it('dismisses "Permitir" notification permission', async () => {
       const msg = enqueueMsg('dialog-3')
+      lockMsg(msg.id)
       const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
 
       let dumpCount = 0
@@ -265,6 +278,7 @@ describe('SendEngine', () => {
 
     it('throws transient error when chat input never appears', async () => {
       const msg = enqueueMsg('dialog-4')
+      lockMsg(msg.id)
       const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
 
       shellMock.mockImplementation(async (_serial: string, cmd: string) => {
@@ -313,12 +327,14 @@ describe('SendEngine', () => {
 
     it('allows valid com.whatsapp package', async () => {
       const msg = enqueueMsg('guard-6')
+      lockMsg(msg.id)
       stubShellForSend(mockAdb)
       await expect(engine.send(msg, 'device-1', true, 'com.whatsapp')).resolves.toBeDefined()
     })
 
     it('allows valid com.whatsapp.w4b package', async () => {
       const msg = enqueueMsg('guard-7')
+      lockMsg(msg.id)
       stubShellForSend(mockAdb)
       await expect(engine.send(msg, 'device-1', true, 'com.whatsapp.w4b')).resolves.toBeDefined()
     })
@@ -354,6 +370,7 @@ describe('SendEngine', () => {
         idempotencyKey: 'chunk-1',
         senderNumber: '5543996835100',
       })
+      lockMsg(msg.id)
       stubShellForSend(mockAdb)
 
       await engine.send(msg, 'device-1')
@@ -374,6 +391,7 @@ describe('SendEngine', () => {
         idempotencyKey: 'chunk-2',
         senderNumber: '5543996835100',
       })
+      lockMsg(msg.id)
       // Force typing strategy (explicitly zero all others to avoid flaky chatlist selection)
       const typingStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 0, typingWeight: 100, chatlistWeight: 0 })
       const typingEngine = new SendEngine(mockAdb, queue, emitter, typingStrategy)
@@ -400,6 +418,7 @@ describe('SendEngine', () => {
         idempotencyKey: 'chunk-3',
         senderNumber: '5543996835100',
       })
+      lockMsg(msg.id)
       // Force typing strategy (explicitly zero all others to avoid flaky chatlist selection)
       const typingStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 0, typingWeight: 100, chatlistWeight: 0 })
       const typingEngine = new SendEngine(mockAdb, queue, emitter, typingStrategy)
@@ -423,6 +442,7 @@ describe('SendEngine', () => {
   describe('pre-send health check', () => {
     it('always sends KEYCODE_WAKEUP proactively', async () => {
       const msg = enqueueMsg('health-1')
+      lockMsg(msg.id)
       stubShellForSend(mockAdb)
 
       await engine.send(msg, 'device-1')
@@ -433,6 +453,7 @@ describe('SendEngine', () => {
 
     it('swipes to unlock if lock screen is showing', async () => {
       const msg = enqueueMsg('health-2')
+      lockMsg(msg.id)
       const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
 
       shellMock.mockImplementation(async (_serial: string, cmd: string) => {
@@ -461,6 +482,7 @@ describe('SendEngine', () => {
         idempotencyKey: 'search-1',
         senderNumber: '5543996835100',
       })
+      lockMsg(msg.id)
       const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0, chatlistWeight: 0 })
       const searchEngine = new SendEngine(mockAdb, queue, emitter, searchStrategy)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -487,6 +509,7 @@ describe('SendEngine', () => {
         idempotencyKey: 'search-2',
         senderNumber: '5543996835100',
       })
+      lockMsg(msg.id)
       const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0, chatlistWeight: 0 })
       const searchEngine = new SendEngine(mockAdb, queue, emitter, searchStrategy)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -514,6 +537,7 @@ describe('SendEngine', () => {
         idempotencyKey: 'search-3',
         senderNumber: '5543996835100',
       })
+      lockMsg(msg.id)
       const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0, chatlistWeight: 0 })
       const searchEngine = new SendEngine(mockAdb, queue, emitter, searchStrategy)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -546,6 +570,7 @@ describe('SendEngine', () => {
         idempotencyKey: 'search-4',
         senderNumber: '5543996835100',
       })
+      lockMsg(msg.id)
       const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0, chatlistWeight: 0 })
       const searchEngine = new SendEngine(mockAdb, queue, emitter, searchStrategy)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -586,6 +611,7 @@ describe('SendEngine', () => {
         idempotencyKey: 'search-5',
         senderNumber: '5543996835100',
       })
+      lockMsg(msg.id)
       const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0, chatlistWeight: 0 })
       const searchEngine = new SendEngine(mockAdb, queue, emitter, searchStrategy)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -713,6 +739,7 @@ describe('SendEngine', () => {
         idempotencyKey: 'chatlist-dispatch-1',
         senderNumber: '5543996835100',
       })
+      lockMsg(msg.id)
 
       const chatlistStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 0, typingWeight: 0, chatlistWeight: 100 })
       const chatlistEngine = new SendEngine(mockAdb, queue, emitter, chatlistStrategy)

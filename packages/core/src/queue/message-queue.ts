@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import { nanoid } from 'nanoid'
-import type { EnqueueParams, Message, MessageStatus, PaginatedFilters, PaginatedResult } from './types.js'
+import type { EnqueueParams, Message, MessageStatus, PaginatedFilters, PaginatedResult, BatchResult, SkippedItem } from './types.js'
+import { VALID_TRANSITIONS } from './types.js'
 
 export class MessageQueue {
   constructor(private db: Database.Database) {}
@@ -149,21 +150,31 @@ export class MessageQueue {
     return this.rowToMessage(row)
   }
 
-  enqueueBatch(paramsList: EnqueueParams[]): Message[] {
+  enqueueBatch(paramsList: EnqueueParams[]): BatchResult {
     const insert = this.db.prepare(`
-      INSERT INTO messages (id, to_number, body, idempotency_key, priority, sender_number,
+      INSERT OR IGNORE INTO messages (id, to_number, body, idempotency_key, priority, sender_number,
                             plugin_name, correlation_id, senders_config, context, max_retries,
                             media_url, media_type, media_caption)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      RETURNING *
     `)
+    const select = this.db.prepare('SELECT * FROM messages WHERE id = ?')
+    const saveContactStmt = this.db.prepare(
+      'INSERT INTO contacts (phone, name) VALUES (?, ?) ON CONFLICT(phone) DO UPDATE SET name = excluded.name',
+    )
+
     const txn = this.db.transaction((list: EnqueueParams[]) => {
-      return list.map((params) => {
+      const enqueued: Message[] = []
+      const skipped: SkippedItem[] = []
+
+      for (const params of list) {
+        // Skip blacklisted numbers per-item
         if (this.isBlacklisted(params.to)) {
-          throw new Error(`Phone ${params.to} is blacklisted — message rejected`)
+          skipped.push({ idempotencyKey: params.idempotencyKey, reason: 'blacklisted', to: params.to })
+          continue
         }
+
         const id = nanoid()
-        const row = insert.get(
+        const result = insert.run(
           id,
           params.to,
           params.body,
@@ -178,9 +189,24 @@ export class MessageQueue {
           params.mediaUrl ?? null,
           params.mediaType ?? null,
           params.mediaCaption ?? null,
-        ) as Record<string, unknown>
-        return this.rowToMessage(row)
-      })
+        )
+
+        if (result.changes === 0) {
+          // ON CONFLICT DO NOTHING — duplicate idempotency_key
+          skipped.push({ idempotencyKey: params.idempotencyKey, reason: 'duplicate' })
+          continue
+        }
+
+        const row = select.get(id) as Record<string, unknown>
+        enqueued.push(this.rowToMessage(row))
+
+        // D5: saveContact inside the batch transaction
+        if (params.contactName) {
+          saveContactStmt.run(params.to, params.contactName)
+        }
+      }
+
+      return { enqueued, skipped }
     })
     return txn(paramsList)
   }
@@ -252,17 +278,20 @@ export class MessageQueue {
     return row ? this.rowToMessage(row) : null
   }
 
-  updateStatus(id: string, status: MessageStatus): Message {
-    const sentAtClause = status === 'sent' ? ", sent_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')" : ''
+  updateStatus(id: string, from: MessageStatus, to: MessageStatus): Message {
+    if (!VALID_TRANSITIONS[from]?.includes(to)) {
+      throw new Error(`Invalid state transition: ${from} → ${to}`)
+    }
+    const sentAtClause = to === 'sent' ? ", sent_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')" : ''
     const row = this.db.prepare(`
       UPDATE messages
       SET status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')${sentAtClause}
-      WHERE id = ?
+      WHERE id = ? AND status = ?
       RETURNING *
-    `).get(status, id) as Record<string, unknown> | undefined
+    `).get(to, id, from) as Record<string, unknown> | undefined
 
     if (!row) {
-      throw new Error(`Message not found: ${id}`)
+      throw new Error(`Message not found or status mismatch (expected ${from}): ${id}`)
     }
     return this.rowToMessage(row)
   }
@@ -275,16 +304,29 @@ export class MessageQueue {
           locked_by = NULL,
           locked_at = NULL,
           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      WHERE id = ?
+      WHERE id = ? AND status IN ('sending', 'failed', 'locked')
       RETURNING *
     `).get(id) as Record<string, unknown> | undefined
 
-    if (!row) throw new Error(`Message not found: ${id}`)
+    if (!row) throw new Error(`Message not found or invalid state for requeue: ${id}`)
     return this.rowToMessage(row)
   }
 
-  markPermanentlyFailed(id: string): Message {
-    return this.updateStatus(id, 'permanently_failed')
+  markPermanentlyFailed(id: string, attempts?: number): Message {
+    const attemptsClause = attempts !== undefined ? ', attempts = ?' : ''
+    const binds = attempts !== undefined
+      ? ['permanently_failed', attempts, id]
+      : ['permanently_failed', id]
+    const row = this.db.prepare(`
+      UPDATE messages
+      SET status = ?${attemptsClause},
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = ? AND status IN ('queued', 'sending', 'failed', 'waiting_device')
+      RETURNING *
+    `).get(...binds) as Record<string, unknown> | undefined
+
+    if (!row) throw new Error(`Message not found or invalid state for permanently_failed: ${id}`)
+    return this.rowToMessage(row)
   }
 
   cleanStaleLocks(): number {

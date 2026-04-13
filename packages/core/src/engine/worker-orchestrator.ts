@@ -65,29 +65,28 @@ export class WorkerOrchestrator {
     } catch (adbErr) {
       logger.warn({ messageId: message.id, err: adbErr }, 'Worker: ADB send failed, attempting WAHA fallback')
 
-      // Reset status to 'sending' to suppress premature 'failed' callback
-      try { queue.updateStatus(message.id, 'sending') } catch { /* ignore */ }
-
+      // Message is still in 'sending' (send-engine no longer sets 'failed')
       try {
         const fallbackResult = await wahaFallback.send(message)
         logger.info({ messageId: message.id, wahaMessageId: fallbackResult.wahaMessageId }, 'Worker: WAHA fallback succeeded')
-        queue.updateStatus(message.id, 'sent')
+        queue.updateStatus(message.id, 'sending', 'sent')
         emitter.emit('message:sent', { id: message.id, sentAt: new Date().toISOString(), durationMs: 0, deviceSerial, contactRegistered: false, dialogsDismissed: 0 })
         sendSuccess = true
         usedFallback = true
       } catch (wahaErr) {
         logger.error({ messageId: message.id, err: wahaErr }, 'Worker: WAHA fallback also failed')
-        if (message.attempts + 1 < message.maxRetries) {
-          const requeued = queue.requeueForRetry(message.id)
-          logger.warn({ messageId: message.id, attempts: requeued.attempts, maxRetries: message.maxRetries }, 'Worker: message requeued for retry')
-        } else {
-          queue.updateStatus(message.id, 'permanently_failed')
+        const totalAttempts = message.attempts + 1
+        if (totalAttempts >= message.maxRetries) {
+          queue.markPermanentlyFailed(message.id, totalAttempts)
           emitter.emit('message:failed', {
             id: message.id,
             error: `ADB and WAHA fallback both failed after ${message.maxRetries} attempts: ${wahaErr instanceof Error ? wahaErr.message : String(wahaErr)}`,
-            attempts: message.attempts + 1,
+            attempts: totalAttempts,
             senderNumber: message.senderNumber ?? undefined,
           })
+        } else {
+          const requeued = queue.requeueForRetry(message.id)
+          logger.warn({ messageId: message.id, attempts: requeued.attempts, maxRetries: message.maxRetries }, 'Worker: message requeued for retry')
         }
       }
     }
@@ -203,7 +202,7 @@ export class WorkerOrchestrator {
         const lastCapped = this.cappedSendersCooldown.get(senderNumber)
         if (lastCapped !== undefined && Date.now() - lastCapped < 60_000) {
           for (const msg of batch) {
-            try { queue.updateStatus(msg.id, 'queued') } catch { /* ignore */ }
+            try { queue.updateStatus(msg.id, 'locked', 'queued') } catch { /* ignore */ }
           }
           return
         }
@@ -220,7 +219,7 @@ export class WorkerOrchestrator {
           logger.warn({ senderNumber, dailyCount, max: effectiveCap }, 'Worker: sender daily limit reached, skipping batch')
           this.cappedSendersCooldown.set(senderNumber, Date.now())
           for (const msg of batch) {
-            try { queue.updateStatus(msg.id, 'queued') } catch { /* ignore */ }
+            try { queue.updateStatus(msg.id, 'locked', 'queued') } catch { /* ignore */ }
           }
           return
         }
@@ -230,7 +229,7 @@ export class WorkerOrchestrator {
       if (senderNumber && senderHealth.isQuarantined(senderNumber)) {
         logger.warn({ senderNumber }, 'Worker: sender quarantined, skipping batch')
         for (const msg of batch) {
-          try { queue.updateStatus(msg.id, 'queued') } catch { /* ignore */ }
+          try { queue.updateStatus(msg.id, 'locked', 'queued') } catch { /* ignore */ }
         }
         return // finally block releases mutex
       }
@@ -239,7 +238,7 @@ export class WorkerOrchestrator {
       if (senderNumber && senderMapping.isPaused(senderNumber)) {
         logger.info({ senderNumber }, 'Worker: sender paused, skipping batch')
         for (const msg of batch) {
-          try { queue.updateStatus(msg.id, 'queued') } catch { /* ignore */ }
+          try { queue.updateStatus(msg.id, 'locked', 'queued') } catch { /* ignore */ }
         }
         return
       }

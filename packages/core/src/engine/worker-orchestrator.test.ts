@@ -194,9 +194,11 @@ describe('WorkerOrchestrator', () => {
     const msg = enqueueTestMessage(deps)
 
     // Mock engine.send to succeed — must also update status because the real
-    // SendEngine.send() calls queue.updateStatus(id, 'sent') internally.
+    // SendEngine.send() calls queue.updateStatus(id, 'locked', 'sending') then
+    // queue.updateStatus(id, 'sending', 'sent') internally.
     vi.spyOn(deps.engine, 'send').mockImplementation(async (message) => {
-      deps.queue.updateStatus(message.id, 'sent')
+      deps.queue.updateStatus(message.id, 'locked', 'sending')
+      deps.queue.updateStatus(message.id, 'sending', 'sent')
       return { screenshot: Buffer.from('ok'), durationMs: 100, contactRegistered: false, dialogsDismissed: 0 }
     })
 
@@ -266,7 +268,8 @@ describe('WorkerOrchestrator', () => {
     enqueueTestMessage(deps)
 
     vi.spyOn(deps.engine, 'send').mockImplementation(async (message) => {
-      deps.queue.updateStatus(message.id, 'sent')
+      deps.queue.updateStatus(message.id, 'locked', 'sending')
+      deps.queue.updateStatus(message.id, 'sending', 'sent')
       return { screenshot: Buffer.from('ok'), durationMs: 50, contactRegistered: false, dialogsDismissed: 0 }
     })
 
@@ -284,8 +287,11 @@ describe('WorkerOrchestrator', () => {
     seedSenderMapping(deps)
     enqueueTestMessage(deps)
 
-    // ADB send fails
-    vi.spyOn(deps.engine, 'send').mockRejectedValue(new Error('ADB failed'))
+    // ADB send fails — simulate real engine behavior: transition locked→sending, then throw
+    vi.spyOn(deps.engine, 'send').mockImplementation(async (message) => {
+      deps.queue.updateStatus(message.id, 'locked', 'sending')
+      throw new Error('ADB failed')
+    })
     // WAHA fallback also fails (already mocked to reject in createDeps, but be explicit)
     vi.spyOn(deps.wahaFallback, 'send').mockRejectedValue(new Error('WAHA down'))
 
@@ -306,8 +312,11 @@ describe('WorkerOrchestrator', () => {
     expect(msg.attempts).toBe(0)
     expect(msg.maxRetries).toBe(3)
 
-    // ADB send fails
-    vi.spyOn(deps.engine, 'send').mockRejectedValue(new Error('ADB failed'))
+    // ADB send fails — simulate real engine behavior: transition locked→sending, then throw
+    vi.spyOn(deps.engine, 'send').mockImplementation(async (message) => {
+      deps.queue.updateStatus(message.id, 'locked', 'sending')
+      throw new Error('ADB failed')
+    })
     // WAHA fallback also fails
     vi.spyOn(deps.wahaFallback, 'send').mockRejectedValue(new Error('WAHA down'))
 
@@ -329,8 +338,11 @@ describe('WorkerOrchestrator', () => {
     // Simulate message already at attempts=2 (maxRetries=3 → 2+1 >= 3 → permanent fail)
     deps.db.prepare('UPDATE messages SET attempts = 2 WHERE id = ?').run(msg.id)
 
-    // ADB send fails
-    vi.spyOn(deps.engine, 'send').mockRejectedValue(new Error('ADB failed'))
+    // ADB send fails — simulate real engine behavior: transition locked→sending, then throw
+    vi.spyOn(deps.engine, 'send').mockImplementation(async (message) => {
+      deps.queue.updateStatus(message.id, 'locked', 'sending')
+      throw new Error('ADB failed')
+    })
     // WAHA fallback also fails
     vi.spyOn(deps.wahaFallback, 'send').mockRejectedValue(new Error('WAHA down'))
 
@@ -389,7 +401,8 @@ describe('WorkerOrchestrator', () => {
     const processedDevices: string[] = []
     vi.spyOn(deps.engine, 'send').mockImplementation(async (message, deviceSerial) => {
       processedDevices.push(deviceSerial as string)
-      deps.queue.updateStatus(message.id, 'sent')
+      deps.queue.updateStatus(message.id, 'locked', 'sending')
+      deps.queue.updateStatus(message.id, 'sending', 'sent')
       return { screenshot: Buffer.from('ok'), durationMs: 50, contactRegistered: false, dialogsDismissed: 0 }
     })
 

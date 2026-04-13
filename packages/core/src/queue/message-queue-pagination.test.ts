@@ -26,7 +26,16 @@ describe('MessageQueue.listPaginated', () => {
         pluginName: overrides.pluginName,
       })
       if (overrides.status && overrides.status !== 'queued') {
-        queue.updateStatus(msg.id, overrides.status as 'sent' | 'failed')
+        // Walk through valid transitions: queued → locked → sending → target
+        queue.dequeue('seed-device')
+        queue.updateStatus(msg.id, 'locked', 'sending')
+        if (overrides.status === 'sent') {
+          queue.updateStatus(msg.id, 'sending', 'sent')
+        } else if (overrides.status === 'failed') {
+          queue.updateStatus(msg.id, 'sending', 'failed')
+        } else if (overrides.status === 'permanently_failed') {
+          queue.updateStatus(msg.id, 'sending', 'permanently_failed')
+        }
       }
     }
   }
@@ -164,7 +173,9 @@ describe('MessageQueue.listPaginated', () => {
           idempotencyKey: `match-${i}`,
           pluginName: 'oralsin',
         })
-        queue.updateStatus(msg.id, 'sent')
+        queue.dequeue('seed-device')
+        queue.updateStatus(msg.id, 'locked', 'sending')
+        queue.updateStatus(msg.id, 'sending', 'sent')
       }
       // 2 sent oralsin messages with different phone
       for (let i = 0; i < 2; i++) {
@@ -174,7 +185,9 @@ describe('MessageQueue.listPaginated', () => {
           idempotencyKey: `nomatch-${i}`,
           pluginName: 'oralsin',
         })
-        queue.updateStatus(msg.id, 'sent')
+        queue.dequeue('seed-device')
+        queue.updateStatus(msg.id, 'locked', 'sending')
+        queue.updateStatus(msg.id, 'sending', 'sent')
       }
       // 1 queued oralsin message with target phone
       queue.enqueue({
