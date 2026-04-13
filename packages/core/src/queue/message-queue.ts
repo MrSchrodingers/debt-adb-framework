@@ -12,7 +12,7 @@ export class MessageQueue {
         to_number TEXT NOT NULL,
         body TEXT NOT NULL,
         idempotency_key TEXT NOT NULL UNIQUE,
-        priority INTEGER NOT NULL DEFAULT 5,
+        priority INTEGER NOT NULL DEFAULT 5 CHECK (priority BETWEEN 1 AND 10),
         sender_number TEXT,
         status TEXT NOT NULL DEFAULT 'queued',
         attempts INTEGER NOT NULL DEFAULT 0,
@@ -26,6 +26,7 @@ export class MessageQueue {
         max_retries INTEGER NOT NULL DEFAULT 3,
         fallback_used INTEGER NOT NULL DEFAULT 0,
         fallback_provider TEXT,
+        sent_at TEXT DEFAULT NULL,
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       );
@@ -35,6 +36,8 @@ export class MessageQueue {
         ON messages(sender_number);
       CREATE INDEX IF NOT EXISTS idx_messages_sender_daily
         ON messages(sender_number, status, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_messages_plugin_name
+        ON messages(plugin_name, status, created_at);
 
       CREATE TABLE IF NOT EXISTS contacts (
         phone TEXT PRIMARY KEY,
@@ -103,6 +106,11 @@ export class MessageQueue {
       this.db.exec("ALTER TABLE messages ADD COLUMN media_url TEXT")
       this.db.exec("ALTER TABLE messages ADD COLUMN media_type TEXT")
       this.db.exec("ALTER TABLE messages ADD COLUMN media_caption TEXT")
+    }
+
+    // Migration: add sent_at column if not present
+    if (!cols.some(c => c.name === 'sent_at')) {
+      this.db.exec("ALTER TABLE messages ADD COLUMN sent_at TEXT DEFAULT NULL")
     }
   }
 
@@ -191,6 +199,9 @@ export class MessageQueue {
   }
 
   getQueueStats(pluginName?: string): { pending: number; processing: number; failedLastHour: number; oldestPendingAgeSeconds: number | null } {
+    const whereClause = pluginName ? 'WHERE plugin_name = ?' : ''
+    const binds = pluginName ? [pluginName] : []
+
     const row = this.db.prepare(`
       SELECT
         COUNT(*) FILTER (WHERE status = 'queued') AS pending,
@@ -199,8 +210,8 @@ export class MessageQueue {
           AND updated_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 hour')) AS failed_last_hour,
         MIN(CASE WHEN status = 'queued' THEN created_at END) AS oldest_queued
       FROM messages
-      WHERE (? IS NULL OR plugin_name = ?)
-    `).get(pluginName ?? null, pluginName ?? null) as {
+      ${whereClause}
+    `).get(...binds) as {
       pending: number
       processing: number
       failed_last_hour: number
@@ -242,9 +253,10 @@ export class MessageQueue {
   }
 
   updateStatus(id: string, status: MessageStatus): Message {
+    const sentAtClause = status === 'sent' ? ", sent_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')" : ''
     const row = this.db.prepare(`
       UPDATE messages
-      SET status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      SET status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')${sentAtClause}
       WHERE id = ?
       RETURNING *
     `).get(status, id) as Record<string, unknown> | undefined
@@ -398,6 +410,7 @@ export class MessageQueue {
       context: (row.context as string) ?? null,
       wahaMessageId: (row.waha_message_id as string) ?? null,
       maxRetries: (row.max_retries as number) ?? 3,
+      sentAt: (row.sent_at as string) ?? null,
       fallbackUsed: (row.fallback_used as number) ?? 0,
       fallbackProvider: (row.fallback_provider as string) ?? null,
       screenshotPath: (row.screenshot_path as string) ?? null,

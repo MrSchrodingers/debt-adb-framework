@@ -188,8 +188,10 @@ describe('HealthCollector', () => {
         INSERT INTO health_snapshots (serial, battery_percent, temperature_celsius, ram_available_mb, storage_free_bytes, wifi_connected, collected_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `)
-      stmt.run('ABC123', 80, 30.0, 1024, 12000000000, 1, '2026-03-20T10:00:00Z')
-      stmt.run('ABC123', 75, 31.0, 900, 11000000000, 1, '2026-04-02T12:00:00Z')
+      const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString()
+      const oneDayAgo = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString()
+      stmt.run('ABC123', 80, 30.0, 1024, 12000000000, 1, eightDaysAgo)
+      stmt.run('ABC123', 75, 31.0, 900, 11000000000, 1, oneDayAgo)
 
       const removed = collector.cleanup()
 

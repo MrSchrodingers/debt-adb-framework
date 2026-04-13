@@ -33,6 +33,7 @@ export interface Message {
   context: string | null
   wahaMessageId: string | null
   maxRetries: number
+  sentAt: string | null
   fallbackUsed: number
   fallbackProvider: string | null
   screenshotPath: string | null

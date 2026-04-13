@@ -315,4 +315,71 @@ describe('MessageQueue', () => {
       expect(found).toBeNull()
     })
   })
+
+  describe('schema hardening (Batch 1)', () => {
+    it('PRAGMA busy_timeout can be set to 5000', () => {
+      db.pragma('busy_timeout = 5000')
+      const result = db.pragma('busy_timeout') as unknown[]
+      // better-sqlite3 returns [{busy_timeout: N}] — extract the value regardless of format
+      const value = typeof result[0] === 'object' && result[0] !== null
+        ? Object.values(result[0] as Record<string, unknown>)[0]
+        : result[0]
+      expect(value).toBe(5000)
+    })
+
+    it('idx_messages_plugin_name index exists', () => {
+      const indexes = db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='messages'",
+      ).all() as { name: string }[]
+      const names = indexes.map(i => i.name)
+      expect(names).toContain('idx_messages_plugin_name')
+    })
+
+    it('messages.sent_at column exists and defaults to null', () => {
+      const msg = queue.enqueue({ to: '111', body: 'Test', idempotencyKey: 'sat-1' })
+      expect(msg.sentAt).toBeNull()
+    })
+
+    it('messages.sent_at is set when status transitions to sent', () => {
+      const msg = queue.enqueue({ to: '111', body: 'Test', idempotencyKey: 'sat-2' })
+      queue.dequeue('device-001')
+      queue.updateStatus(msg.id, 'sending')
+      const sent = queue.updateStatus(msg.id, 'sent')
+      expect(sent.sentAt).not.toBeNull()
+      expect(sent.sentAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    })
+
+    it('messages.priority CHECK constraint rejects out-of-range values', () => {
+      expect(() =>
+        queue.enqueue({ to: '111', body: 'Test', idempotencyKey: 'pri-0', priority: 0 }),
+      ).toThrow()
+      expect(() =>
+        queue.enqueue({ to: '111', body: 'Test', idempotencyKey: 'pri-11', priority: 11 }),
+      ).toThrow()
+    })
+
+    it('messages.priority accepts values 1-10', () => {
+      const low = queue.enqueue({ to: '111', body: 'Low', idempotencyKey: 'pri-1', priority: 1 })
+      const high = queue.enqueue({ to: '111', body: 'High', idempotencyKey: 'pri-10', priority: 10 })
+      expect(low.priority).toBe(1)
+      expect(high.priority).toBe(10)
+    })
+
+    it('timestamps use ISO 8601 with milliseconds', () => {
+      const msg = queue.enqueue({ to: '111', body: 'ISO', idempotencyKey: 'iso-1' })
+      // strftime('%Y-%m-%dT%H:%M:%fZ') produces e.g. 2026-04-13T16:00:00.123Z
+      expect(msg.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+    })
+
+    it('getQueueStats works with pluginName filter', () => {
+      queue.enqueue({ to: '111', body: 'A', idempotencyKey: 'gs-1', pluginName: 'oralsin' })
+      queue.enqueue({ to: '222', body: 'B', idempotencyKey: 'gs-2', pluginName: 'other' })
+
+      const allStats = queue.getQueueStats()
+      expect(allStats.pending).toBe(2)
+
+      const oralsinStats = queue.getQueueStats('oralsin')
+      expect(oralsinStats.pending).toBe(1)
+    })
+  })
 })

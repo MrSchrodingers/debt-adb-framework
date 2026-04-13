@@ -51,6 +51,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   const db = new Database(process.env.DB_PATH || 'dispatch.db')
   db.pragma('journal_mode = WAL')
+  db.pragma('busy_timeout = 5000')
+  db.pragma('wal_autocheckpoint = 400')
 
   const queue = new MessageQueue(db)
   queue.initialize()
