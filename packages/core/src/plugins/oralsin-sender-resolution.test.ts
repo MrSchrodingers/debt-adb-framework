@@ -104,7 +104,7 @@ describe('OralsinPlugin sender resolution', () => {
 
     // Verify sender_number was set to the primary
     const msg = db.prepare('SELECT sender_number FROM messages WHERE id = ?').get(data.messages[0].id) as { sender_number: string }
-    expect(msg.sender_number).toBe('+554396837945')
+    expect(msg.sender_number).toBe('554396837945')
   })
 
   it('falls back to overflow when primary has no mapping', async () => {
@@ -128,7 +128,7 @@ describe('OralsinPlugin sender resolution', () => {
     const data = response.body as { enqueued: number; messages: Array<{ id: string }> }
 
     const msg = db.prepare('SELECT sender_number FROM messages WHERE id = ?').get(data.messages[0].id) as { sender_number: string }
-    expect(msg.sender_number).toBe('+554396837844')
+    expect(msg.sender_number).toBe('554396837844')
   })
 
   it('falls back to backup when overflow also missing', async () => {
@@ -152,7 +152,7 @@ describe('OralsinPlugin sender resolution', () => {
     const data = response.body as { enqueued: number; messages: Array<{ id: string }> }
 
     const msg = db.prepare('SELECT sender_number FROM messages WHERE id = ?').get(data.messages[0].id) as { sender_number: string }
-    expect(msg.sender_number).toBe('+554399991111')
+    expect(msg.sender_number).toBe('554399991111')
   })
 
   it('returns 422 when no sender can be resolved', async () => {
@@ -191,7 +191,7 @@ describe('OralsinPlugin sender resolution', () => {
     const data = response.body as { messages: Array<{ id: string }> }
     const msg = queue.getById(data.messages[0].id)
     expect(msg).not.toBeNull()
-    expect(msg!.senderNumber).toBe('+554396837945')
+    expect(msg!.senderNumber).toBe('554396837945')
   })
 
   it('stores senders_config as JSON for fallback use', async () => {

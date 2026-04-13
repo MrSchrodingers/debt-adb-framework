@@ -219,7 +219,12 @@ describe('PluginLoader', () => {
       const row = db.prepare('SELECT context FROM messages WHERE idempotency_key = ?').get('context-test') as {
         context: string
       }
-      expect(JSON.parse(row.context)).toEqual(context)
+      // Decision #17: patient_id and template_id are merged into context from patient/message params
+      expect(JSON.parse(row.context)).toEqual({
+        ...context,
+        patient_id: 'patient-uuid-1',
+        template_id: 'overdue_reminder_v2',
+      })
     })
 
     it('merges send_options with defaults (max_retries and priority only)', async () => {

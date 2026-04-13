@@ -120,19 +120,30 @@ export class PluginLoader {
 
     return {
       enqueue: (msgs: PluginEnqueueParams[]): PluginMessage[] => {
-        const params = msgs.map((m) => ({
-          to: m.patient.phone,
-          body: m.message.text,
-          idempotencyKey: m.idempotencyKey,
-          priority: PRIORITY_MAP[m.sendOptions?.priority ?? 'normal'] ?? 5,
-          senderNumber: m.resolvedSenderPhone ?? m.senders[0]?.phone ?? null,
-          pluginName,
-          correlationId: m.correlationId ?? undefined,
-          sendersConfig: JSON.stringify(m.senders),
-          context: m.context ? JSON.stringify(m.context) : null,
-          maxRetries: m.sendOptions?.maxRetries ?? 3,
-          contactName: m.patient.name ?? undefined,
-        }))
+        const params = msgs.map((m) => {
+          // P1/Decision #17: Merge patientId and templateId into context
+          const mergedContext = {
+            ...m.context,
+            ...(m.patient.patientId ? { patient_id: m.patient.patientId } : {}),
+            ...(m.message.templateId ? { template_id: m.message.templateId } : {}),
+          }
+          const hasContext = Object.keys(mergedContext).length > 0
+
+          return {
+            to: m.patient.phone,
+            body: m.message.text,
+            idempotencyKey: m.idempotencyKey,
+            priority: PRIORITY_MAP[m.sendOptions?.priority ?? 'normal'] ?? 5,
+            // P10: Only use resolvedSenderPhone — no senders[0] fallback
+            senderNumber: m.resolvedSenderPhone ?? null,
+            pluginName,
+            correlationId: m.correlationId ?? undefined,
+            sendersConfig: JSON.stringify(m.senders),
+            context: hasContext ? JSON.stringify(mergedContext) : null,
+            maxRetries: m.sendOptions?.maxRetries ?? 3,
+            contactName: m.patient.name ?? undefined,
+          }
+        })
 
         // D5: saveContact is now inside enqueueBatch transaction via contactName param
         const { enqueued: messages } = this.queue.enqueueBatch(params)

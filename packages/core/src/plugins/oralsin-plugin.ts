@@ -4,8 +4,10 @@ import type { DispatchEventName } from '../events/index.js'
 
 // ── Zod Schemas for request validation ──
 
+const phoneSchema = z.string().regex(/^\+?\d{10,15}$/, 'Must be 10-15 digits, optional + prefix')
+
 const senderSchema = z.object({
-  phone: z.string().min(10),
+  phone: phoneSchema,
   session: z.string().min(1),
   pair: z.string().min(1),
   role: z.enum(['primary', 'backup', 'overflow', 'reserve']),
@@ -24,16 +26,20 @@ const enqueueItemSchema = z.object({
   idempotency_key: z.string().min(1),
   correlation_id: z.string().optional(),
   patient: z.object({
-    phone: z.string().min(10),
+    phone: phoneSchema,
     name: z.string().min(1),
     patient_id: z.string().optional(),
   }),
   message: z.object({
-    text: z.string().min(1),
+    text: z.string().min(1).max(4096),
     template_id: z.string().optional(),
   }),
   senders: z.array(senderSchema).min(1),
-  context: z.record(z.unknown()).optional(),
+  context: z.record(z.unknown()).optional().superRefine((val, ctx) => {
+    if (val && JSON.stringify(val).length > 65536) {
+      ctx.addIssue({ code: 'custom', message: 'context exceeds 64KB' })
+    }
+  }),
   send_options: z
     .object({
       max_retries: z.number().int().min(1).max(10).optional(),
@@ -44,7 +50,7 @@ const enqueueItemSchema = z.object({
 
 const enqueueRequestSchema = z.union([
   enqueueItemSchema,
-  z.array(enqueueItemSchema).min(1),
+  z.array(enqueueItemSchema).min(1).max(500),
 ])
 
 // ── Plugin Implementation ──
