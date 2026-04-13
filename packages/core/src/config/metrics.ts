@@ -33,6 +33,27 @@ export const quarantineEventsTotal = new Counter({
   registers: [metricsRegistry],
 })
 
+// Decision #23: Plugin-level metrics
+export const callbacksTotal = new Counter({
+  name: 'dispatch_callbacks_total',
+  help: 'Total callbacks sent',
+  labelNames: ['plugin', 'type', 'status'] as const,
+  registers: [metricsRegistry],
+})
+
+export const pluginErrorsTotal = new Counter({
+  name: 'dispatch_plugin_errors_total',
+  help: 'Plugin handler errors',
+  labelNames: ['plugin', 'event'] as const,
+  registers: [metricsRegistry],
+})
+
+export const wahaDedupmissTotal = new Counter({
+  name: 'dispatch_waha_dedup_miss_total',
+  help: 'WAHA dedup window misses',
+  registers: [metricsRegistry],
+})
+
 // ── Histograms (distribution) ──
 
 export const sendDurationSeconds = new Histogram({
@@ -56,6 +77,13 @@ export const interMessageDelaySeconds = new Histogram({
 export const queueDepth = new Gauge({
   name: 'dispatch_queue_depth',
   help: 'Current number of messages in queue (pending + processing)',
+  registers: [metricsRegistry],
+})
+
+export const queueDepthByPlugin = new Gauge({
+  name: 'dispatch_queue_depth_by_plugin',
+  help: 'Queue depth per plugin',
+  labelNames: ['plugin', 'status'] as const,
   registers: [metricsRegistry],
 })
 

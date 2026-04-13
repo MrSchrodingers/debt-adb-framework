@@ -20,7 +20,7 @@ import { RateLimitGuard } from './config/rate-limits.js'
 import { parseConfig } from './config/config-schema.js'
 import { AuditLogger } from './config/audit-logger.js'
 import { ScreenshotPolicy } from './config/screenshot-policy.js'
-import { metricsRegistry, messagesSentTotal, messagesFailedTotal, messagesQueuedTotal, sendDurationSeconds, interMessageDelaySeconds, queueDepth, devicesOnline, senderDailyCount, quarantineEventsTotal, senderQuarantined } from './config/metrics.js'
+import { metricsRegistry, messagesSentTotal, messagesFailedTotal, messagesQueuedTotal, sendDurationSeconds, interMessageDelaySeconds, queueDepth, devicesOnline, senderDailyCount, quarantineEventsTotal, senderQuarantined, callbacksTotal, pluginErrorsTotal, queueDepthByPlugin } from './config/metrics.js'
 import { OralsinPlugin } from './plugins/oralsin-plugin.js'
 import type { DispatchEventName } from './events/index.js'
 import type { DispatchPlugin } from './plugins/types.js'
@@ -309,6 +309,13 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const pluginRegistry = new PluginRegistry(db)
   pluginRegistry.initialize()
   const pluginEventBus = new PluginEventBus(pluginRegistry, emitter)
+
+  // A3/Decision #20: Wire onError with log + metric
+  pluginEventBus.onError((pluginName, event, error) => {
+    server.log.error({ plugin: pluginName, event, err: error }, 'Plugin handler error')
+    pluginErrorsTotal.inc({ plugin: pluginName, event })
+  })
+
   const callbackDelivery = new CallbackDelivery(db, pluginRegistry, fetch)
   const pinoLogger = { child: (bindings: Record<string, unknown>) => ({ info: server.log.info.bind(server.log), warn: server.log.warn.bind(server.log), error: server.log.error.bind(server.log), debug: server.log.debug.bind(server.log) }) }
   const pluginLoader = new PluginLoader(pluginRegistry, pluginEventBus, queue, db, pinoLogger, senderMapping, engine)
