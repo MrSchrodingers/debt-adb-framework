@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify'
 
 const PUBLIC_ROUTES = [
   '/api/v1/health',
-  '/metrics',
+  // S13: /metrics removed — now requires API key (Decision #12)
 ]
 
 const PUBLIC_PREFIXES = [

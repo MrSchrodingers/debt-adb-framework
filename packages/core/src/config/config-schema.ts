@@ -56,6 +56,12 @@ const envSchema = z
     // Plugins
     DISPATCH_PLUGINS: z.string().default(''),
     PLUGIN_ORALSIN_WEBHOOK_URL: z.string().optional(),
+    PLUGIN_ORALSIN_API_KEY: z.string().optional(),
+    PLUGIN_ORALSIN_HMAC_SECRET: z.string().optional(),
+
+    // Security
+    DISPATCH_WEBHOOK_ALLOWED_DOMAINS: z.string().optional(),
+    DISPATCH_HTTP_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60000).default(10000),
 
     // Retention
     MESSAGE_HISTORY_RETENTION_DAYS: z.coerce.number().default(90),
@@ -68,6 +74,23 @@ const envSchema = z
         message: 'DISPATCH_API_KEY is required in production and development environments',
         path: ['DISPATCH_API_KEY'],
       })
+    }
+
+    // S3/R12/Decision #22: Conditional required fields when plugins enabled
+    const plugins = data.DISPATCH_PLUGINS?.split(',').map(s => s.trim()).filter(Boolean) ?? []
+    if (plugins.includes('oralsin')) {
+      if (!data.PLUGIN_ORALSIN_API_KEY) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'PLUGIN_ORALSIN_API_KEY required when oralsin plugin enabled', path: ['PLUGIN_ORALSIN_API_KEY'] })
+      }
+      if (!data.PLUGIN_ORALSIN_HMAC_SECRET) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'PLUGIN_ORALSIN_HMAC_SECRET required when oralsin plugin enabled', path: ['PLUGIN_ORALSIN_HMAC_SECRET'] })
+      }
+      if (!data.PLUGIN_ORALSIN_WEBHOOK_URL) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'PLUGIN_ORALSIN_WEBHOOK_URL required when oralsin plugin enabled', path: ['PLUGIN_ORALSIN_WEBHOOK_URL'] })
+      }
+    }
+    if (plugins.length > 0 && !data.DISPATCH_WEBHOOK_ALLOWED_DOMAINS) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'DISPATCH_WEBHOOK_ALLOWED_DOMAINS required when plugins enabled', path: ['DISPATCH_WEBHOOK_ALLOWED_DOMAINS'] })
     }
   })
 
@@ -119,6 +142,10 @@ export interface DispatchConfig {
   }
   plugins: string[]
   pluginOralsinWebhookUrl?: string
+  pluginOralsinApiKey?: string
+  pluginOralsinHmacSecret?: string
+  webhookAllowedDomains?: string
+  httpTimeoutMs: number
   messageHistoryRetentionDays: number
 }
 
@@ -179,6 +206,10 @@ export function parseConfig(env: Record<string, string | undefined>): DispatchCo
       ? parsed.DISPATCH_PLUGINS.split(',').map((s) => s.trim()).filter(Boolean)
       : [],
     pluginOralsinWebhookUrl: parsed.PLUGIN_ORALSIN_WEBHOOK_URL,
+    pluginOralsinApiKey: parsed.PLUGIN_ORALSIN_API_KEY,
+    pluginOralsinHmacSecret: parsed.PLUGIN_ORALSIN_HMAC_SECRET,
+    webhookAllowedDomains: parsed.DISPATCH_WEBHOOK_ALLOWED_DOMAINS,
+    httpTimeoutMs: parsed.DISPATCH_HTTP_TIMEOUT_MS,
     messageHistoryRetentionDays: parsed.MESSAGE_HISTORY_RETENTION_DAYS,
   }
 }

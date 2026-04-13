@@ -1,4 +1,5 @@
 import { readdir, unlink, stat } from 'node:fs/promises'
+import { timingSafeEqual } from 'node:crypto'
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import Database from 'better-sqlite3'
@@ -42,6 +43,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const loggerConfig = buildLoggerConfig(process.env.NODE_ENV, process.env.LOG_FILE)
   const server = Fastify({
     logger: loggerConfig,
+    bodyLimit: 1_048_576, // S8: 1MB body limit
   })
   const corsOrigins = buildCorsOrigins(process.env.DISPATCH_ALLOWED_ORIGINS)
   await server.register(cors, { origin: corsOrigins })
@@ -342,10 +344,18 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     const fullPath = `/api/v1/plugins/${route.pluginName}${route.path}`
     const method = route.method.toLowerCase() as 'get' | 'post' | 'put' | 'patch' | 'delete'
 
+    // S7: validate plugin route paths
+    if (!/^\/[a-zA-Z0-9/_-]*$/.test(route.path)) {
+      server.log.error({ plugin: route.pluginName, path: route.path }, 'Invalid plugin route path, skipping')
+      continue
+    }
+
     server[method](fullPath, async (req, reply) => {
-      if (apiKey && method === 'post') {
-        const providedKey = (req.headers as Record<string, string>)['x-api-key']
-        if (providedKey !== apiKey) {
+      // S1/S2: timingSafeEqual auth for ALL HTTP methods
+      if (apiKey) {
+        const providedKey = (req.headers as Record<string, string>)['x-api-key'] ?? ''
+        if (providedKey.length !== apiKey.length ||
+            !timingSafeEqual(Buffer.from(providedKey), Buffer.from(apiKey))) {
           return reply.status(401).send({ error: 'Invalid API key' })
         }
       }
@@ -401,7 +411,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
           },
           error: null,
           fallback_reason: msg.fallbackUsed ? { original_error: 'adb_failed', original_session: senderSession, quarantined: false } : undefined,
-          context: msg.context ? JSON.parse(msg.context) : undefined,
+          context: msg.context ? (() => { try { return JSON.parse(msg.context!) } catch { return undefined } })() : undefined,
         })
       }
     })
@@ -421,7 +431,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
             message: data.error,
             retryable: msg.attempts < msg.maxRetries,
           },
-          context: msg.context ? JSON.parse(msg.context) : undefined,
+          context: msg.context ? (() => { try { return JSON.parse(msg.context!) } catch { return undefined } })() : undefined,
         })
       }
     })
@@ -537,16 +547,22 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     }
   })
 
+  // S4: Strip secrets from admin GET responses
+  const sanitizePlugin = (p: { api_key: string; hmac_secret: string; [key: string]: unknown }) => {
+    const { api_key: _ak, hmac_secret: _hs, ...safe } = p
+    return safe
+  }
+
   // Admin routes for plugin management
   server.get('/api/v1/admin/plugins', async (_req, reply) => {
-    return reply.send(pluginRegistry.listPlugins())
+    return reply.send(pluginRegistry.listPlugins().map(sanitizePlugin))
   })
 
   server.get('/api/v1/admin/plugins/:name', async (req, reply) => {
     const { name } = req.params as { name: string }
     const plugin = pluginRegistry.getPlugin(name)
     if (!plugin) return reply.status(404).send({ error: 'Plugin not found' })
-    return reply.send(plugin)
+    return reply.send(sanitizePlugin(plugin))
   })
 
   server.patch('/api/v1/admin/plugins/:name', async (req, reply) => {
