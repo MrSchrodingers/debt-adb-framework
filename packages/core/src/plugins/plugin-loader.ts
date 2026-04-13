@@ -73,11 +73,20 @@ export class PluginLoader {
 
     const ctx = this.createContext(plugin.name)
 
+    // Q3: validate pluginName against registry
+    const registered = this.registry.getPlugin(plugin.name)
+    if (!registered) throw new Error(`Plugin ${plugin.name} not registered after upsert`)
+
     try {
       await plugin.init(ctx)
       this.loadedPlugins.set(plugin.name, plugin)
-    } catch {
+    } catch (err) {
+      // R2: log + re-throw on init error
       this.registry.setPluginStatus(plugin.name, 'error')
+      this.loggerFactory.child({ plugin: plugin.name }).error('Plugin init failed', {
+        err: err instanceof Error ? err.message : String(err),
+      })
+      throw err
     }
   }
 
@@ -90,8 +99,15 @@ export class PluginLoader {
   }
 
   async destroyAll(): Promise<void> {
-    for (const [name] of this.loadedPlugins) {
-      await this.unloadPlugin(name)
+    for (const [name, plugin] of this.loadedPlugins) {
+      try {
+        await plugin.destroy()
+        this.loadedPlugins.delete(name)
+      } catch (err) {
+        this.loggerFactory.child({ plugin: name }).warn('Plugin destroy failed', {
+          err: err instanceof Error ? err.message : String(err),
+        })
+      }
     }
   }
 

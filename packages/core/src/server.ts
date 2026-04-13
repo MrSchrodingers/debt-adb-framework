@@ -326,8 +326,12 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     const plugin = factory()
     const apiKey = process.env[`PLUGIN_${name.toUpperCase()}_API_KEY`] || ''
     const hmacSecret = process.env[`PLUGIN_${name.toUpperCase()}_HMAC_SECRET`] || ''
-    await pluginLoader.loadPlugin(plugin, apiKey, hmacSecret)
-    server.log.info({ plugin: name }, 'Plugin loaded')
+    try {
+      await pluginLoader.loadPlugin(plugin, apiKey, hmacSecret)
+      server.log.info({ plugin: name }, 'Plugin loaded')
+    } catch (err) {
+      server.log.error({ plugin: name, err }, 'Plugin failed to load, skipping')
+    }
   }
 
   // Register plugin routes on Fastify (generic — works for any plugin)

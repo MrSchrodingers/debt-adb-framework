@@ -107,14 +107,14 @@ describe('PluginLoader', () => {
       expect(record!.status).toBe('active')
     })
 
-    it('core continues if plugin init() throws', async () => {
+    it('sets error status and re-throws if plugin init() throws', async () => {
       const plugin = makePlugin({
         name: 'broken-plugin',
         init: vi.fn<(ctx: PluginContext) => Promise<void>>().mockRejectedValue(new Error('init crash')),
       })
 
-      // Should not throw
-      await loader.loadPlugin(plugin, 'key-1', 'secret-1')
+      // R2: loadPlugin now re-throws after logging and setting error status
+      await expect(loader.loadPlugin(plugin, 'key-1', 'secret-1')).rejects.toThrow('init crash')
 
       const record = registry.getPlugin('broken-plugin')
       expect(record!.status).toBe('error')

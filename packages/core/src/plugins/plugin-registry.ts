@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import { nanoid } from 'nanoid'
-import type { PluginRecord } from './types.js'
+import type { PluginRecord, PluginStatus } from './types.js'
 
 export interface RegisterPluginParams {
   name: string
@@ -75,6 +75,8 @@ export class PluginRegistry {
       ON CONFLICT(name) DO UPDATE SET
         version = excluded.version,
         webhook_url = excluded.webhook_url,
+        api_key = excluded.api_key,
+        hmac_secret = excluded.hmac_secret,
         events = excluded.events,
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     `)
@@ -151,7 +153,7 @@ export class PluginRegistry {
     return newKey
   }
 
-  setPluginStatus(name: string, status: string): void {
+  setPluginStatus(name: string, status: PluginStatus): void {
     this.stmtSetStatus.run(status, name)
   }
 

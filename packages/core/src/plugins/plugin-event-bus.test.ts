@@ -68,7 +68,6 @@ describe('PluginEventBus', () => {
       const handler = vi.fn<(data: unknown) => Promise<void>>().mockResolvedValue(undefined)
       eventBus.registerHandler('oralsin', 'message:sent', handler)
       registry.disablePlugin('oralsin')
-      eventBus.setPluginEnabled('oralsin', false)
 
       emitter.emit('message:sent', {
         id: 'msg-1',
@@ -148,8 +147,8 @@ describe('PluginEventBus', () => {
       )
       eventBus.registerHandler('oralsin', 'message:sent', slowHandler)
 
-      const errors: unknown[] = []
-      eventBus.onError((err) => errors.push(err))
+      const errors: { pluginName: string; event: string; error: Error }[] = []
+      eventBus.onError((pluginName, event, err) => errors.push({ pluginName, event, error: err }))
 
       emitter.emit('message:sent', {
         id: 'msg-1',
@@ -160,7 +159,9 @@ describe('PluginEventBus', () => {
       await vi.waitFor(
         () => {
           expect(errors).toHaveLength(1)
-          expect((errors[0] as Error).message).toContain('timeout')
+          expect(errors[0].pluginName).toBe('oralsin')
+          expect(errors[0].event).toBe('message:sent')
+          expect(errors[0].error.message).toContain('timeout')
         },
         { timeout: 7000 },
       )
