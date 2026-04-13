@@ -23,7 +23,7 @@ import { ScreenshotPolicy } from './config/screenshot-policy.js'
 import { metricsRegistry, messagesSentTotal, messagesFailedTotal, messagesQueuedTotal, sendDurationSeconds, interMessageDelaySeconds, queueDepth, devicesOnline, senderDailyCount, quarantineEventsTotal, senderQuarantined, callbacksTotal, pluginErrorsTotal, queueDepthByPlugin } from './config/metrics.js'
 import { OralsinPlugin } from './plugins/oralsin-plugin.js'
 import type { DispatchEventName } from './events/index.js'
-import type { DispatchPlugin } from './plugins/types.js'
+import type { DispatchPlugin, PluginRecord } from './plugins/types.js'
 
 export interface DispatchCore {
   server: ReturnType<typeof Fastify>
@@ -555,7 +555,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   })
 
   // S4: Strip secrets from admin GET responses
-  const sanitizePlugin = (p: { api_key: string; hmac_secret: string; [key: string]: unknown }) => {
+  const sanitizePlugin = (p: PluginRecord) => {
     const { api_key: _ak, hmac_secret: _hs, ...safe } = p
     return safe
   }
@@ -584,8 +584,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       action: 'update',
       resourceType: 'plugin',
       resourceId: name,
-      beforeState: beforeState ? { status: beforeState.status, webhookUrl: beforeState.webhookUrl, events: beforeState.events } : null,
-      afterState: afterState ? { status: afterState.status, webhookUrl: afterState.webhookUrl, events: afterState.events } : null,
+      beforeState: beforeState ? { status: beforeState.status, webhookUrl: beforeState.webhook_url, events: beforeState.events } : null,
+      afterState: afterState ? { status: afterState.status, webhookUrl: afterState.webhook_url, events: afterState.events } : null,
     })
     return reply.send(afterState)
   })
@@ -598,7 +598,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       action: 'delete',
       resourceType: 'plugin',
       resourceId: name,
-      beforeState: beforeState ? { status: beforeState.status, webhookUrl: beforeState.webhookUrl, events: beforeState.events } : null,
+      beforeState: beforeState ? { status: beforeState.status, webhookUrl: beforeState.webhook_url, events: beforeState.events } : null,
     })
     return reply.status(204).send()
   })

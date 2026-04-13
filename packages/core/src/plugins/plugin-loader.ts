@@ -135,11 +135,11 @@ export class PluginLoader {
             idempotencyKey: m.idempotencyKey,
             priority: PRIORITY_MAP[m.sendOptions?.priority ?? 'normal'] ?? 5,
             // P10: Only use resolvedSenderPhone — no senders[0] fallback
-            senderNumber: m.resolvedSenderPhone ?? null,
+            senderNumber: m.resolvedSenderPhone ?? undefined,
             pluginName,
             correlationId: m.correlationId ?? undefined,
             sendersConfig: JSON.stringify(m.senders),
-            context: hasContext ? JSON.stringify(mergedContext) : null,
+            context: hasContext ? JSON.stringify(mergedContext) : undefined,
             maxRetries: m.sendOptions?.maxRetries ?? 3,
             contactName: m.patient.name ?? undefined,
           }
