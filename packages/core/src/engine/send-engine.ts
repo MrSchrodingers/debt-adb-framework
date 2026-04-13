@@ -505,16 +505,8 @@ export class SendEngine {
     await this.sendeventTap(deviceSerial, searchIcon.cx, searchIcon.cy)
     await this.delay(1000)
 
-    // Diversify search query: 70% digits, 30% contact name (if available)
-    let searchQuery: string
-    const contactName = this.queue.getContactName(phone)
-    if (contactName && Math.random() < 0.3) {
-      // Search by contact name — escape single quotes for ADB shell
-      searchQuery = contactName
-    } else {
-      // Search by last 8 digits — specific enough to match a single contact
-      searchQuery = phone.slice(-8)
-    }
+    // Always search by last 8 digits — reliable and avoids encoding issues with contact names
+    const searchQuery = phone.slice(-8)
     const escapedQuery = searchQuery.replace(/'/g, "'\\''")
     await this.adb.shell(deviceSerial, `input text '${escapedQuery}'`)
     await this.delay(1500)

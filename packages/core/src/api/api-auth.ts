@@ -8,6 +8,7 @@ const PUBLIC_ROUTES = [
 
 const PUBLIC_PREFIXES = [
   '/api/v1/webhooks/waha',
+  '/api/v1/plugins/',  // Plugin routes have their own auth via plugin-specific API key
 ]
 
 function isPublicRoute(url: string): boolean {
