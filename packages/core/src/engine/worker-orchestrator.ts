@@ -43,6 +43,8 @@ export class WorkerOrchestrator {
   private deviceForegroundUser = new Map<string, number>()
   private cappedSendersCooldown = new Map<string, number>()
   private lastWindowLogAt: number | null = null
+  private tickBackoffMs = 5_000
+  private readonly MAX_TICK_BACKOFF_MS = 60_000
   private sendMetadata = new Map<string, {
     profileId: number; userSwitched: boolean; ts: number;
     appPackage: string; senderNumber: string | null; isFirstContact: boolean;
@@ -52,6 +54,11 @@ export class WorkerOrchestrator {
 
   get isRunning(): boolean {
     return this.devicesRunning.size > 0
+  }
+
+  /** R7/Decision #15: Dynamic tick interval with exponential backoff */
+  getTickInterval(): number {
+    return this.tickBackoffMs
   }
 
   async processMessage(message: Message, deviceSerial: string, isFirstInBatch = true, appPackage = 'com.whatsapp'): Promise<boolean> {
@@ -158,11 +165,23 @@ export class WorkerOrchestrator {
 
     const { deviceManager } = this.deps
     const devices = deviceManager.getDevices().filter(d => d.status === 'online')
-    if (devices.length === 0) return
+    if (devices.length === 0) {
+      // R7/Decision #15: backoff when no devices
+      this.tickBackoffMs = Math.min(this.tickBackoffMs * 2, this.MAX_TICK_BACKOFF_MS)
+      return
+    }
 
     // Process each online device in parallel (each device runs sequentially within)
     const promises = devices.map(device => this.tickDevice(device.serial))
-    await Promise.allSettled(promises)
+    const results = await Promise.allSettled(promises)
+
+    // R7: Reset backoff if any device processed messages successfully
+    const anyActivity = results.some(r => r.status === 'fulfilled')
+    if (anyActivity) {
+      this.tickBackoffMs = 5_000
+    } else {
+      this.tickBackoffMs = Math.min(this.tickBackoffMs * 2, this.MAX_TICK_BACKOFF_MS)
+    }
   }
 
   private async tickDevice(deviceSerial: string): Promise<void> {

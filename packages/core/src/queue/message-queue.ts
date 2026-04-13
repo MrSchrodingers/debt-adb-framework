@@ -330,7 +330,8 @@ export class MessageQueue {
   }
 
   cleanStaleLocks(): number {
-    const result = this.db.prepare(`
+    // R1: Recover locked > 120s
+    const lockedResult = this.db.prepare(`
       UPDATE messages
       SET status = 'queued',
           locked_by = NULL,
@@ -339,7 +340,33 @@ export class MessageQueue {
       WHERE status = 'locked'
         AND locked_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-120 seconds')
     `).run()
-    return result.changes
+
+    // R1/Decision #9: Recover sending > 300s (2x worst case send timeout)
+    const sendingResult = this.db.prepare(`
+      UPDATE messages
+      SET status = 'queued',
+          locked_by = NULL,
+          locked_at = NULL,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE status = 'sending'
+        AND updated_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-300 seconds')
+    `).run()
+
+    return lockedResult.changes + sendingResult.changes
+  }
+
+  /** Decision #8: Expire waiting_device messages older than TTL */
+  expireWaitingDeviceMessages(ttlMs: number): Message[] {
+    const ttlSeconds = Math.floor(ttlMs / 1000)
+    const rows = this.db.prepare(`
+      UPDATE messages
+      SET status = 'permanently_failed',
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE status = 'waiting_device'
+        AND updated_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-' || ? || ' seconds')
+      RETURNING *
+    `).all(ttlSeconds) as Record<string, unknown>[]
+    return rows.map(row => this.rowToMessage(row))
   }
 
   list(status?: MessageStatus, limit = 50): Message[] {
