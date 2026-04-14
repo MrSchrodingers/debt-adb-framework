@@ -177,6 +177,10 @@ export class SendEngine {
           `am start -a android.intent.action.VIEW -d '${deepLink}' -p ${appPackage}`,
         )
         await this.delay(isFirstInBatch ? 4000 : 2000)
+
+        // Check for "number not on WhatsApp" popup BEFORE waiting for chat
+        await this.detectNoWhatsAppPopup(deviceSerial, phoneDigits)
+
         dialogsDismissed = await this.waitForChatReady(deviceSerial)
         this.record(message.id, 'chat_opened', { method, dialogsDismissed })
         this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
@@ -417,6 +421,44 @@ export class SendEngine {
     }
 
     return false
+  }
+
+  /**
+   * Detect "number not on WhatsApp" popup after wa.me deep link.
+   * This popup appears when the recipient doesn't have WhatsApp installed.
+   * Shows: "O número de telefone +55 XX XXXXX-XXXX não está no WhatsApp."
+   * with buttons "Convidar para o WhatsApp" and "Cancelar".
+   *
+   * If detected: dismiss popup, clean up, throw non-retryable error.
+   * This prevents cascade failures where every subsequent message also fails
+   * because the popup stays on screen.
+   */
+  private async detectNoWhatsAppPopup(deviceSerial: string, phone: string): Promise<void> {
+    const xml = await this.dumpUi(deviceSerial)
+
+    // Check for the "not on WhatsApp" popup specifically
+    // Portuguese: "O número de telefone +55 XX XXXXX-XXXX não está no WhatsApp."
+    // English: "The phone number ... is not on WhatsApp."
+    const noWhatsApp = xml.includes('não está no WhatsApp') ||
+      xml.includes('not on WhatsApp') ||
+      xml.includes('Convidar para o WhatsApp') ||
+      xml.includes('Invite to WhatsApp')
+
+    if (noWhatsApp) {
+      // Dismiss: BACK to close popup, then HOME to clean state
+      await this.adb.shell(deviceSerial, 'input keyevent 4')
+      await this.delay(500)
+      await this.adb.shell(deviceSerial, 'input keyevent 4')
+      await this.delay(500)
+
+      // Re-open WhatsApp home to reset state for next message
+      await this.adb.shell(deviceSerial, 'am start -n com.whatsapp/com.whatsapp.HomeActivity')
+      await this.delay(1500)
+
+      const error = new Error(`Recipient ${phone} is not on WhatsApp — number cannot receive messages`)
+      error.name = 'NoWhatsAppError'
+      throw error
+    }
   }
 
   /** Returns number of dialogs dismissed before chat became ready */
