@@ -63,15 +63,15 @@ export function App() {
 
   const fetchDevices = useCallback(() => {
     fetch(`${CORE_URL}/api/v1/monitor/devices`, { headers: authHeaders() })
-      .then((r) => r.json())
-      .then(setDevices)
+      .then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json() })
+      .then((data) => setDevices(Array.isArray(data) ? data : []))
       .catch(() => {})
   }, [])
 
   const fetchAlerts = useCallback(() => {
     fetch(`${CORE_URL}/api/v1/monitor/alerts`, { headers: authHeaders() })
-      .then((r) => r.json())
-      .then(setAlerts)
+      .then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json() })
+      .then((data) => setAlerts(Array.isArray(data) ? data : []))
       .catch(() => {})
   }, [])
 
