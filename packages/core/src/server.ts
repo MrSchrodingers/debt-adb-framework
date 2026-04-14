@@ -799,6 +799,26 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     await shutdown.execute()
   })
 
+  // ── System status with circuit breaker visibility ──
+  server.get('/api/v1/system/status', async () => {
+    const devices = deviceManager.getDevices()
+    const queueStats = queue.getQueueStats()
+
+    return {
+      server: { status: 'ok', uptime: process.uptime(), nodeEnv: process.env.NODE_ENV },
+      queue: queueStats,
+      devices: devices.map(d => ({
+        serial: d.serial,
+        status: d.status,
+        circuitBreaker: circuitBreaker.getState(d.serial),
+      })),
+      worker: {
+        tickInterval: orchestrator.getTickInterval(),
+        running: orchestrator.isRunning,
+      },
+    }
+  })
+
   await server.listen({ port, host: '0.0.0.0' })
 
   const io = new SocketIOServer(server.server, { cors: { origin: corsOrigins } })
