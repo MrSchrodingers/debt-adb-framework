@@ -296,7 +296,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const senderMapping = new SenderMapping(db)
   senderMapping.initialize()
   registerSenderMappingRoutes(server, senderMapping, auditLogger)
-  registerSenderRoutes(server, { senderWarmup, senderMapping, senderHealth, queue })
+  registerSenderRoutes(server, { senderWarmup, senderMapping, senderHealth, queue, deviceManager })
 
   // WAHA routes (after senderMapping init — pair endpoint needs it)
   registerWahaRoutes(server, { webhookHandler, sessionManager, messageHistory, adb, senderMapping })
