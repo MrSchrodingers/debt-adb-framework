@@ -165,47 +165,21 @@ export class SendEngine {
         await this.tapSendButton(deviceSerial)
         this.record(message.id, 'send_tapped', { method: 'media_share' })
       } else {
-        // Text-only flow — select chat opening method (diversifies entryPointSource fingerprint)
-        method = this.strategy.selectMethod(message.body.length)
+        // Text-only flow — always use wa.me?text= prefill (preserves emojis, newlines, formatting)
+        method = 'prefill'
         this.record(message.id, 'strategy_selected', { method, appPackage })
 
-        if (method === 'prefill') {
-          // wa.me?text= pre-fill (fast, no typing indicator)
-          const encodedBody = encodeURIComponent(message.body)
-          const deepLink = `https://wa.me/${phoneDigits}?text=${encodedBody}`
-          const usePreFill = deepLink.length < 2000
+        const encodedBody = encodeURIComponent(message.body)
+        const deepLink = `https://wa.me/${phoneDigits}?text=${encodedBody}`
 
-          await this.adb.shell(
-            deviceSerial,
-            `am start -a android.intent.action.VIEW -d "${usePreFill ? deepLink : `https://wa.me/${phoneDigits}`}" -p ${appPackage}`,
-          )
-          await this.delay(isFirstInBatch ? 4000 : 2000)
-          dialogsDismissed = await this.waitForChatReady(deviceSerial)
-          this.record(message.id, 'chat_opened', { method, dialogsDismissed })
-          if (!usePreFill) {
-            await this.withTimeout(this.typeMessage(deviceSerial, message.body), 30_000, 'typeMessage')
-          }
-          this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
-        } else if (method === 'search') {
-          if (isFirstInBatch) {
-            await this.adb.shell(deviceSerial, `am start -n ${appPackage}/com.whatsapp.HomeActivity`)
-            await this.delay(3000)
-          }
-          await this.withTimeout(this.openViaSearch(deviceSerial, phoneDigits, message.body, appPackage), 30_000, 'openViaSearch')
-          dialogsDismissed = 0
-          this.record(message.id, 'chat_opened', { method, dialogsDismissed })
-          this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
-        } else if (method === 'chatlist') {
-          await this.withTimeout(this.openViaChatList(deviceSerial, phoneDigits, message.body, appPackage), 30_000, 'openViaChatList')
-          dialogsDismissed = 0
-          this.record(message.id, 'chat_opened', { method, dialogsDismissed })
-          this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
-        } else {
-          await this.withTimeout(this.openViaTyping(deviceSerial, phoneDigits, message.body, appPackage), 30_000, 'openViaTyping')
-          dialogsDismissed = 0
-          this.record(message.id, 'chat_opened', { method, dialogsDismissed })
-          this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
-        }
+        await this.adb.shell(
+          deviceSerial,
+          `am start -a android.intent.action.VIEW -d '${deepLink}' -p ${appPackage}`,
+        )
+        await this.delay(isFirstInBatch ? 4000 : 2000)
+        dialogsDismissed = await this.waitForChatReady(deviceSerial)
+        this.record(message.id, 'chat_opened', { method, dialogsDismissed })
+        this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
 
         await this.delay(300)
         await this.tapSendButton(deviceSerial)
