@@ -193,6 +193,23 @@ export class SendEngine {
       // Wait for send confirmation
       await this.delay(2000)
 
+      // CRITICAL: Mark as sent IMMEDIATELY after tap — before screenshot/validation
+      // This prevents WAHA fallback from firing if screenshot/validation throws,
+      // which would cause duplicate messages (ADB already sent + WAHA sends again)
+      const durationMs = Date.now() - startTime
+      this.queue.updateStatus(message.id, 'sending', 'sent')
+      this.emitter.emit('message:sent', {
+        id: message.id,
+        sentAt: new Date().toISOString(),
+        durationMs,
+        deviceSerial,
+        contactRegistered,
+        dialogsDismissed,
+        strategyMethod: message.mediaUrl ? 'media' : method,
+        appPackage,
+        senderNumber: message.senderNumber ?? undefined,
+      })
+
       // Post-send validation — check UI state via XML dump (observability-only)
       try {
         const postSendXml = await this.dumpUi(deviceSerial)
@@ -236,20 +253,6 @@ export class SendEngine {
       } else {
         this.record(message.id, 'screenshot_skipped', { mode: 'sample' })
       }
-
-      const durationMs = Date.now() - startTime
-      this.queue.updateStatus(message.id, 'sending', 'sent')
-      this.emitter.emit('message:sent', {
-        id: message.id,
-        sentAt: new Date().toISOString(),
-        durationMs,
-        deviceSerial,
-        contactRegistered,
-        dialogsDismissed,
-        strategyMethod: message.mediaUrl ? 'media' : method,
-        appPackage,
-        senderNumber: message.senderNumber ?? undefined,
-      })
 
       return { screenshot, durationMs, contactRegistered, dialogsDismissed }
     } catch (err) {
