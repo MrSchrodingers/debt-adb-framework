@@ -15,3 +15,4 @@ dist/
 .playwright-mcp/
 excalidraw.log
 data/
+.env.production

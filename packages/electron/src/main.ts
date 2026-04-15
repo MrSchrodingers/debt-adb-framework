@@ -2,6 +2,10 @@ import { app, BrowserWindow } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+// Fix mouse offset on Wayland (XWayland compat issue)
+app.commandLine.appendSwitch('ozone-platform-hint', 'auto')
+app.commandLine.appendSwitch('enable-features', 'WaylandWindowDecorations')
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const UI_DEV_URL = process.env.VITE_DEV_URL ?? 'http://localhost:5174'
 const isDev = !app.isPackaged
@@ -26,7 +30,7 @@ async function createWindow() {
     title: 'Dispatch — ADB WhatsApp Orchestrator',
     backgroundColor: '#09090b',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
     },
