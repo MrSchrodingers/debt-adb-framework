@@ -321,7 +321,7 @@ export class MessageQueue {
       UPDATE messages
       SET status = ?${attemptsClause},
           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      WHERE id = ? AND status IN ('queued', 'sending', 'failed', 'waiting_device')
+      WHERE id = ? AND status IN ('queued', 'locked', 'sending', 'failed', 'waiting_device')
       RETURNING *
     `).get(...binds) as Record<string, unknown> | undefined
 

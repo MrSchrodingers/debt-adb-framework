@@ -42,7 +42,15 @@ export interface PluginLogger {
 }
 
 export type PluginStatus = 'active' | 'error' | 'disabled'
-export type CallbackType = 'result' | 'ack' | 'response' | 'interim_failure' | 'expired'
+export type CallbackType =
+  | 'result'
+  | 'ack'
+  | 'response'
+  | 'interim_failure'
+  | 'expired'
+  | 'number_invalid'
+  | 'hygiene_item'
+  | 'hygiene_completed'
 
 // ── Plugin Record (SQLite row) ──
 
@@ -203,6 +211,51 @@ export interface ResponseCallback {
     from_number: string
     has_media: boolean
   }
+}
+
+export interface NumberInvalidCallback {
+  event: 'number_invalid'
+  idempotency_key?: string
+  correlation_id?: string
+  status: 'number_invalid'
+  phone_input: string
+  phone_normalized: string
+  variants_tried: string[]
+  source: 'cache' | 'adb_probe' | 'waha' | 'send_failure'
+  confidence: number | null
+  check_id: string
+  detected_at: string
+  context?: Record<string, unknown>
+}
+
+export interface HygieneItemCallback {
+  event: 'hygiene_item'
+  job_id: string
+  external_ref?: string
+  phone_input: string
+  phone_normalized: string | null
+  external_id?: string
+  status: 'exists' | 'not_exists' | 'error'
+  check_id: string | null
+  confidence: number | null
+  error?: string
+  processed_at: string
+}
+
+export interface HygieneCompletedCallback {
+  event: 'hygiene_completed'
+  job_id: string
+  external_ref?: string
+  summary: {
+    total: number
+    valid: number
+    invalid: number
+    error: number
+    cache_hits: number
+  }
+  items_url: string
+  audit_url: string
+  completed_at: string
 }
 
 // ── Failed Callback Record (SQLite) ──

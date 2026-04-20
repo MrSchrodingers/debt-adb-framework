@@ -3,6 +3,64 @@ import { Registry, Counter, Histogram, Gauge } from 'prom-client'
 // Create a custom registry (don't pollute the default)
 export const metricsRegistry = new Registry()
 
+// ── Phase 9: Contact Registry & Hygiene (per grill D5/D6/D10/D11) ──
+
+export const contactRegistryLookupsTotal = new Counter({
+  name: 'dispatch_contact_registry_lookups_total',
+  help: 'Total lookups against the WhatsApp contact registry',
+  labelNames: ['result'] as const, // hit_valid | hit_invalid | hit_expired | miss
+  registers: [metricsRegistry],
+})
+
+export const contactRegistryRecordsTotal = new Counter({
+  name: 'dispatch_contact_registry_records_total',
+  help: 'Total records written to wa_contact_checks',
+  labelNames: ['source', 'result'] as const,
+  registers: [metricsRegistry],
+})
+
+export const contactCheckLatency = new Histogram({
+  name: 'dispatch_contact_check_latency_seconds',
+  help: 'Latency of each check strategy',
+  labelNames: ['source'] as const,
+  buckets: [0.05, 0.1, 0.5, 1, 2, 5, 10],
+  registers: [metricsRegistry],
+})
+
+export const numberInvalidEmittedTotal = new Counter({
+  name: 'dispatch_number_invalid_emitted_total',
+  help: 'Number of number_invalid callbacks emitted',
+  labelNames: ['source'] as const,
+  registers: [metricsRegistry],
+})
+
+export const digit9CorrectionsTotal = new Counter({
+  name: 'dispatch_digit9_corrections_total',
+  help: 'BR digit-9 variant corrections resolved via WAHA tiebreaker',
+  registers: [metricsRegistry],
+})
+
+export const hygieneJobsActive = new Gauge({
+  name: 'dispatch_hygiene_jobs_active',
+  help: 'Currently active hygiene jobs',
+  labelNames: ['plugin'] as const,
+  registers: [metricsRegistry],
+})
+
+export const hygieneItemsProcessedTotal = new Counter({
+  name: 'dispatch_hygiene_items_processed_total',
+  help: 'Hygiene job items processed',
+  labelNames: ['plugin', 'status'] as const,
+  registers: [metricsRegistry],
+})
+
+export const hygieneRateLimitedTotal = new Counter({
+  name: 'dispatch_hygiene_rate_limited_total',
+  help: 'Rate limiter throttles on hygiene checks',
+  labelNames: ['source', 'session'] as const,
+  registers: [metricsRegistry],
+})
+
 // ── Counters (monotonic) ──
 
 export const messagesSentTotal = new Counter({

@@ -23,6 +23,15 @@
 | 6 | Dashboard Operacional | `APPROVED` | 2026-04-06 | 2026-04-06 | — |
 | 7 | Plugin System + Plugin Oralsin | `APPROVED` | 2026-04-02 | 2026-04-02 | — |
 | 8 | Multi-Profile + Hardening + Docker | `APPROVED` | 2026-04-06 | 2026-04-06 | — |
+| 9.1 | Contact Registry Core (normalizer + registry + backfill) | `APPROVED` | 2026-04-17 | 2026-04-17 | 20 tests green (13 TDD + 7 post-review fixes). Code review: 0 Critical, I1/I2/I3/I5/M2/M5/M7 fixed, I4/M1/M3/M4/M6/M8 deferred with justification. 794/804 full suite (10 pre-existing unrelated) |
+| 9.2 | HygieneJobRunner + jobs tables | `APPROVED` | 2026-04-17 | 2026-04-17 | 5 tests, Zod LGPD (D7), UNIQUE external_ref idempotent (D9), cancel path |
+| 9.3 | Check Strategies (ADB/WAHA/Cache) | `APPROVED` | 2026-04-17 | 2026-04-17 | 11 tests, command-injection guard, error path covered |
+| 9.4 | ContactValidator orchestrator | `APPROVED` | 2026-04-17 | 2026-04-17 | 5 tests, L1→L3→L2 per D2/D6/D8, WAHA tiebreaker for ambiguous DDDs |
+| 9.5 | Callback types + events scaffolded | `APPROVED` | 2026-04-17 | 2026-04-17 | CallbackType union extended (number_invalid, hygiene_item, hygiene_completed); SendEngine inline pre-check deferred to 9.9 E2E wiring |
+| 9.6 | REST API endpoints | `APPROVED` | 2026-04-17 | 2026-04-17 | 12 tests, /contacts/* and /hygiene/* with Zod, LGPD enforcement in hygiene route |
+| 9.7 | UI integration (live fetch) | `APPROVED` | 2026-04-17 | 2026-04-17 | contacts-audit.tsx rewritten to consume /api/v1/contacts, force recheck wired |
+| 9.8 | Observability + archival | `APPROVED` | 2026-04-17 | 2026-04-17 | 7 Prometheus metrics added, archiveOldChecks() with 2 tests (D11 quarterly rotation) |
+| 9.9 | Phase gate + E2E wiring | `APPROVED` | 2026-04-17 | 2026-04-17 | Routes registered (server.ts), ContactRegistry+HygieneJobService instantiated on boot, L1 pre-check live in WorkerOrchestrator.processMessage, number_invalid callback wired via CallbackDelivery + event listener. 4 new integration tests passing. TypeScript clean on all new code. Full suite 833/843 (10 pre-existing unrelated) |
 
 ### Status Legend
 - `READY` — Dependencies met, can start

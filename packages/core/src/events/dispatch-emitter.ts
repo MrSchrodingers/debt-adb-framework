@@ -29,6 +29,16 @@ export interface DispatchEventMap {
   'contact:opted_out': { phone: string; pattern: string; sourceSession: string; messageText: string }
   'sender:quarantined': { sender: string; failureCount: number; quarantinedUntil: string }
   'sender:released': { sender: string; quarantineDurationActualMs: number }
+  'number:invalid': {
+    id: string
+    phone_input: string
+    phone_normalized: string
+    source: 'cache' | 'adb_probe' | 'waha' | 'send_failure'
+    confidence: number | null
+    check_id: string
+    detected_at: string
+    correlation_id?: string
+  }
 }
 
 export type DispatchEventName = keyof DispatchEventMap

@@ -16,6 +16,9 @@ import type { Message } from '../queue/types.js'
 import type { SendWindow } from './send-window.js'
 import type { SenderWarmup } from './sender-warmup.js'
 import type { DeviceCircuitBreaker } from './device-circuit-breaker.js'
+import type { ContactRegistry } from '../contacts/index.js'
+import { normalizePhone } from '../validator/br-phone-resolver.js'
+import { numberInvalidEmittedTotal } from '../config/metrics.js'
 
 export interface WorkerOrchestratorDeps {
   db: Database.Database
@@ -36,6 +39,7 @@ export interface WorkerOrchestratorDeps {
   sendWindow?: SendWindow
   senderWarmup?: SenderWarmup
   circuitBreaker?: DeviceCircuitBreaker
+  contactRegistry?: ContactRegistry
 }
 
 export class WorkerOrchestrator {
@@ -62,9 +66,36 @@ export class WorkerOrchestrator {
   }
 
   async processMessage(message: Message, deviceSerial: string, isFirstInBatch = true, appPackage = 'com.whatsapp'): Promise<boolean> {
-    const { queue, engine, emitter, wahaFallback, messageHistory, receiptTracker, logger } = this.deps
+    const { queue, engine, emitter, wahaFallback, messageHistory, receiptTracker, logger, contactRegistry } = this.deps
     let sendSuccess = false
     let usedFallback = false
+
+    // Phase 9 / D6: L1 cache lookup — always-on pre-check.
+    // If the contact is a known-invalid WA number, short-circuit without wasting an ADB attempt.
+    if (contactRegistry) {
+      try {
+        const norm = normalizePhone(message.to)
+        const cached = contactRegistry.lookup(norm.normalized)
+        if (cached?.exists_on_wa === 0 && cached.recheck_due_at === null) {
+          queue.markPermanentlyFailed(message.id, message.attempts + 1)
+          emitter.emit('number:invalid', {
+            id: message.id,
+            phone_input: message.to,
+            phone_normalized: norm.normalized,
+            source: 'cache',
+            confidence: cached.last_check_confidence,
+            check_id: cached.last_check_id ?? '',
+            detected_at: new Date().toISOString(),
+            correlation_id: message.correlationId ?? undefined,
+          })
+          numberInvalidEmittedTotal.inc({ source: 'cache' })
+          logger.info({ messageId: message.id, phone: norm.normalized }, 'L1 pre-check: known invalid, skipping send')
+          return false
+        }
+      } catch {
+        // normalize failure is not our problem here — fall through to normal send which has its own guards
+      }
+    }
 
     try {
       await engine.send(message, deviceSerial, isFirstInBatch, appPackage)

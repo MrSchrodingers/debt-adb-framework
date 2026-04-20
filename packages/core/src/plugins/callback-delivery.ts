@@ -2,7 +2,7 @@ import { createHmac } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { nanoid } from 'nanoid'
 import type { PluginRegistry } from './plugin-registry.js'
-import type { ResultCallback, AckCallback, ResponseCallback, InterimFailureCallback, ExpiredCallback, FailedCallbackRecord, CallbackType } from './types.js'
+import type { ResultCallback, AckCallback, ResponseCallback, InterimFailureCallback, ExpiredCallback, NumberInvalidCallback, FailedCallbackRecord, CallbackType } from './types.js'
 
 type FetchFn = (url: string, init: RequestInit) => Promise<Response>
 
@@ -106,6 +106,11 @@ export class CallbackDelivery {
     await this.sendCallback(pluginName, messageId, 'expired', payload)
   }
 
+  async sendNumberInvalidCallback(pluginName: string, messageId: string, payload: NumberInvalidCallback): Promise<void> {
+    if (!pluginName) return
+    await this.sendCallback(pluginName, messageId, 'number_invalid', payload)
+  }
+
   listFailedCallbacks(): FailedCallbackRecord[] {
     return this.getStmtListFailed().all() as FailedCallbackRecord[]
   }
@@ -148,7 +153,7 @@ export class CallbackDelivery {
     pluginName: string,
     messageId: string,
     callbackType: CallbackType,
-    payload: ResultCallback | AckCallback | ResponseCallback | InterimFailureCallback | ExpiredCallback,
+    payload: ResultCallback | AckCallback | ResponseCallback | InterimFailureCallback | ExpiredCallback | NumberInvalidCallback,
   ): Promise<void> {
     const plugin = this.registry.getPlugin(pluginName)
     if (!plugin) return

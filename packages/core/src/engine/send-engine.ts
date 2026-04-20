@@ -26,6 +26,8 @@ export interface SendResult {
 export class SendEngine {
   private processing = false
   private touchDeviceCache = new Map<string, string | null>()
+  /** Per-device cache of Google account (name + type) for contact creation */
+  private googleAccountCache = new Map<string, { type: string; name: string } | null>()
 
   constructor(
     private adb: AdbBridge,
@@ -37,6 +39,46 @@ export class SendEngine {
     private contactCache?: ContactCache,
     private mediaSender?: MediaSender,
   ) {}
+
+  /**
+   * Detect the device's primary Google account for contact registration.
+   * Per project feedback (memory/feedback_send_flow.md): contacts MUST be saved
+   * to Google account, not Local — otherwise WhatsApp may not sync them.
+   * Returns null if no Google account is configured (fallback to Local).
+   */
+  private async detectGoogleAccount(deviceSerial: string): Promise<{ type: string; name: string } | null> {
+    if (this.googleAccountCache.has(deviceSerial)) {
+      return this.googleAccountCache.get(deviceSerial) ?? null
+    }
+    try {
+      const out = await this.adb.shell(deviceSerial, 'dumpsys account')
+      const match = out.match(/Account \{name=([^,}]+),\s*type=com\.google\}/)
+      if (match) {
+        const account = { type: 'com.google', name: match[1].trim() }
+        this.googleAccountCache.set(deviceSerial, account)
+        return account
+      }
+    } catch {
+      // fallthrough
+    }
+    this.googleAccountCache.set(deviceSerial, null)
+    return null
+  }
+
+  /**
+   * Detect the currently foregrounded Android user profile. Needed because
+   * each profile has an isolated ContactsProvider — contacts created in profile
+   * 0 are invisible to the WhatsApp running in profile 10 (multi-user setup).
+   */
+  private async detectForegroundUser(deviceSerial: string): Promise<number> {
+    try {
+      const out = await this.adb.shell(deviceSerial, 'am get-current-user')
+      const parsed = parseInt(out.trim(), 10)
+      return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0
+    } catch {
+      return 0
+    }
+  }
 
   private record(messageId: string, event: string, metadata?: Record<string, unknown>): void {
     this.recorder?.record(messageId, event, metadata)
@@ -294,14 +336,19 @@ export class SendEngine {
     const name = dbName ?? `Contato ${phone.slice(-4)}`
     const escapedName = escapeForAdbContent(name)
 
-    // Check if contact exists on the Android device
+    // Multi-user: target the profile that's currently foreground (where WhatsApp is running).
+    // ContactsProvider is isolated per Android user — contacts created in profile 0 are
+    // invisible to WhatsApp running in profile 10.
+    const foregroundUser = await this.detectForegroundUser(deviceSerial)
+    const userFlag = `--user ${foregroundUser}`
+
+    // Check if contact exists on the Android device (in the active profile)
     try {
       const existing = await this.adb.shell(
         deviceSerial,
-        `content query --uri content://com.android.contacts/phone_lookup/${phone} --projection display_name`,
+        `content query ${userFlag} --uri content://com.android.contacts/phone_lookup/${phone} --projection display_name`,
       )
       if (existing.includes('display_name=')) {
-        // Contact exists on device — no need to create
         if (!this.queue.hasContact(phone)) {
           this.queue.saveContact(phone, name)
         }
@@ -312,31 +359,45 @@ export class SendEngine {
       // phone_lookup failed — continue to create
     }
 
-    // Create contact via content provider (no UI dialog)
+    // Create contact via content provider (no UI dialog).
+    // Per feedback_send_flow.md: MUST use Google account (not Local) for WhatsApp sync —
+    // when available in the current profile. Profile 10+ usually has only Local/USIM.
+    const googleAccount = await this.detectGoogleAccount(deviceSerial)
+    const acctBinds = googleAccount
+      ? `--bind account_type:s:${googleAccount.type} --bind account_name:s:${googleAccount.name}`
+      : `--bind account_type:n: --bind account_name:n:`
     try {
       await this.adb.shell(
         deviceSerial,
-        `content insert --uri content://com.android.contacts/raw_contacts --bind account_type:n: --bind account_name:n:`,
+        `content insert ${userFlag} --uri content://com.android.contacts/raw_contacts ${acctBinds}`,
       )
 
       const idOutput = await this.adb.shell(
         deviceSerial,
-        `content query --uri content://com.android.contacts/raw_contacts --projection _id --sort "_id DESC LIMIT 1"`,
+        `content query ${userFlag} --uri content://com.android.contacts/raw_contacts --projection _id --sort "_id DESC LIMIT 1"`,
       )
       const idMatch = idOutput.match(/_id=(\d+)/)
       if (idMatch) {
         const rawId = idMatch[1]
         await this.adb.shell(
           deviceSerial,
-          `content insert --uri content://com.android.contacts/data --bind raw_contact_id:i:${rawId} --bind mimetype:s:vnd.android.cursor.item/name --bind data1:s:${escapedName}`,
+          `content insert ${userFlag} --uri content://com.android.contacts/data --bind raw_contact_id:i:${rawId} --bind mimetype:s:vnd.android.cursor.item/name --bind data1:s:${escapedName}`,
         )
         await this.adb.shell(
           deviceSerial,
-          `content insert --uri content://com.android.contacts/data --bind raw_contact_id:i:${rawId} --bind mimetype:s:vnd.android.cursor.item/phone_v2 --bind data1:s:${escapeForAdbContent(phone)} --bind data2:i:1`,
+          `content insert ${userFlag} --uri content://com.android.contacts/data --bind raw_contact_id:i:${rawId} --bind mimetype:s:vnd.android.cursor.item/phone_v2 --bind data1:s:${escapeForAdbContent(phone)} --bind data2:i:1`,
         )
+        this.record(phone, 'contact_created', {
+          account_type: googleAccount?.type ?? 'local',
+          account_name: googleAccount?.name ?? '',
+          raw_contact_id: rawId,
+          profile: foregroundUser,
+        })
       }
-    } catch {
-      // Contact creation failed — continue anyway, wa.me works without saved contact
+    } catch (err) {
+      this.record(phone, 'contact_insert_failed', {
+        phone, error: err instanceof Error ? err.message : String(err), profile: foregroundUser,
+      })
     }
 
     // Only save to DB if no name exists yet (don't overwrite plugin-provided patient name)

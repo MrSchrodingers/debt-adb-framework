@@ -25,6 +25,7 @@ export interface OralsinHourlyBucket {
 export interface OralsinMessage {
   id: string
   toNumber: string
+  toName: string | null
   body: string
   senderNumber: string | null
   status: string
@@ -214,9 +215,11 @@ export function buildOralsinStats(db: Database.Database) {
         m.created_at,
         m.updated_at,
         pc.delivered_emitted,
-        pc.read_emitted
+        pc.read_emitted,
+        c.name AS to_name
       FROM messages m
       LEFT JOIN pending_correlations pc ON pc.message_id = m.id
+      LEFT JOIN contacts c ON c.phone = m.to_number
       WHERE ${where}
       ORDER BY m.created_at DESC
       LIMIT ? OFFSET ?
@@ -231,6 +234,7 @@ export function buildOralsinStats(db: Database.Database) {
       return {
         id: r.id as string,
         toNumber: r.to_number as string,
+        toName: (r.to_name as string) ?? null,
         body: r.body as string,
         senderNumber: (r.sender_number as string) ?? null,
         status: r.status as string,

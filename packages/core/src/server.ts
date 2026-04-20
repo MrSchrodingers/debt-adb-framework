@@ -8,7 +8,9 @@ import { MessageQueue } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
 import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
-import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes } from './api/index.js'
+import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes } from './api/index.js'
+import { ContactRegistry } from './contacts/index.js'
+import { HygieneJobService } from './hygiene/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
 import { SessionManager, WebhookHandler, MessageHistory } from './waha/index.js'
 import { createWahaHttpClient } from './waha/waha-http-client.js'
@@ -58,6 +60,12 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   const queue = new MessageQueue(db)
   queue.initialize()
+
+  // Phase 9: Contact Registry + Hygiene
+  const contactRegistry = new ContactRegistry(db)
+  contactRegistry.initialize()
+  const hygieneJobService = new HygieneJobService(db)
+  hygieneJobService.initialize()
 
   const auditLogger = new AuditLogger(db)
 
@@ -230,6 +238,10 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   registerScreenshotRoutes(server, queue)
   registerTraceRoutes(server, eventRecorder)
   registerBlacklistRoutes(server, db)
+
+  // Phase 9: Contact Registry + Hygiene
+  registerContactRoutes(server, contactRegistry, adb, queue)
+  registerHygieneRoutes(server, hygieneJobService)
 
   // Manual phone number mapping moved to api/devices.ts
 
@@ -439,6 +451,27 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
             retryable: msg.attempts < msg.maxRetries,
           },
           context: msg.context ? (() => { try { return JSON.parse(msg.context!) } catch { return undefined } })() : undefined,
+        })
+      }
+    })
+
+    // Phase 9: number:invalid callback — L1 cache hit, send short-circuited
+    emitter.on('number:invalid', (data) => {
+      const msg = queue.getById(data.id)
+      if (msg?.pluginName) {
+        void callbackDelivery.sendNumberInvalidCallback(msg.pluginName, msg.id, {
+          event: 'number_invalid',
+          idempotency_key: msg.idempotencyKey,
+          correlation_id: msg.correlationId ?? undefined,
+          status: 'number_invalid',
+          phone_input: data.phone_input,
+          phone_normalized: data.phone_normalized,
+          variants_tried: [data.phone_normalized],
+          source: data.source,
+          confidence: data.confidence,
+          check_id: data.check_id,
+          detected_at: data.detected_at,
+          context: msg.context ? (() => { try { return JSON.parse(msg.context!) as Record<string, unknown> } catch { return undefined } })() : undefined,
         })
       }
     })
@@ -754,6 +787,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     sendWindow,
     senderWarmup,
     circuitBreaker,
+    contactRegistry,
   })
   const workerInterval = setInterval(() => orchestrator.tick(), 5_000)
   const metadataCleanupInterval = setInterval(() => orchestrator.cleanupMetadata(), 60_000)

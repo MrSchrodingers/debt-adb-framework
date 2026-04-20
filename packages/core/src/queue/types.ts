@@ -54,7 +54,7 @@ export type MessageStatus =
 
 export const VALID_TRANSITIONS: Record<MessageStatus, MessageStatus[]> = {
   queued: ['locked', 'waiting_device', 'permanently_failed'],
-  locked: ['sending', 'queued'],
+  locked: ['sending', 'queued', 'permanently_failed'],
   sending: ['sent', 'failed', 'queued', 'permanently_failed'],
   sent: [],
   failed: ['queued', 'permanently_failed'],

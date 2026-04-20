@@ -18,9 +18,10 @@ import { AuditLog } from './components/audit-log'
 import { DeviceProfileSelector, type DeviceProfileSelection } from './components/device-profile-selector'
 import { PluginTabs } from './components/plugin-tabs'
 import { SenderDashboard } from './components/sender-dashboard'
+import { ContactsAudit } from './components/contacts-audit'
 import type { DeviceRecord, HealthSnapshot, WhatsAppAccount, Alert } from './types'
 
-type Tab = 'devices' | 'queue' | 'senders' | 'sessions' | 'metricas' | 'auditoria' | 'plugins'
+type Tab = 'devices' | 'queue' | 'senders' | 'sessions' | 'metricas' | 'auditoria' | 'plugins' | 'contatos'
 
 export function App() {
   const [devices, setDevices] = useState<DeviceRecord[]>([])
@@ -264,6 +265,8 @@ export function App() {
         <main className="flex-1 overflow-y-auto p-4 lg:p-6">
           {activeTab === 'plugins' ? (
             <PluginTabs />
+          ) : activeTab === 'contatos' ? (
+            <ContactsAudit />
           ) : activeTab === 'sessions' ? (
             <SessionManager />
           ) : activeTab === 'auditoria' ? (

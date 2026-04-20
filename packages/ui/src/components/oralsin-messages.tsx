@@ -19,6 +19,7 @@ type MessageStatus =
 interface OralsinMessage {
   id: string
   toNumber: string
+  toName: string | null
   body: string
   senderNumber: string | null
   status: MessageStatus
@@ -334,8 +335,17 @@ export function OralsinMessages() {
                     }`}
                     onClick={() => toggleExpand(msg.id)}
                   >
-                    <td className="py-2.5 pr-4 font-mono text-xs text-zinc-300">
-                      {msg.toNumber}
+                    <td className="py-2.5 pr-4">
+                      {msg.toName ? (
+                        <div className="flex flex-col">
+                          <span className="text-xs text-zinc-200 font-medium truncate max-w-[220px]" title={msg.toName}>
+                            {msg.toName}
+                          </span>
+                          <span className="font-mono text-[10px] text-zinc-500">{msg.toNumber}</span>
+                        </div>
+                      ) : (
+                        <span className="font-mono text-xs text-zinc-300">{msg.toNumber}</span>
+                      )}
                     </td>
                     <td className="py-2.5 pr-4 hidden sm:table-cell max-w-[200px]">
                       <span
