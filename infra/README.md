@@ -61,6 +61,16 @@ make funnel-status   # confirm the URL
 - UI up? `curl -fsS localhost:5174`
 - Funnel listening? `tailscale funnel status` must show `https://<host>.ts.net (Funnel on)`.
 
+### Caddy logs
+
+Caddy runs under a systemd sandbox that blocks writes to `/var/log/caddy`, so
+we keep logs on stdout and let journalctl collect them:
+
+```bash
+sudo journalctl -u caddy -f         # live tail
+sudo journalctl -u caddy -n 200     # last 200 lines
+```
+
 ### UI loads but HMR fails over Funnel
 
 Expected — we pin `hmr.clientPort = 443` in `vite.config.ts`. If you changed the Funnel port, update the config accordingly.

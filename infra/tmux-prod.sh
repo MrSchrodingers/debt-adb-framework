@@ -29,10 +29,10 @@ tmux split-window -h -t "$SESSION:main.0" -c "$ROOT"
 tmux send-keys -t "$SESSION:main.1" \
 	"cd $ROOT/packages/ui && pnpm preview --host 127.0.0.1 --port 5174 2>&1 | tee -a $LOG_DIR/ui.log" C-m
 
-# Pane 2: caddy
+# Pane 2: caddy (logs to stdout)
 tmux split-window -v -t "$SESSION:main.0" -c "$ROOT"
 tmux send-keys -t "$SESSION:main.2" \
-	"sudo -E DISPATCH_CADDY_LOG=$LOG_DIR/caddy.log caddy run --config $ROOT/infra/Caddyfile --adapter caddyfile" C-m
+	"sudo caddy run --config $ROOT/infra/Caddyfile --adapter caddyfile" C-m
 
 # Pane 3: tailscale
 tmux split-window -v -t "$SESSION:main.1" -c "$ROOT"

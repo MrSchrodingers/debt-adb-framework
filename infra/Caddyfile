@@ -11,13 +11,9 @@
 }
 
 :8080 {
-	log {
-		output file {$DISPATCH_CADDY_LOG:/var/log/caddy/dispatch.log} {
-			roll_size 20mb
-			roll_keep 5
-		}
-		format json
-	}
+	# Logs go to stdout → captured by systemd/journalctl (`journalctl -u caddy`).
+	# File logging under /var/log/caddy is blocked by the Caddy systemd unit's
+	# ReadWritePaths sandbox on Debian/Kali; keeping stdout avoids that mess.
 
 	encode zstd gzip
 
