@@ -77,6 +77,7 @@ export class ScreenshotPolicy {
     if (this.config.format === 'png') return buffer
     // JPEG compression via sharp (optional dependency — not in package.json)
     try {
+      // @ts-expect-error sharp is an optional peer dep; missing at build time is expected
       const sharp = await import('sharp')
       return await sharp.default(buffer).jpeg({ quality: this.config.jpegQuality }).toBuffer()
     } catch {

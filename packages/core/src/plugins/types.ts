@@ -32,7 +32,12 @@ export interface PluginContext {
 }
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
-export type RouteHandler = (request: unknown, reply: unknown) => Promise<unknown>
+// NOTE: `any` is intentional here — plugins register handlers with
+// either fully-typed Fastify-like request/reply shapes or plain `unknown`.
+// Using `any` keeps both styles assignable via parameter bivariance
+// without forcing every plugin to cast.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type RouteHandler = (request: any, reply: any) => Promise<unknown>
 
 export interface PluginLogger {
   info(msg: string, data?: Record<string, unknown>): void

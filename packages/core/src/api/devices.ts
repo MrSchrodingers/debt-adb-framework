@@ -585,8 +585,8 @@ export function registerDeviceRoutes(
       id: number
       name: string
       running: boolean
-      whatsapp: { installed: boolean; phone: string | null }
-      whatsappBusiness: { installed: boolean; phone: string | null }
+      whatsapp: { installed: boolean; phone: string | null; active: boolean }
+      whatsappBusiness: { installed: boolean; phone: string | null; active: boolean }
     }> = []
 
     let match: RegExpExecArray | null

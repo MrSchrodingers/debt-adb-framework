@@ -274,9 +274,9 @@ export class SendEngine {
         ? this.screenshotPolicy.shouldCapture(true)
         : true // default: always capture (backward-compatible)
 
-      let screenshot = Buffer.alloc(0)
+      let screenshot: Buffer = Buffer.alloc(0)
       if (shouldCapture) {
-        screenshot = await this.adb.screenshot(deviceSerial)
+        screenshot = await this.adb.screenshot(deviceSerial) as Buffer
         const screenshotPath = this.screenshotPolicy
           ? this.screenshotPolicy.getOutputPath(message.id)
           : `reports/sends/${message.id}.png`
