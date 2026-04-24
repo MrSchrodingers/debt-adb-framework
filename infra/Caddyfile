@@ -1,0 +1,60 @@
+# Dispatch reverse proxy — sits between Tailscale Funnel (:443) and local services.
+# Funnel terminates TLS and forwards to :8080 here; Caddy splits by path.
+#
+# Run:  sudo caddy run --config infra/Caddyfile --adapter caddyfile
+# Or install as system service: `make configure-caddy`
+
+{
+	# Disable Caddy's automatic HTTPS — Funnel already handles TLS.
+	auto_https off
+	admin off
+}
+
+:8080 {
+	log {
+		output file {$DISPATCH_CADDY_LOG:/var/log/caddy/dispatch.log} {
+			roll_size 20mb
+			roll_keep 5
+		}
+		format json
+	}
+
+	encode zstd gzip
+
+	# Fastify REST API
+	handle /api/* {
+		reverse_proxy 127.0.0.1:7890
+	}
+
+	# Health + metrics + plugin callback routes live on the core directly
+	handle /healthz* {
+		reverse_proxy 127.0.0.1:7890
+	}
+	handle /metrics* {
+		reverse_proxy 127.0.0.1:7890
+	}
+	handle /plugin/* {
+		reverse_proxy 127.0.0.1:7890
+	}
+
+	# Socket.IO — long-poll + WebSocket upgrade
+	handle /socket.io/* {
+		reverse_proxy 127.0.0.1:7890 {
+			header_up Host {host}
+			header_up X-Real-IP {remote}
+		}
+	}
+
+	# UI (Vite dev server OR `vite preview` on same port 5174)
+	handle {
+		reverse_proxy 127.0.0.1:5174 {
+			# Vite HMR websocket
+			header_up Host {host}
+		}
+	}
+
+	# Explicit error page (mostly for misconfig during bring-up)
+	handle_errors {
+		respond "Dispatch upstream error: {err.status_code} {err.status_text}" {err.status_code}
+	}
+}
