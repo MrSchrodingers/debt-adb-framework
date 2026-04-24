@@ -80,11 +80,21 @@ install-node: ## Node (version from NODE_VERSION var) via nvm, user-local
 	  node -v
 
 .PHONY: install-pnpm
-install-pnpm: ## pnpm (via corepack)
+install-pnpm: ## pnpm via corepack (falls back to `npm i -g corepack` then `npm i -g pnpm`)
 	$(call log,Enable corepack + pnpm)
-	corepack enable
-	corepack prepare pnpm@10.20.0 --activate
-	pnpm -v
+	# Source nvm so `node` / `npm` / `corepack` are on PATH regardless of caller shell
+	export NVM_DIR="$$HOME/.nvm"; \
+	  [ -s "$$NVM_DIR/nvm.sh" ] && . "$$NVM_DIR/nvm.sh" && nvm use default >/dev/null 2>&1 || true; \
+	  if ! command -v corepack >/dev/null; then \
+	    echo "$(YEL)corepack not bundled with node — installing via npm$(NC)"; \
+	    npm install -g corepack || sudo npm install -g corepack; \
+	  fi; \
+	  corepack enable || sudo corepack enable; \
+	  if ! corepack prepare pnpm@10.20.0 --activate 2>/dev/null; then \
+	    echo "$(YEL)corepack prepare failed — installing pnpm directly via npm$(NC)"; \
+	    npm install -g pnpm@10.20.0 || sudo npm install -g pnpm@10.20.0; \
+	  fi; \
+	  pnpm -v
 
 .PHONY: install-adb
 install-adb: ## android-tools + udev rules + plugdev group
@@ -119,25 +129,30 @@ install-caddy: ## Caddy from the official Cloudsmith repo
 .PHONY: install-deps
 install-deps: ## pnpm install (workspace)
 	$(call log,pnpm install workspace)
-	pnpm install
+	export NVM_DIR="$$HOME/.nvm"; \
+	  [ -s "$$NVM_DIR/nvm.sh" ] && . "$$NVM_DIR/nvm.sh" && nvm use default >/dev/null 2>&1 || true; \
+	  pnpm install
 
 # ════════════════════════════════════════════════════════════════════════════
 ##@ Build & test
 # ════════════════════════════════════════════════════════════════════════════
 
+# Reusable shell prelude for targets that need node/pnpm on PATH
+NVM_LOAD := export NVM_DIR="$$HOME/.nvm"; [ -s "$$NVM_DIR/nvm.sh" ] && . "$$NVM_DIR/nvm.sh" && nvm use default >/dev/null 2>&1 || true
+
 .PHONY: build
 build: ## Build all packages (turbo)
 	$(call log,pnpm build)
-	pnpm build
+	$(NVM_LOAD); pnpm build
 
 .PHONY: test
 test: ## Run test suite
 	$(call log,pnpm test)
-	pnpm test
+	$(NVM_LOAD); pnpm test
 
 .PHONY: lint
 lint: ## Lint all packages
-	pnpm lint
+	$(NVM_LOAD); pnpm lint
 
 # ════════════════════════════════════════════════════════════════════════════
 ##@ Runtime (tmux sessions)
