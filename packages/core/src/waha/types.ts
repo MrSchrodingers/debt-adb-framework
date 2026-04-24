@@ -88,6 +88,11 @@ export interface WahaApiClient {
   getServerVersion(): Promise<{ version: string; engine: string; tier: string }>
   downloadMedia(fileUrl: string): Promise<Buffer>
   getQrCode(name: string): Promise<string>
+  /**
+   * Check whether a phone number is registered on WhatsApp via the
+   * session. Used as L2 tiebreaker by ContactValidator for ambiguous DDDs.
+   */
+  checkExists(session: string, phone: string): Promise<{ numberExists: boolean; chatId?: string | null }>
 }
 
 export interface StorageAdapter {

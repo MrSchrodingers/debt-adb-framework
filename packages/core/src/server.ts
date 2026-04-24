@@ -24,6 +24,9 @@ import { AuditLogger } from './config/audit-logger.js'
 import { ScreenshotPolicy } from './config/screenshot-policy.js'
 import { metricsRegistry, messagesSentTotal, messagesFailedTotal, messagesQueuedTotal, sendDurationSeconds, interMessageDelaySeconds, queueDepth, devicesOnline, senderDailyCount, quarantineEventsTotal, senderQuarantined, callbacksTotal, pluginErrorsTotal, queueDepthByPlugin } from './config/metrics.js'
 import { OralsinPlugin } from './plugins/oralsin-plugin.js'
+import { AdbPrecheckPlugin } from './plugins/adb-precheck-plugin.js'
+import { AdbProbeStrategy, WahaCheckStrategy, CacheOnlyStrategy } from './check-strategies/index.js'
+import { ContactValidator } from './validator/contact-validator.js'
 import type { DispatchEventName } from './events/index.js'
 import type { DispatchPlugin, PluginRecord } from './plugins/types.js'
 
@@ -336,6 +339,30 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const pluginNames = (process.env.DISPATCH_PLUGINS || '').split(',').map(s => s.trim()).filter(Boolean)
   const pluginMap: Record<string, () => DispatchPlugin> = {
     oralsin: () => new OralsinPlugin(process.env.PLUGIN_ORALSIN_WEBHOOK_URL || 'http://localhost:8000/api/webhooks/dispatch/'),
+    'adb-precheck': () => {
+      const pgUrl = process.env.PLUGIN_ADB_PRECHECK_PG_URL
+      if (!pgUrl) {
+        throw new Error('PLUGIN_ADB_PRECHECK_PG_URL is required when adb-precheck plugin is enabled')
+      }
+      // Optional WAHA client for L2 tiebreaker — reuse env from core WAHA config.
+      const wahaApiUrl = process.env.WAHA_API_URL
+      const wahaApiKey = process.env.WAHA_API_KEY
+      const wahaClient = wahaApiUrl && wahaApiKey ? createWahaHttpClient(wahaApiUrl, wahaApiKey) : undefined
+      return new AdbPrecheckPlugin(
+        {
+          webhookUrl: process.env.PLUGIN_ADB_PRECHECK_WEBHOOK_URL || '',
+          pgConnectionString: pgUrl,
+          pgMaxConnections: Number(process.env.PLUGIN_ADB_PRECHECK_PG_MAX || 4),
+          defaultDeviceSerial: process.env.PLUGIN_ADB_PRECHECK_DEVICE_SERIAL,
+          defaultWahaSession: process.env.PLUGIN_ADB_PRECHECK_WAHA_SESSION,
+          hmacSecret: process.env.PLUGIN_ADB_PRECHECK_HMAC_SECRET,
+          wahaClient,
+        },
+        db,
+        contactRegistry,
+        adb,
+      )
+    },
   }
 
   for (const name of pluginNames) {
@@ -363,8 +390,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     const fullPath = `/api/v1/plugins/${route.pluginName}${route.path}`
     const method = route.method.toLowerCase() as 'get' | 'post' | 'put' | 'patch' | 'delete'
 
-    // S7: validate plugin route paths
-    if (!/^\/[a-zA-Z0-9/_-]*$/.test(route.path)) {
+    // S7: validate plugin route paths (allows Fastify `:param` syntax)
+    if (!/^\/[a-zA-Z0-9/_\-:]*$/.test(route.path)) {
       server.log.error({ plugin: route.pluginName, path: route.path }, 'Invalid plugin route path, skipping')
       continue
     }

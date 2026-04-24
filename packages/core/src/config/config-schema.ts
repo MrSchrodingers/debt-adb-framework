@@ -58,6 +58,13 @@ const envSchema = z
     PLUGIN_ORALSIN_WEBHOOK_URL: z.string().optional(),
     PLUGIN_ORALSIN_API_KEY: z.string().optional(),
     PLUGIN_ORALSIN_HMAC_SECRET: z.string().optional(),
+    PLUGIN_ADB_PRECHECK_WEBHOOK_URL: z.string().optional(),
+    PLUGIN_ADB_PRECHECK_API_KEY: z.string().optional(),
+    PLUGIN_ADB_PRECHECK_HMAC_SECRET: z.string().optional(),
+    PLUGIN_ADB_PRECHECK_PG_URL: z.string().optional(),
+    PLUGIN_ADB_PRECHECK_PG_MAX: z.coerce.number().int().min(1).max(50).default(4),
+    PLUGIN_ADB_PRECHECK_DEVICE_SERIAL: z.string().optional(),
+    PLUGIN_ADB_PRECHECK_WAHA_SESSION: z.string().optional(),
 
     // Security
     DISPATCH_WEBHOOK_ALLOWED_DOMAINS: z.string().optional(),
@@ -87,6 +94,17 @@ const envSchema = z
       }
       if (!data.PLUGIN_ORALSIN_WEBHOOK_URL) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'PLUGIN_ORALSIN_WEBHOOK_URL required when oralsin plugin enabled', path: ['PLUGIN_ORALSIN_WEBHOOK_URL'] })
+      }
+    }
+    if (plugins.includes('adb-precheck')) {
+      if (!data.PLUGIN_ADB_PRECHECK_API_KEY) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'PLUGIN_ADB_PRECHECK_API_KEY required when adb-precheck plugin enabled', path: ['PLUGIN_ADB_PRECHECK_API_KEY'] })
+      }
+      if (!data.PLUGIN_ADB_PRECHECK_HMAC_SECRET) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'PLUGIN_ADB_PRECHECK_HMAC_SECRET required when adb-precheck plugin enabled', path: ['PLUGIN_ADB_PRECHECK_HMAC_SECRET'] })
+      }
+      if (!data.PLUGIN_ADB_PRECHECK_PG_URL) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'PLUGIN_ADB_PRECHECK_PG_URL required when adb-precheck plugin enabled (Pipeboard postgres URL)', path: ['PLUGIN_ADB_PRECHECK_PG_URL'] })
       }
     }
     if (plugins.length > 0 && !data.DISPATCH_WEBHOOK_ALLOWED_DOMAINS) {

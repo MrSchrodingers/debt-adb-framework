@@ -61,5 +61,17 @@ export function createWahaHttpClient(apiUrl: string, apiKey: string): WahaApiCli
       // Return as base64 data URI for direct use in <img src>
       return `data:image/png;base64,${buf.toString('base64')}`
     },
+
+    async checkExists(session, phone) {
+      // WAHA Plus: POST /api/checkExists with { session, phone }
+      // Returns { numberExists: boolean, chatId?: string | null }
+      const res = await fetch(`${apiUrl}/api/checkExists`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session, phone }),
+      })
+      if (res.status === 404) return { numberExists: false, chatId: null }
+      return jsonOrThrow<{ numberExists: boolean; chatId?: string | null }>(res, PREFIX)
+    },
   }
 }

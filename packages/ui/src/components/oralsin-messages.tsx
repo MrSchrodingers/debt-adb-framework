@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, Fragment } from 'react'
-import { ChevronLeft, ChevronRight, Check, CheckCheck, AlertCircle, X, ZoomIn } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Check, CheckCheck, AlertCircle, X, ZoomIn, ImageOff, Radio } from 'lucide-react'
 import { CORE_URL, API_KEY, authHeaders } from '../config'
 import { formatRelativeTime } from '../utils/time'
 
@@ -161,24 +161,11 @@ function ExpandedRow({ msg, onZoomScreenshot }: { msg: OralsinMessage; onZoomScr
             </div>
           )}
 
-          {/* Screenshot proof — click to zoom */}
+          {/* Screenshot proof — click to zoom, with explicit empty states */}
           {(msg.status === 'sent' || msg.status === 'delivered' || msg.status === 'read') && (
             <div className="space-y-1">
               <div className="text-zinc-500 uppercase tracking-wider font-medium">Screenshot</div>
-              <div
-                className="relative group cursor-pointer w-fit"
-                onClick={() => onZoomScreenshot(`${CORE_URL}/api/v1/messages/${msg.id}/screenshot${API_KEY ? `?key=${API_KEY}` : ''}`)}
-              >
-                <img
-                  src={`${CORE_URL}/api/v1/messages/${msg.id}/screenshot${API_KEY ? `?key=${API_KEY}` : ''}`}
-                  alt="Screenshot do envio"
-                  className="rounded-lg border border-zinc-800 max-h-48 object-contain bg-zinc-900"
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
-                />
-                <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity rounded-lg">
-                  <ZoomIn className="h-6 w-6 text-white" />
-                </div>
-              </div>
+              <ScreenshotSlot msg={msg} onZoom={onZoomScreenshot} />
             </div>
           )}
 
@@ -221,6 +208,81 @@ function MetaItem({
         title={value}
       >
         {value}
+      </div>
+    </div>
+  )
+}
+
+type ShotState = 'probing' | 'available' | 'missing' | 'via-fallback' | 'never-captured'
+
+function ScreenshotSlot({ msg, onZoom }: { msg: OralsinMessage; onZoom: (url: string) => void }) {
+  const [state, setState] = useState<ShotState>('probing')
+  const url = `${CORE_URL}/api/v1/messages/${msg.id}/screenshot${API_KEY ? `?key=${API_KEY}` : ''}`
+
+  useEffect(() => {
+    let cancelled = false
+    // If we know upfront the message was sent via WAHA fallback, ADB screenshot was never captured.
+    if (msg.fallbackUsed && msg.fallbackProvider && msg.fallbackProvider !== 'adb') {
+      setState('via-fallback')
+      return
+    }
+    // Probe with HEAD first to decide between available/missing without flashing a broken <img>.
+    fetch(url, { method: 'HEAD', headers: authHeaders() })
+      .then((r) => {
+        if (cancelled) return
+        if (r.ok) setState('available')
+        else setState('missing')
+      })
+      .catch(() => { if (!cancelled) setState('missing') })
+    return () => { cancelled = true }
+  }, [url, msg.fallbackUsed, msg.fallbackProvider])
+
+  if (state === 'probing') {
+    return (
+      <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-500 w-fit">
+        <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-zinc-600" />
+        verificando screenshot…
+      </div>
+    )
+  }
+
+  if (state === 'via-fallback') {
+    return (
+      <div className="flex items-start gap-2 rounded-lg border border-sky-500/20 bg-sky-500/5 px-3 py-2 max-w-md">
+        <Radio className="h-4 w-4 shrink-0 mt-0.5 text-sky-400" />
+        <div className="text-xs">
+          <div className="font-medium text-sky-300">Enviado via {msg.fallbackProvider?.toUpperCase() ?? 'fallback'}</div>
+          <div className="mt-0.5 text-sky-300/70">Mensagens via WAHA fallback não geram screenshot ADB — o provider remoto não expõe a tela do device.</div>
+        </div>
+      </div>
+    )
+  }
+
+  if (state === 'missing') {
+    return (
+      <div className="flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 max-w-md">
+        <ImageOff className="h-4 w-4 shrink-0 mt-0.5 text-amber-400" />
+        <div className="text-xs">
+          <div className="font-medium text-amber-300">Screenshot indisponível</div>
+          <div className="mt-0.5 text-amber-300/70">Arquivo removido pela política de retenção ou nunca persistiu. Novas mensagens seguem a retenção atual (SCREENSHOT_RETENTION_DAYS).</div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      className="relative group cursor-pointer w-fit"
+      onClick={() => onZoom(url)}
+    >
+      <img
+        src={url}
+        alt="Screenshot do envio"
+        className="rounded-lg border border-zinc-800 max-h-48 object-contain bg-zinc-900"
+        onError={() => setState('missing')}
+      />
+      <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity rounded-lg">
+        <ZoomIn className="h-6 w-6 text-white" />
       </div>
     </div>
   )
