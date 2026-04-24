@@ -5,10 +5,18 @@ declare global {
   }
 }
 
+// Resolution order:
+//   1. Runtime override (set on window before app bundle loads)
+//   2. Build-time override via VITE_CORE_URL
+//   3. Same-origin as the current page — works for Vite dev (proxy) AND
+//      production behind a reverse proxy (Caddy + Tailscale Funnel).
+//   4. Last-resort fallback for unusual contexts (file://, tests)
 export const CORE_URL =
   window.__DISPATCH_CORE_URL__
   ?? import.meta.env.VITE_CORE_URL
-  ?? 'http://localhost:7890'
+  ?? (typeof window !== 'undefined' && window.location?.origin && window.location.origin !== 'null'
+        ? window.location.origin
+        : 'http://localhost:7890')
 
 export const API_KEY: string =
   window.__DISPATCH_API_KEY__
