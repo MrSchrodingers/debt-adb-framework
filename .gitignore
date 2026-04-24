@@ -10,9 +10,21 @@ dist/
 *.db
 *.db-wal
 *.db-shm
+*.backup*
+*.log
+*.log.*
+.dev-logs/
+.dev-state/*.local.md
+tsconfig.tsbuildinfo
 .claude/worktrees/
+.claude/scheduled_tasks.lock
 .pnpm-store/
 .playwright-mcp/
 excalidraw.log
 data/
 .env.production
+
+# Runtime artifacts (physical server)
+/infra/run/
+/infra/logs/
+
