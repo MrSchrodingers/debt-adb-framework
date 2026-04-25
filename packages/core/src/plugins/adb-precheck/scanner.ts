@@ -122,8 +122,40 @@ export class PrecheckScanner {
           }
           store.upsertDeal(jobId, result)
 
-          if (params.writeback_invalid && validCount === 0 && phoneResults.length > 0) {
-            await pg.writeInvalid(key, INVALID_MOTIVO)
+          if (params.writeback_invalid) {
+            // Per-phone: null out every column that holds an invalid raw value.
+            // Dedupe by raw so a duplicated number across columns gets cleared
+            // in a single UPDATE (clearInvalidPhone handles the fan-out).
+            const invalidRaws = new Set(
+              phoneResults
+                .filter((p) => p.outcome === 'invalid')
+                .map((p) => p.raw),
+            )
+            let nulledCells = 0
+            for (const raw of invalidRaws) {
+              try {
+                nulledCells += await pg.clearInvalidPhone(key, raw)
+                // Keep telefone_localizado consistent if it pointed at this number.
+                nulledCells += await pg.clearLocalizadoIfMatches(key, raw)
+              } catch (e) {
+                logger.warn('clearInvalidPhone failed', {
+                  jobId,
+                  key,
+                  raw,
+                  error: e instanceof Error ? e.message : String(e),
+                })
+              }
+            }
+            if (nulledCells > 0) {
+              logger.debug('invalid phones cleared', { jobId, key, nulledCells })
+            }
+
+            // Deal-level marker in prov_invalidos: only when NO valid phone
+            // survived. Preserves the existing semantics used by downstream
+            // consumers (Oralsin filter, per-pasta batch activity creation).
+            if (validCount === 0 && phoneResults.length > 0) {
+              await pg.writeInvalid(key, INVALID_MOTIVO)
+            }
           }
           if (params.writeback_localizado && primaryValid) {
             await pg.writeLocalizado(key, primaryValid, 'dispatch_adb_precheck')

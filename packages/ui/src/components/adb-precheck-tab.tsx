@@ -357,8 +357,8 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
             <Toggle
               checked={writebackInvalid}
               onChange={setWritebackInvalid}
-              label="Marcar invalidos em prov_invalidos"
-              hint="motivo='whatsapp_nao_existe' · idempotente via PK composta"
+              label="Limpar telefones invalidos em prov_consultas"
+              hint="cada telefone invalido vira NULL na sua coluna de origem; deals sem nenhum valido recebem marca em prov_invalidos (motivo='whatsapp_nao_existe')"
               icon={<Ban className="h-4 w-4 text-rose-400" />}
             />
             <Toggle

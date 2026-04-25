@@ -7,7 +7,28 @@ import type { ProvConsultaRow, DealKey, PrecheckScanParams } from './types.js'
  * Isolation: owns its own `pg.Pool`, never touches Dispatch SQLite. Writes are
  * idempotent (ON CONFLICT DO NOTHING for invalidos).
  */
+/**
+ * Columns in tenant_adb.prov_consultas that can hold a phone. Kept in sync
+ * with PHONE_COLUMNS in phone-extractor.ts. Used as a whitelist for the
+ * `clearInvalidPhone` UPDATE — prevents SQL injection via dynamic column
+ * interpolation.
+ */
+const PHONE_COLUMNS = [
+  'whatsapp_hot',
+  'telefone_hot_1',
+  'telefone_hot_2',
+  'telefone_1',
+  'telefone_2',
+  'telefone_3',
+  'telefone_4',
+  'telefone_5',
+  'telefone_6',
+] as const
+export type PhoneColumn = (typeof PHONE_COLUMNS)[number]
+
 export class PipeboardPg {
+  static readonly PHONE_COLUMNS = PHONE_COLUMNS
+
   private pool: pg.Pool
 
   constructor(connectionString: string, max = 4) {
@@ -90,6 +111,60 @@ export class PipeboardPg {
        VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (pasta, deal_id, contato_tipo, contato_id, motivo) DO NOTHING`,
       [key.pasta, key.deal_id, key.contato_tipo, key.contato_id, motivo],
+    )
+    return rowCount ?? 0
+  }
+
+  /**
+   * Clear every phone column in prov_consultas whose current value equals
+   * `rawPhone` for the given deal. Handles the case where the same number
+   * was duplicated across multiple columns — all matching columns are
+   * NULLed in one UPDATE.
+   *
+   * Safety:
+   *   - Columns are emitted from the `PHONE_COLUMNS` whitelist, so the
+   *     dynamic SQL composition is not user-controlled.
+   *   - The `= $5` guard makes this idempotent: re-running has no effect
+   *     once the column is already NULL or changed.
+   *
+   * Returns the total number of column-cells nulled (can be 0 if nothing
+   * matched, up to N where N = number of columns holding the duplicate).
+   */
+  async clearInvalidPhone(key: DealKey, rawPhone: string): Promise<number> {
+    const setClauses = PHONE_COLUMNS
+      .map((col) => `${col} = CASE WHEN ${col} = $5 THEN NULL ELSE ${col} END`)
+      .join(', ')
+    const whereAny = PHONE_COLUMNS.map((col) => `${col} = $5`).join(' OR ')
+    const sql = `
+      UPDATE tenant_adb.prov_consultas
+         SET ${setClauses}
+       WHERE pasta = $1 AND deal_id = $2 AND contato_tipo = $3 AND contato_id = $4
+         AND (${whereAny})
+    `
+    const { rowCount } = await this.pool.query(sql, [
+      key.pasta,
+      key.deal_id,
+      key.contato_tipo,
+      key.contato_id,
+      rawPhone,
+    ])
+    return rowCount ?? 0
+  }
+
+  /**
+   * Also clear `telefone_localizado` if it currently holds `rawPhone` — a
+   * prior run may have surfaced this number as "localizado" before we
+   * re-checked and found it invalid. Keeps prov_consultas internally
+   * consistent. No-op if the current localizado value differs.
+   */
+  async clearLocalizadoIfMatches(key: DealKey, rawPhone: string): Promise<number> {
+    const { rowCount } = await this.pool.query(
+      `UPDATE tenant_adb.prov_consultas
+          SET telefone_localizado = NULL,
+              localizado = false
+        WHERE pasta = $1 AND deal_id = $2 AND contato_tipo = $3 AND contato_id = $4
+          AND telefone_localizado = $5`,
+      [key.pasta, key.deal_id, key.contato_tipo, key.contato_id, rawPhone],
     )
     return rowCount ?? 0
   }
