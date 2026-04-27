@@ -399,6 +399,12 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     },
   }
 
+  // Convert plugin name to env-var token: hyphens to underscores so a plugin
+  // called "adb-precheck" maps to PLUGIN_ADB_PRECHECK_*. Without this,
+  // hyphenated names silently miss their API_KEY/HMAC vars and the routes
+  // end up unauthenticated.
+  const envToken = (n: string): string => n.toUpperCase().replace(/-/g, '_')
+
   for (const name of pluginNames) {
     const factory = pluginMap[name]
     if (!factory) {
@@ -406,8 +412,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       continue
     }
     const plugin = factory()
-    const apiKey = process.env[`PLUGIN_${name.toUpperCase()}_API_KEY`] || ''
-    const hmacSecret = process.env[`PLUGIN_${name.toUpperCase()}_HMAC_SECRET`] || ''
+    const apiKey = process.env[`PLUGIN_${envToken(name)}_API_KEY`] || ''
+    const hmacSecret = process.env[`PLUGIN_${envToken(name)}_HMAC_SECRET`] || ''
     try {
       await pluginLoader.loadPlugin(plugin, apiKey, hmacSecret)
       server.log.info({ plugin: name }, 'Plugin loaded')
@@ -420,7 +426,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   for (const route of pluginLoader.getRegisteredRoutes()) {
     const record = pluginRegistry.getPlugin(route.pluginName)
     if (!record || record.status !== 'active') continue
-    const apiKey = process.env[`PLUGIN_${route.pluginName.toUpperCase()}_API_KEY`] || ''
+    const apiKey = process.env[`PLUGIN_${envToken(route.pluginName)}_API_KEY`] || ''
     const fullPath = `/api/v1/plugins/${route.pluginName}${route.path}`
     const method = route.method.toLowerCase() as 'get' | 'post' | 'put' | 'patch' | 'delete'
 
@@ -433,8 +439,21 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     // Per-plugin HMAC config. Opt-in via PLUGIN_<NAME>_HMAC_REQUIRED=true so
     // existing partners can keep working with X-API-Key only while the new
     // signed flow is rolled out gradually.
-    const pluginHmacSecret = process.env[`PLUGIN_${route.pluginName.toUpperCase()}_HMAC_SECRET`] || ''
-    const pluginHmacRequired = process.env[`PLUGIN_${route.pluginName.toUpperCase()}_HMAC_REQUIRED`] === 'true'
+    const pluginHmacSecret = process.env[`PLUGIN_${envToken(route.pluginName)}_HMAC_SECRET`] || ''
+    const pluginHmacRequired = process.env[`PLUGIN_${envToken(route.pluginName)}_HMAC_REQUIRED`] === 'true'
+
+    // Fail-closed: if neither API key nor HMAC is configured for a plugin,
+    // its routes would be wide open (the original code skipped the check
+    // when apiKey was an empty string). That used to be silent for any
+    // plugin whose name contained a hyphen. Refuse to register the route
+    // unless we have at least one credential to enforce.
+    if (!apiKey && !pluginHmacRequired) {
+      server.log.error(
+        { plugin: route.pluginName, path: fullPath },
+        'Plugin route NOT registered: no PLUGIN_<NAME>_API_KEY configured and HMAC not required',
+      )
+      continue
+    }
 
     server[method](fullPath, async (req, reply) => {
       // S1/S2: timingSafeEqual auth for ALL HTTP methods
