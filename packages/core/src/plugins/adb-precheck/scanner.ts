@@ -123,25 +123,41 @@ export class PrecheckScanner {
           store.upsertDeal(jobId, result)
 
           if (params.writeback_invalid) {
-            // Per-phone: null out every column that holds an invalid raw value.
-            // Dedupe by raw so a duplicated number across columns gets cleared
-            // in a single UPDATE (clearInvalidPhone handles the fan-out).
-            const invalidRaws = new Set(
-              phoneResults
-                .filter((p) => p.outcome === 'invalid')
-                .map((p) => p.raw),
-            )
+            // For each invalid phone, in order:
+            //   1. record it in prov_telefones_invalidos (authoritative blocklist
+            //      consumed by the Pipeboard ETL on next sync)
+            //   2. NULL the column in prov_consultas (immediate effect for jobs
+            //      already in flight; the ETL will reconcile on next pass)
+            //   3. clear telefone_localizado if it pointed at this number
+            //
+            // Dedupe by normalized phone — first occurrence wins for column
+            // attribution. Map preserves insertion order, so the first hit
+            // (highest-priority column per PHONE_COLUMNS) is what we record.
+            const dedupedInvalids = new Map<string, PhoneResult>()
+            for (const p of phoneResults) {
+              if (p.outcome === 'invalid' && !dedupedInvalids.has(p.normalized)) {
+                dedupedInvalids.set(p.normalized, p)
+              }
+            }
+
             let nulledCells = 0
-            for (const raw of invalidRaws) {
+            for (const p of dedupedInvalids.values()) {
               try {
-                nulledCells += await pg.clearInvalidPhone(key, raw)
-                // Keep telefone_localizado consistent if it pointed at this number.
-                nulledCells += await pg.clearLocalizadoIfMatches(key, raw)
+                await pg.recordInvalidPhone(key, {
+                  telefone: p.normalized,
+                  motivo: INVALID_MOTIVO,
+                  colunaOrigem: p.column,
+                  invalidadoPor: 'dispatch_adb_precheck',
+                  jobId,
+                  confidence: p.confidence,
+                })
+                nulledCells += await pg.clearInvalidPhone(key, p.raw)
+                nulledCells += await pg.clearLocalizadoIfMatches(key, p.raw)
               } catch (e) {
-                logger.warn('clearInvalidPhone failed', {
+                logger.warn('invalid phone writeback failed', {
                   jobId,
                   key,
-                  raw,
+                  telefone: p.normalized,
                   error: e instanceof Error ? e.message : String(e),
                 })
               }
@@ -150,11 +166,27 @@ export class PrecheckScanner {
               logger.debug('invalid phones cleared', { jobId, key, nulledCells })
             }
 
-            // Deal-level marker in prov_invalidos: only when NO valid phone
-            // survived. Preserves the existing semantics used by downstream
-            // consumers (Oralsin filter, per-pasta batch activity creation).
+            // Deal-level: when NO valid phone survived, write the legacy marker
+            // (prov_invalidos — preserves Oralsin/downstream semantics) AND
+            // archive the empty row to prov_consultas_snapshot so the working
+            // set never accumulates phantom rows. Both are idempotent.
             if (validCount === 0 && phoneResults.length > 0) {
               await pg.writeInvalid(key, INVALID_MOTIVO)
+              try {
+                const archived = await pg.archiveDealIfEmpty(
+                  key,
+                  'todos_telefones_invalidos',
+                )
+                if (archived) {
+                  logger.info('deal archived (no valid phones)', { jobId, key })
+                }
+              } catch (e) {
+                logger.warn('archiveDealIfEmpty failed', {
+                  jobId,
+                  key,
+                  error: e instanceof Error ? e.message : String(e),
+                })
+              }
             }
           }
           if (params.writeback_localizado && primaryValid) {

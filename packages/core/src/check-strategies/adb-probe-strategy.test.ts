@@ -35,7 +35,8 @@ describe('AdbProbeStrategy', () => {
   it('returns inconclusive when neither signal present', async () => {
     const adb = mockAdb(`<node class="android.widget.TextView" />`)
     const s = new AdbProbeStrategy(adb, sleepMock)
-    const res = await s.probe('5543991938235', { deviceSerial: 'poco-1' })
+    // Tiny timeout so the wall-clock-bounded poll loop terminates quickly.
+    const res = await s.probe('5543991938235', { deviceSerial: 'poco-1', timeoutMs: 50 })
     expect(res.result).toBe('inconclusive')
   })
 

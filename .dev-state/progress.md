@@ -1,7 +1,11 @@
 # Development Progress — DEBT ADB Framework
 
-> **Last updated**: 2026-04-13T23:30:00-03:00
+> **Last updated**: 2026-04-27T13:40:00-03:00
 > **Current phase**: PLUGIN HARDENING SPRINT — COMPLETE (Batch 10/10)
+> **Last delivery**: Phone-blocklist refactor — `prov_telefones_invalidos` (cross-repo
+>   coordination Dispatch ↔ Pipeboard ETL); 138 phantom rows backfilled to
+>   `prov_consultas_snapshot` (`legacy_todos_telefones_invalidos`); migrations 043+044 applied;
+>   adb-precheck per-phone blocklist + deal archival landed. 13 tests adb-precheck + 10 pytest blocklist
 > **Next action**: Deploy Python side (interim_failure + expired handlers), then Dispatch
 > **Plan**: `plans/plugin-hardening-sprint.md` — 10 batches, 87 findings, 43 grill decisions
 > **Grill**: `.dev-state/plugin-hardening-grill.md` — 43 decisions, all resolved

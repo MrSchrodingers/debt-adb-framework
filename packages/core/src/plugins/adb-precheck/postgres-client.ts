@@ -169,6 +169,114 @@ export class PipeboardPg {
     return rowCount ?? 0
   }
 
+  /**
+   * Record (or refresh) a per-phone invalid entry in prov_telefones_invalidos.
+   *
+   * Acts as the authoritative blocklist consumed by the Pipeboard ETL: any
+   * phone present here with `revalidado_em IS NULL` is filtered out of
+   * prov_consultas on every sync.
+   *
+   * Idempotent: re-calling with the same (key, telefone) refreshes the
+   * timestamp and clears any prior `revalidado_em` (the most recent decision
+   * wins). The composite PK (pasta, deal_id, contato_tipo, contato_id,
+   * telefone) prevents duplicates.
+   *
+   * `telefone` MUST be the normalized E.164 form (55DD9XXXXXXXX), matching
+   * what the ETL stores and compares against.
+   */
+  async recordInvalidPhone(
+    key: DealKey,
+    record: {
+      telefone: string
+      motivo: string
+      colunaOrigem: string | null
+      invalidadoPor: string
+      jobId: string | null
+      confidence: number | null
+    },
+  ): Promise<void> {
+    const sql = `
+      INSERT INTO tenant_adb.prov_telefones_invalidos (
+        pasta, deal_id, contato_tipo, contato_id, telefone,
+        motivo, coluna_origem, invalidado_por, job_id, confidence
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      ON CONFLICT (pasta, deal_id, contato_tipo, contato_id, telefone)
+      DO UPDATE SET
+        motivo = EXCLUDED.motivo,
+        coluna_origem = EXCLUDED.coluna_origem,
+        invalidado_em = now(),
+        invalidado_por = EXCLUDED.invalidado_por,
+        job_id = EXCLUDED.job_id,
+        confidence = EXCLUDED.confidence,
+        revalidado_em = NULL,
+        revalidado_por = NULL
+    `
+    await this.pool.query(sql, [
+      key.pasta,
+      key.deal_id,
+      key.contato_tipo,
+      key.contato_id,
+      record.telefone,
+      record.motivo,
+      record.colunaOrigem,
+      record.invalidadoPor,
+      record.jobId,
+      record.confidence,
+    ])
+  }
+
+  /**
+   * Atomically archive a prov_consultas row to prov_consultas_snapshot when
+   * (and only when) every phone column is NULL.
+   *
+   * Single CTE → both DELETE and INSERT happen in one statement, so partial
+   * states are impossible. ON CONFLICT keeps the operation idempotent: if the
+   * key was already snapshotted (e.g. by the ETL or a previous run) the new
+   * insert is dropped.
+   *
+   * Returns true when a row was archived, false when the predicate did not
+   * match (the deal still has at least one phone).
+   */
+  async archiveDealIfEmpty(key: DealKey, motivo: string): Promise<boolean> {
+    const allNull = PHONE_COLUMNS.map((c) => `${c} IS NULL`).join(' AND ')
+    const sql = `
+      WITH archived AS (
+        DELETE FROM tenant_adb.prov_consultas
+         WHERE pasta = $1 AND deal_id = $2 AND contato_tipo = $3 AND contato_id = $4
+           AND ${allNull}
+        RETURNING *
+      )
+      INSERT INTO tenant_adb.prov_consultas_snapshot (
+        pasta, deal_id, contato_tipo, contato_id, stage_nome, pipeline_nome,
+        add_time, update_time, stage_change_time, local_do_acidente,
+        data_do_acidente, veiculo_segurado, aviso_de_sinistro, localizado,
+        telefone_localizado, encontrado_por, encontrado_em, contato_nome,
+        contato_relacao, telefone_1, telefone_2, telefone_3, telefone_4,
+        telefone_5, telefone_6, whatsapp_hot, telefone_hot_1, telefone_hot_2,
+        stage_id, pipeline_id, removido_em, motivo
+      )
+      SELECT
+        pasta, deal_id, contato_tipo, contato_id, stage_nome, pipeline_nome,
+        add_time, update_time, stage_change_time, local_do_acidente,
+        data_do_acidente, veiculo_segurado, aviso_de_sinistro, localizado,
+        telefone_localizado, encontrado_por, encontrado_em, contato_nome,
+        contato_relacao, telefone_1, telefone_2, telefone_3, telefone_4,
+        telefone_5, telefone_6, whatsapp_hot, telefone_hot_1, telefone_hot_2,
+        stage_id, pipeline_id, now(), $5
+      FROM archived
+      ON CONFLICT (pasta, deal_id, contato_tipo, contato_id) DO NOTHING
+    `
+    const { rowCount } = await this.pool.query(sql, [
+      key.pasta,
+      key.deal_id,
+      key.contato_tipo,
+      key.contato_id,
+      motivo,
+    ])
+    return (rowCount ?? 0) > 0
+  }
+
   /** Mark deal as located with the first valid phone found. */
   async writeLocalizado(key: DealKey, phone: string, source: string): Promise<void> {
     await this.pool.query(

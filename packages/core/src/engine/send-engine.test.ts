@@ -175,6 +175,13 @@ describe('SendEngine', () => {
   })
 
   describe('dialog detection', () => {
+    // NOTE: send() consumes one UI dump in detectNoWhatsAppPopup BEFORE
+    // waitForChatReady starts dismissing dialogs. The mocks below account for
+    // that ordering: dump 1 is the popup-check (must not contain "não está no
+    // WhatsApp"), dump 2 is the first waitForChatReady iteration where the
+    // dialog must appear so dismissDialogs can match it.
+    const NEUTRAL_XML = '<hierarchy><node text="..." /></hierarchy>'
+
     it('dismisses "Enviar para" chooser and taps WhatsApp + Sempre', async () => {
       const msg = enqueueMsg('dialog-1')
       lockMsg(msg.id)
@@ -186,15 +193,13 @@ describe('SendEngine', () => {
         if (cmd.includes('uiautomator dump')) return ''
         if (cmd.includes('cat /sdcard/dispatch-ui.xml')) {
           dumpCount++
-          // 1st dump: show "Enviar para" dialog
-          if (dumpCount === 1) {
+          if (dumpCount === 1) return NEUTRAL_XML  // popup-check pass-through
+          if (dumpCount === 2) {
             return '<hierarchy><node text="Enviar para" bounds="[50,50][500,100]" /><node text="WhatsApp" bounds="[100,200][400,260]" /></hierarchy>'
           }
-          // 2nd dump: show "Sempre" button
-          if (dumpCount === 2) {
+          if (dumpCount === 3) {
             return '<hierarchy><node text="Sempre" bounds="[200,500][400,560]" /></hierarchy>'
           }
-          // 3rd dump onward: chat ready
           return CHAT_READY_XML
         }
         if (cmd.includes('content query --uri content://com.android.contacts/phone_lookup')) {
@@ -208,8 +213,9 @@ describe('SendEngine', () => {
       await engine.send(msg, 'device-1')
 
       const calls = shellMock.mock.calls.map((c: unknown[]) => c[1] as string)
+      // sendeventTap falls back to `input tap` when no touch device is found
+      // (mock returns empty for capabilities). Counts: WhatsApp + Sempre + send.
       const tapCalls = calls.filter((cmd: string) => cmd.includes('input tap'))
-      // Should have taps: WhatsApp option, Sempre, send button
       expect(tapCalls.length).toBeGreaterThanOrEqual(2)
     })
 
@@ -224,7 +230,8 @@ describe('SendEngine', () => {
         if (cmd.includes('uiautomator dump')) return ''
         if (cmd.includes('cat /sdcard/dispatch-ui.xml')) {
           dumpCount++
-          if (dumpCount === 1) {
+          if (dumpCount === 1) return NEUTRAL_XML  // popup-check pass-through
+          if (dumpCount === 2) {
             return '<hierarchy><node text="Continuar" bounds="[200,800][500,860]" /></hierarchy>'
           }
           return CHAT_READY_XML
@@ -241,7 +248,6 @@ describe('SendEngine', () => {
 
       const calls = shellMock.mock.calls.map((c: unknown[]) => c[1] as string)
       const tapCalls = calls.filter((cmd: string) => cmd.includes('input tap'))
-      // Continuar tap + send button tap
       expect(tapCalls.length).toBeGreaterThanOrEqual(2)
     })
 
@@ -256,7 +262,8 @@ describe('SendEngine', () => {
         if (cmd.includes('uiautomator dump')) return ''
         if (cmd.includes('cat /sdcard/dispatch-ui.xml')) {
           dumpCount++
-          if (dumpCount === 1) {
+          if (dumpCount === 1) return NEUTRAL_XML  // popup-check pass-through
+          if (dumpCount === 2) {
             return '<hierarchy><node text="Permitir" bounds="[300,900][500,960]" /></hierarchy>'
           }
           return CHAT_READY_XML
@@ -384,26 +391,20 @@ describe('SendEngine', () => {
     })
 
     it('uses chunked input text for typing strategy', async () => {
-      const longBody = 'A'.repeat(120) // 120 chars → should produce 3 chunks (50+50+20)
-      const msg = queue.enqueue({
-        to: '5543991938235',
-        body: longBody,
-        idempotencyKey: 'chunk-2',
-        senderNumber: '5543996835100',
-      })
-      lockMsg(msg.id)
-      // Force typing strategy (explicitly zero all others to avoid flaky chatlist selection)
-      const typingStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 0, typingWeight: 100, chatlistWeight: 0 })
-      const typingEngine = new SendEngine(mockAdb, queue, emitter, typingStrategy)
+      // typeMessage is reached via openViaTyping (and openViaSearch / openViaChatList).
+      // send() now always uses prefill, so we exercise typeMessage directly via the
+      // openViaTyping helper to verify the chunking behaviour in isolation.
+      const longBody = 'A'.repeat(120) // 120 chars → 3 chunks (50+50+20)
+      const typingEngine = new SendEngine(mockAdb, queue, emitter)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.spyOn(typingEngine as any, 'delay').mockResolvedValue(undefined)
       stubShellForSend(mockAdb)
 
-      await typingEngine.send(msg, 'device-1')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (typingEngine as any).openViaTyping('device-1', '5543991938235', longBody)
 
       const calls = (mockAdb.shell as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[1] as string)
       const inputTextCalls = calls.filter((cmd: string) => cmd.includes("input text '"))
-      // 120 chars / 50 per chunk = 3 chunks
       expect(inputTextCalls).toHaveLength(3)
       expect(inputTextCalls[0]).toBe(`input text '${longBody.slice(0, 50)}'`)
       expect(inputTextCalls[1]).toBe(`input text '${longBody.slice(50, 100)}'`)
@@ -412,26 +413,17 @@ describe('SendEngine', () => {
 
     it('handles newlines with ENTER keyevent between lines', async () => {
       const bodyWithNewline = 'Line one\nLine two'
-      const msg = queue.enqueue({
-        to: '5543991938235',
-        body: bodyWithNewline,
-        idempotencyKey: 'chunk-3',
-        senderNumber: '5543996835100',
-      })
-      lockMsg(msg.id)
-      // Force typing strategy (explicitly zero all others to avoid flaky chatlist selection)
-      const typingStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 0, typingWeight: 100, chatlistWeight: 0 })
-      const typingEngine = new SendEngine(mockAdb, queue, emitter, typingStrategy)
+      const typingEngine = new SendEngine(mockAdb, queue, emitter)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.spyOn(typingEngine as any, 'delay').mockResolvedValue(undefined)
       stubShellForSend(mockAdb)
 
-      await typingEngine.send(msg, 'device-1')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (typingEngine as any).openViaTyping('device-1', '5543991938235', bodyWithNewline)
 
       const calls = (mockAdb.shell as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[1] as string)
       const inputTextCalls = calls.filter((cmd: string) => cmd.includes("input text '"))
       const enterCalls = calls.filter((cmd: string) => cmd === 'input keyevent 66')
-      // 2 lines → 2 input text calls + at least 1 ENTER keyevent between them
       expect(inputTextCalls).toHaveLength(2)
       expect(inputTextCalls[0]).toBe("input text 'Line one'")
       expect(inputTextCalls[1]).toBe("input text 'Line two'")
@@ -475,43 +467,31 @@ describe('SendEngine', () => {
   })
 
   describe('search strategy — UIAutomator-based (P0-A)', () => {
+    // openViaSearch is private; tests invoke it directly via cast since send()
+    // now always takes the prefill path. Coverage of the search code path
+    // remains identical — only the entry point changed.
+
     it('uses UIAutomator bounds to tap search icon and first result', async () => {
-      const msg = queue.enqueue({
-        to: '5543991938235',
-        body: 'Search test msg',
-        idempotencyKey: 'search-1',
-        senderNumber: '5543996835100',
-      })
-      lockMsg(msg.id)
-      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0, chatlistWeight: 0 })
-      const searchEngine = new SendEngine(mockAdb, queue, emitter, searchStrategy)
+      const searchEngine = new SendEngine(mockAdb, queue, emitter)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.spyOn(searchEngine as any, 'delay').mockResolvedValue(undefined)
       stubShellForSearch(mockAdb)
 
-      await searchEngine.send(msg, 'device-1')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (searchEngine as any).openViaSearch('device-1', '5543991938235', 'Search test msg')
 
       const calls = (mockAdb.shell as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[1] as string)
       const tapCalls = calls.filter((cmd: string) => cmd.startsWith('input tap '))
 
-      // Should have taps for: search icon, first result, send button — all dynamic
-      expect(tapCalls.length).toBeGreaterThanOrEqual(3)
-      // Search icon bounds from WA_HOME_XML: [580,60][680,160] → center (630, 110)
+      // Search icon: WA_HOME_XML [580,60][680,160] → center (630, 110)
+      // First result: SEARCH_RESULTS_XML [100,200][600,260] → center (350, 230)
+      expect(tapCalls.length).toBeGreaterThanOrEqual(2)
       expect(tapCalls[0]).toBe('input tap 630 110')
-      // First result bounds from SEARCH_RESULTS_XML: [100,200][600,260] → center (350, 230)
       expect(tapCalls[1]).toBe('input tap 350 230')
     })
 
     it('throws descriptive error when search icon not found', async () => {
-      const msg = queue.enqueue({
-        to: '5543991938235',
-        body: 'No search icon',
-        idempotencyKey: 'search-2',
-        senderNumber: '5543996835100',
-      })
-      lockMsg(msg.id)
-      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0, chatlistWeight: 0 })
-      const searchEngine = new SendEngine(mockAdb, queue, emitter, searchStrategy)
+      const searchEngine = new SendEngine(mockAdb, queue, emitter)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.spyOn(searchEngine as any, 'delay').mockResolvedValue(undefined)
 
@@ -519,7 +499,6 @@ describe('SendEngine', () => {
       shellMock.mockImplementation(async (_serial: string, cmd: string) => {
         if (cmd.includes('pidof')) return '12345'
         if (cmd.includes('uiautomator dump')) return ''
-        // Return XML without search icon
         if (cmd.includes('cat /sdcard/dispatch-ui.xml')) return CHAT_READY_XML
         if (cmd.includes('content query --uri content://com.android.contacts/phone_lookup')) {
           return 'display_name=Test'
@@ -527,19 +506,14 @@ describe('SendEngine', () => {
         return ''
       })
 
-      await expect(searchEngine.send(msg, 'device-1')).rejects.toThrow('Search element not found after recovery')
+      await expect(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (searchEngine as any).openViaSearch('device-1', '5543991938235', 'No search icon'),
+      ).rejects.toThrow('Search element not found after recovery')
     })
 
     it('throws descriptive error when search result not found', async () => {
-      const msg = queue.enqueue({
-        to: '5543991938235',
-        body: 'No results',
-        idempotencyKey: 'search-3',
-        senderNumber: '5543996835100',
-      })
-      lockMsg(msg.id)
-      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0, chatlistWeight: 0 })
-      const searchEngine = new SendEngine(mockAdb, queue, emitter, searchStrategy)
+      const searchEngine = new SendEngine(mockAdb, queue, emitter)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.spyOn(searchEngine as any, 'delay').mockResolvedValue(undefined)
 
@@ -550,8 +524,8 @@ describe('SendEngine', () => {
         if (cmd.includes('uiautomator dump')) return ''
         if (cmd.includes('cat /sdcard/dispatch-ui.xml')) {
           dumpCount++
-          if (dumpCount === 1) return WA_HOME_XML  // Home screen with search icon
-          // No results after search
+          if (dumpCount === 1) return WA_HOME_XML
+          // No results after typing query
           return '<hierarchy><node resource-id="com.whatsapp:id/search_src_text" text="91938235" bounds="[50,60][700,120]" /></hierarchy>'
         }
         if (cmd.includes('content query --uri content://com.android.contacts/phone_lookup')) {
@@ -560,19 +534,14 @@ describe('SendEngine', () => {
         return ''
       })
 
-      await expect(searchEngine.send(msg, 'device-1')).rejects.toThrow('Search result not found')
+      await expect(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (searchEngine as any).openViaSearch('device-1', '5543991938235', 'No results'),
+      ).rejects.toThrow('Search result not found')
     })
 
     it('falls back to content-desc when resource-id not found for search icon', async () => {
-      const msg = queue.enqueue({
-        to: '5543991938235',
-        body: 'Fallback search',
-        idempotencyKey: 'search-4',
-        senderNumber: '5543996835100',
-      })
-      lockMsg(msg.id)
-      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0, chatlistWeight: 0 })
-      const searchEngine = new SendEngine(mockAdb, queue, emitter, searchStrategy)
+      const searchEngine = new SendEngine(mockAdb, queue, emitter)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.spyOn(searchEngine as any, 'delay').mockResolvedValue(undefined)
 
@@ -584,7 +553,7 @@ describe('SendEngine', () => {
         if (cmd.includes('cat /sdcard/dispatch-ui.xml')) {
           dumpCount++
           if (dumpCount === 1) {
-            // No resource-id, but has content-desc="Pesquisar"
+            // No resource-id; only content-desc available
             return '<hierarchy><node content-desc="Pesquisar" bounds="[580,60][680,160]" /></hierarchy>'
           }
           if (dumpCount === 2) return SEARCH_RESULTS_XML
@@ -596,29 +565,22 @@ describe('SendEngine', () => {
         return ''
       })
 
-      await searchEngine.send(msg, 'device-1')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (searchEngine as any).openViaSearch('device-1', '5543991938235', 'Fallback search')
 
       const calls = (mockAdb.shell as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[1] as string)
       const tapCalls = calls.filter((cmd: string) => cmd.startsWith('input tap '))
-      // Should still find search icon via content-desc fallback
       expect(tapCalls[0]).toBe('input tap 630 110')
     })
 
     it('contains zero hardcoded coordinates in tap calls', async () => {
-      const msg = queue.enqueue({
-        to: '5543991938235',
-        body: 'No hardcoded coords',
-        idempotencyKey: 'search-5',
-        senderNumber: '5543996835100',
-      })
-      lockMsg(msg.id)
-      const searchStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0, chatlistWeight: 0 })
-      const searchEngine = new SendEngine(mockAdb, queue, emitter, searchStrategy)
+      const searchEngine = new SendEngine(mockAdb, queue, emitter)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.spyOn(searchEngine as any, 'delay').mockResolvedValue(undefined)
       stubShellForSearch(mockAdb)
 
-      await searchEngine.send(msg, 'device-1')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (searchEngine as any).openViaSearch('device-1', '5543991938235', 'No hardcoded coords')
 
       const calls = (mockAdb.shell as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[1] as string)
       const tapCalls = calls.filter((cmd: string) => cmd.startsWith('input tap '))
@@ -729,52 +691,12 @@ describe('SendEngine', () => {
     })
   })
 
-  describe('chatlist strategy dispatch (P0-B.4)', () => {
-    it('calls openViaChatList when chatlistWeight is 100', async () => {
-      queue.saveContact('5543991938235', 'João Silva')
-
-      const msg = queue.enqueue({
-        to: '5543991938235',
-        body: 'Chatlist strategy test',
-        idempotencyKey: 'chatlist-dispatch-1',
-        senderNumber: '5543996835100',
-      })
-      lockMsg(msg.id)
-
-      const chatlistStrategy = new SendStrategy({ prefillWeight: 0, searchWeight: 0, typingWeight: 0, chatlistWeight: 100 })
-      const chatlistEngine = new SendEngine(mockAdb, queue, emitter, chatlistStrategy)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      vi.spyOn(chatlistEngine as any, 'delay').mockResolvedValue(undefined)
-
-      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
-      let dumpCount = 0
-      shellMock.mockImplementation(async (_serial: string, cmd: string) => {
-        if (cmd.includes('pidof')) return '12345'
-        if (cmd.includes('uiautomator dump')) return ''
-        if (cmd.includes('cat /sdcard/dispatch-ui.xml')) {
-          dumpCount++
-          if (dumpCount === 1) return WA_HOME_XML    // Chat list with "João Silva"
-          return CHAT_READY_XML                       // Chat ready for typing
-        }
-        if (cmd.includes('content query --uri content://com.android.contacts/phone_lookup')) {
-          return 'display_name=Test'
-        }
-        return ''
-      })
-
-      const result = await chatlistEngine.send(msg, 'device-1')
-
-      // Verify send completed
-      expect(result.durationMs).toBeGreaterThanOrEqual(0)
-
-      const calls = shellMock.mock.calls.map((c: unknown[]) => c[1] as string)
-      // openViaChatList opens HomeActivity
-      expect(calls.some((cmd: string) => cmd.includes('HomeActivity'))).toBe(true)
-      // Should tap the contact row (João Silva bounds: [100,200][600,260] → center 350,230)
-      const tapCalls = calls.filter((cmd: string) => cmd.startsWith('input tap '))
-      expect(tapCalls.some((cmd: string) => cmd === 'input tap 350 230')).toBe(true)
-    })
-  })
+  // NOTE: a former "chatlist strategy dispatch" describe block tested that
+  // send() routed to openViaChatList when chatlistWeight=100. send() now
+  // always uses the prefill deep-link path (most reliable, lowest detection
+  // surface), so strategy-based dispatch is no longer reachable via send().
+  // openViaChatList behaviour is fully covered by the openViaChatList
+  // (P0-A.4) suite above, which calls the helper directly.
 
   describe('findElementBounds (P0-A.1)', () => {
     it('finds element by resource-id and returns center coordinates', () => {
