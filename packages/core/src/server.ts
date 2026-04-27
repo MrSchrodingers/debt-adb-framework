@@ -790,6 +790,43 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     return reply.send({ api_key: newKey })
   })
 
+  // Admin routes for dead-letter callback management
+  server.get('/api/v1/admin/callbacks/dead-letter', async (_req, reply) => {
+    return reply.send(callbackDelivery.listAbandonedCallbacks())
+  })
+
+  server.post('/api/v1/admin/callbacks/:id/retry', async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const abandoned = callbackDelivery.listAbandonedCallbacks()
+    const record = abandoned.find((r) => r.id === id)
+    if (!record) return reply.status(404).send({ error: 'Dead-letter record not found' })
+
+    const beforeState = {
+      attempts: record.attempts,
+      abandoned_at: record.abandoned_at,
+      abandoned_reason: record.abandoned_reason,
+    }
+
+    callbackDelivery.clearAbandoned(id, 0)
+    await callbackDelivery.retryFailedCallback(id)
+
+    const afterRecord = callbackDelivery.getCallback(id)
+    const afterState = afterRecord
+      ? { attempts: afterRecord.attempts, abandoned_at: afterRecord.abandoned_at, abandoned_reason: afterRecord.abandoned_reason }
+      : { deleted: true }
+    const result = afterRecord ? 'still_failing' : 'deleted'
+
+    auditLogger.log({
+      action: 'callback_dead_letter_retry',
+      resourceType: 'failed_callback',
+      resourceId: id,
+      beforeState,
+      afterState,
+    })
+
+    return reply.send({ id, result })
+  })
+
   // Auto-configure new devices on connect: disable screen lock + keep awake
   emitter.on('device:connected', (data) => {
     const { serial } = data
@@ -953,14 +990,12 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     let retried = 0
     for (const cb of failed) {
       if (retried >= 20) break // Max 20 retries per cycle to prevent storm
-      if (cb.attempts < 10) {
-        try {
-          await callbackDelivery.retryFailedCallback(cb.id)
-          retried++
-        } catch (err) {
-          server.log.warn({ callbackId: cb.id, err }, 'Callback retry failed')
-          retried++
-        }
+      try {
+        await callbackDelivery.retryFailedCallback(cb.id)
+        retried++
+      } catch (err) {
+        server.log.warn({ callbackId: cb.id, err }, 'Callback retry failed')
+        retried++
       }
     }
     } finally {

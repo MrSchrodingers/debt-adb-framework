@@ -650,6 +650,184 @@ describe('CallbackDelivery', () => {
         delivery.retryFailedCallback('nonexistent-id'),
       ).rejects.toThrow('Failed callback not found: nonexistent-id')
     })
+
+    it('T4.1: marks row abandoned after attempts reaches 10', async () => {
+      vi.useFakeTimers()
+      registerOralsin()
+      // Create a failed callback starting at attempts=4 via sendResultCallback
+      mockFetch.mockRejectedValue(new Error('ECONNREFUSED'))
+      const promise = delivery.sendResultCallback('oralsin', 'msg-abandon', {
+        idempotency_key: 'test-abandon',
+        status: 'sent',
+        sent_at: '2026-04-27T10:00:00Z',
+        delivery: { ...baseDelivery },
+        error: null,
+      })
+      await vi.advanceTimersByTimeAsync(155_000)
+      await promise
+      mockFetch.mockReset()
+      vi.useRealTimers()
+
+      const initial = delivery.listFailedCallbacks()
+      expect(initial).toHaveLength(1)
+      expect(initial[0].attempts).toBe(4) // inserted at MAX_RETRIES=4
+      const failedId = initial[0].id
+
+      // 6 retries: attempts goes 5,6,7,8,9,10 — 10th triggers abandon
+      mockFetch.mockRejectedValue(new Error('ETIMEDOUT'))
+      for (let i = 0; i < 6; i++) {
+        await delivery.retryFailedCallback(failedId)
+      }
+
+      // Row should now be abandoned
+      const active = delivery.listFailedCallbacks()
+      expect(active).toHaveLength(0) // excluded from active list
+
+      const abandoned = delivery.listAbandonedCallbacks()
+      expect(abandoned).toHaveLength(1)
+      expect(abandoned[0].id).toBe(failedId)
+      expect(abandoned[0].abandoned_at).toBeTruthy()
+      expect(abandoned[0].abandoned_reason).toBe('max_attempts_exceeded')
+      expect(abandoned[0].attempts).toBe(10)
+    })
+
+    it('T4.1: listFailedCallbacks does not include abandoned rows', async () => {
+      vi.useFakeTimers()
+      registerOralsin()
+      mockFetch.mockRejectedValue(new Error('ECONNREFUSED'))
+
+      // Create two failed callbacks
+      const p1 = delivery.sendResultCallback('oralsin', 'msg-a', {
+        idempotency_key: 'test-a',
+        status: 'sent',
+        sent_at: '2026-04-27T10:00:00Z',
+        delivery: { ...baseDelivery },
+        error: null,
+      })
+      const p2 = delivery.sendResultCallback('oralsin', 'msg-b', {
+        idempotency_key: 'test-b',
+        status: 'sent',
+        sent_at: '2026-04-27T10:00:01Z',
+        delivery: { ...baseDelivery },
+        error: null,
+      })
+      await vi.advanceTimersByTimeAsync(155_000)
+      await Promise.all([p1, p2])
+      mockFetch.mockReset()
+      vi.useRealTimers()
+
+      const before = delivery.listFailedCallbacks()
+      expect(before).toHaveLength(2)
+      const idToAbandon = before[0].id
+
+      // Drive first record to abandonment (6 retries from attempts=4)
+      mockFetch.mockRejectedValue(new Error('ETIMEDOUT'))
+      for (let i = 0; i < 6; i++) {
+        await delivery.retryFailedCallback(idToAbandon)
+      }
+
+      // listFailedCallbacks should only return non-abandoned row
+      const active = delivery.listFailedCallbacks()
+      expect(active).toHaveLength(1)
+      expect(active[0].id).not.toBe(idToAbandon)
+
+      // listAbandonedCallbacks should only return the abandoned row
+      const abandoned = delivery.listAbandonedCallbacks()
+      expect(abandoned).toHaveLength(1)
+      expect(abandoned[0].id).toBe(idToAbandon)
+    })
+
+    it('T4.1: listAbandonedCallbacks returns rows ordered by abandoned_at DESC', async () => {
+      vi.useFakeTimers()
+      registerOralsin()
+      mockFetch.mockRejectedValue(new Error('ECONNREFUSED'))
+
+      const p1 = delivery.sendResultCallback('oralsin', 'msg-c', {
+        idempotency_key: 'test-c',
+        status: 'sent',
+        sent_at: '2026-04-27T10:00:00Z',
+        delivery: { ...baseDelivery },
+        error: null,
+      })
+      const p2 = delivery.sendResultCallback('oralsin', 'msg-d', {
+        idempotency_key: 'test-d',
+        status: 'sent',
+        sent_at: '2026-04-27T10:00:01Z',
+        delivery: { ...baseDelivery },
+        error: null,
+      })
+      await vi.advanceTimersByTimeAsync(155_000)
+      await Promise.all([p1, p2])
+      mockFetch.mockReset()
+      vi.useRealTimers()
+
+      const both = delivery.listFailedCallbacks()
+      const [first, second] = both
+
+      // Abandon first record, then second
+      mockFetch.mockRejectedValue(new Error('ETIMEDOUT'))
+      for (let i = 0; i < 6; i++) await delivery.retryFailedCallback(first.id)
+      for (let i = 0; i < 6; i++) await delivery.retryFailedCallback(second.id)
+
+      const abandoned = delivery.listAbandonedCallbacks()
+      expect(abandoned).toHaveLength(2)
+      // Most recently abandoned first
+      expect(new Date(abandoned[0].abandoned_at!).getTime()).toBeGreaterThanOrEqual(
+        new Date(abandoned[1].abandoned_at!).getTime(),
+      )
+    })
+
+    it('T4.1: successful retry on row at attempts=9 deletes row, does not set abandoned_at', async () => {
+      vi.useFakeTimers()
+      registerOralsin()
+      mockFetch.mockRejectedValue(new Error('ECONNREFUSED'))
+
+      const promise = delivery.sendResultCallback('oralsin', 'msg-9', {
+        idempotency_key: 'test-9',
+        status: 'sent',
+        sent_at: '2026-04-27T10:00:00Z',
+        delivery: { ...baseDelivery },
+        error: null,
+      })
+      await vi.advanceTimersByTimeAsync(155_000)
+      await promise
+      mockFetch.mockReset()
+      vi.useRealTimers()
+
+      const [record] = delivery.listFailedCallbacks()
+      expect(record.attempts).toBe(4)
+
+      // Retry 5 times to reach attempts=9 (still failing)
+      mockFetch.mockRejectedValue(new Error('ETIMEDOUT'))
+      for (let i = 0; i < 5; i++) {
+        await delivery.retryFailedCallback(record.id)
+      }
+      const at9 = delivery.listFailedCallbacks()
+      expect(at9).toHaveLength(1)
+      expect(at9[0].attempts).toBe(9)
+      expect(at9[0].abandoned_at).toBeNull()
+
+      // One more retry — this time it succeeds
+      mockFetch.mockResolvedValueOnce(new Response('OK', { status: 200 }))
+      await delivery.retryFailedCallback(record.id)
+
+      // Row should be deleted, NOT abandoned
+      expect(delivery.listFailedCallbacks()).toHaveLength(0)
+      expect(delivery.listAbandonedCallbacks()).toHaveLength(0)
+    })
+  })
+
+  describe('ALTER guard idempotency', () => {
+    it('T4.1: double initialize() on same DB causes no error and columns remain', () => {
+      // registry.initialize() was already called in beforeEach — call it again
+      expect(() => registry.initialize()).not.toThrow()
+
+      // Columns should still exist
+      const cols = db.prepare('PRAGMA table_info(failed_callbacks)').all() as Array<{ name: string }>
+      const colNames = new Set(cols.map((c) => c.name))
+      expect(colNames.has('abandoned_at')).toBe(true)
+      expect(colNames.has('abandoned_reason')).toBe(true)
+    })
   })
 
   describe('AbortSignal timeout', () => {

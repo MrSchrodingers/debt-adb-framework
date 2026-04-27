@@ -21,10 +21,12 @@ function sleep(ms: number): Promise<void> {
 
 export class CallbackDelivery {
   private stmtListFailed: Database.Statement | null = null
+  private stmtListAbandoned: Database.Statement | null = null
   private stmtGetFailed: Database.Statement | null = null
   private stmtDeleteFailed: Database.Statement | null = null
   private stmtUpdateFailed: Database.Statement | null = null
   private stmtInsertFailed: Database.Statement | null = null
+  private stmtClearAbandoned: Database.Statement | null = null
   private httpTimeoutMs: number
 
   constructor(
@@ -38,10 +40,19 @@ export class CallbackDelivery {
   private getStmtListFailed(): Database.Statement {
     if (!this.stmtListFailed) {
       this.stmtListFailed = this.db.prepare(
-        'SELECT * FROM failed_callbacks WHERE attempts < 10 ORDER BY created_at DESC',
+        'SELECT * FROM failed_callbacks WHERE abandoned_at IS NULL ORDER BY created_at DESC',
       )
     }
     return this.stmtListFailed
+  }
+
+  private getStmtListAbandoned(): Database.Statement {
+    if (!this.stmtListAbandoned) {
+      this.stmtListAbandoned = this.db.prepare(
+        'SELECT * FROM failed_callbacks WHERE abandoned_at IS NOT NULL ORDER BY abandoned_at DESC',
+      )
+    }
+    return this.stmtListAbandoned
   }
 
   private getStmtGetFailed(): Database.Statement {
@@ -64,11 +75,26 @@ export class CallbackDelivery {
 
   private getStmtUpdateFailed(): Database.Statement {
     if (!this.stmtUpdateFailed) {
-      this.stmtUpdateFailed = this.db.prepare(
-        "UPDATE failed_callbacks SET attempts = attempts + 1, last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), last_error = ? WHERE id = ?",
-      )
+      this.stmtUpdateFailed = this.db.prepare(`
+        UPDATE failed_callbacks
+        SET attempts = attempts + 1,
+            last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+            last_error = ?,
+            abandoned_at = CASE WHEN attempts + 1 >= 10 THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE abandoned_at END,
+            abandoned_reason = CASE WHEN attempts + 1 >= 10 THEN 'max_attempts_exceeded' ELSE abandoned_reason END
+        WHERE id = ?
+      `)
     }
     return this.stmtUpdateFailed
+  }
+
+  private getStmtClearAbandoned(): Database.Statement {
+    if (!this.stmtClearAbandoned) {
+      this.stmtClearAbandoned = this.db.prepare(
+        "UPDATE failed_callbacks SET abandoned_at = NULL, abandoned_reason = NULL, attempts = ?, last_error = '' WHERE id = ?",
+      )
+    }
+    return this.stmtClearAbandoned
   }
 
   private getStmtInsertFailed(): Database.Statement {
@@ -113,6 +139,24 @@ export class CallbackDelivery {
 
   listFailedCallbacks(): FailedCallbackRecord[] {
     return this.getStmtListFailed().all() as FailedCallbackRecord[]
+  }
+
+  listAbandonedCallbacks(): FailedCallbackRecord[] {
+    return this.getStmtListAbandoned().all() as FailedCallbackRecord[]
+  }
+
+  getCallback(failedId: string): FailedCallbackRecord | null {
+    const row = this.getStmtGetFailed().get(failedId) as FailedCallbackRecord | undefined
+    return row ?? null
+  }
+
+  /**
+   * Reset an abandoned callback so it can be retried via `retryFailedCallback`.
+   * Clears abandoned_at / abandoned_reason and resets attempts to the given value
+   * (default 0 = clean start).
+   */
+  clearAbandoned(failedId: string, resetAttemptsTo = 0): void {
+    this.getStmtClearAbandoned().run(resetAttemptsTo, failedId)
   }
 
   async retryFailedCallback(failedId: string): Promise<void> {

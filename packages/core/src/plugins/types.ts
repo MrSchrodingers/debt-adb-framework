@@ -276,6 +276,8 @@ export interface FailedCallbackRecord {
   last_error: string
   created_at: string
   last_attempt_at: string
+  abandoned_at: string | null
+  abandoned_reason: string | null
 }
 
 // ── Plugin Config (dispatch.config.json) ──

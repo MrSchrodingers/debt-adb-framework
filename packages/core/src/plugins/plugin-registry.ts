@@ -57,13 +57,28 @@ export class PluginRegistry {
         attempts INTEGER NOT NULL DEFAULT 0,
         last_error TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-        last_attempt_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        last_attempt_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        abandoned_at TEXT,
+        abandoned_reason TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_failed_callbacks_plugin
         ON failed_callbacks(plugin_name);
       CREATE INDEX IF NOT EXISTS idx_failed_callbacks_retry
         ON failed_callbacks(attempts, created_at);
+      CREATE INDEX IF NOT EXISTS idx_failed_callbacks_abandoned
+        ON failed_callbacks(abandoned_at) WHERE abandoned_at IS NULL;
     `)
+
+    // Idempotent ALTER guard for pre-existing production databases.
+    // SQLite does not support ADD COLUMN IF NOT EXISTS, so we check PRAGMA first.
+    const cols = this.db.prepare('PRAGMA table_info(failed_callbacks)').all() as Array<{ name: string }>
+    const colNames = new Set(cols.map((c) => c.name))
+    if (!colNames.has('abandoned_at')) {
+      this.db.exec('ALTER TABLE failed_callbacks ADD COLUMN abandoned_at TEXT')
+    }
+    if (!colNames.has('abandoned_reason')) {
+      this.db.exec('ALTER TABLE failed_callbacks ADD COLUMN abandoned_reason TEXT')
+    }
 
     this.prepareStatements()
   }
