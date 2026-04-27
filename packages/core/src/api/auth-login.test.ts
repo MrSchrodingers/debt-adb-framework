@@ -92,3 +92,50 @@ describe('POST /api/v1/auth/login', () => {
     expect(a.json()).toEqual(b.json())
   })
 })
+
+describe('POST /api/v1/auth/login — bcrypt hash mode', () => {
+  // Precomputed bcrypt hash of 'super-strong-pass' (cost 12). Hard-coded so
+  // tests stay deterministic and fast — we never hash inside the test.
+  const HASHED_CFG = {
+    username: 'admin',
+    password: '$2b$12$nLlGo3co/iC0FT.L90/iquJI.TTgZZlegcC67dJ0AempZBUINFv8y',
+    jwtSecret: 'jwt-test-secret',
+    ttlSeconds: 60,
+  }
+  const PLAINTEXT_OF_HASHED = 'super-strong-pass'
+
+  let server: ReturnType<typeof Fastify>
+
+  beforeEach(() => {
+    server = Fastify()
+    registerAuthLogin(server, HASHED_CFG)
+  })
+
+  afterEach(async () => {
+    await server.close()
+  })
+
+  it('returns 200 + token when password is stored as bcrypt hash', async () => {
+    const res = await server.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { username: HASHED_CFG.username, password: PLAINTEXT_OF_HASHED },
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.sub).toBe(HASHED_CFG.username)
+    expect(typeof body.token).toBe('string')
+    const verified = verifyJwt(body.token, HASHED_CFG.jwtSecret)
+    expect(verified.ok).toBe(true)
+  })
+
+  it('returns 401 on wrong password against bcrypt hash', async () => {
+    const res = await server.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { username: HASHED_CFG.username, password: 'wrong-pass' },
+    })
+    expect(res.statusCode).toBe(401)
+    expect(res.json()).toEqual({ error: 'invalid_credentials' })
+  })
+})

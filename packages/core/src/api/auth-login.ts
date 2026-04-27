@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { z } from 'zod'
 import type { FastifyInstance } from 'fastify'
 import { signJwt } from './jwt.js'
+import { verifyPassword } from './password-hash.js'
 
 const LoginSchema = z.object({
   username: z.string().min(1).max(120),
@@ -33,7 +34,9 @@ function safeEqual(a: string, b: string): boolean {
  * (dev mode parity with DISPATCH_API_KEY).
  *
  * Always returns within roughly the same time regardless of which check failed
- * to avoid leaking which input was wrong.
+ * to avoid leaking which input was wrong. We always call `verifyPassword`
+ * (which dominates timing via bcrypt cost) even when the username does not
+ * match, then combine the booleans at the end.
  */
 export function registerAuthLogin(server: FastifyInstance, cfg: AuthLoginConfig): void {
   const ttl = cfg.ttlSeconds ?? 8 * 60 * 60
@@ -45,7 +48,7 @@ export function registerAuthLogin(server: FastifyInstance, cfg: AuthLoginConfig)
     }
 
     const userOk = safeEqual(parsed.data.username, cfg.username)
-    const passOk = safeEqual(parsed.data.password, cfg.password)
+    const passOk = await verifyPassword(parsed.data.password, cfg.password)
     if (!userOk || !passOk) {
       return reply.status(401).send({ error: 'invalid_credentials' })
     }
