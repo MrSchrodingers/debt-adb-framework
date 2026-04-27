@@ -4,6 +4,7 @@ import Database from 'better-sqlite3'
 import { PluginRegistry } from '../plugins/plugin-registry.js'
 import { CallbackDelivery } from '../plugins/callback-delivery.js'
 import { AuditLogger } from '../config/audit-logger.js'
+import { MessageQueue } from '../queue/message-queue.js'
 import { registerApiAuth } from './api-auth.js'
 import type { DeliveryInfo } from '../plugins/types.js'
 
@@ -77,18 +78,9 @@ describe('Admin Callbacks API', () => {
   beforeEach(async () => {
     db = new Database(':memory:')
     db.pragma('journal_mode = WAL')
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS audit_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        actor TEXT NOT NULL DEFAULT 'api',
-        action TEXT NOT NULL,
-        resource_type TEXT NOT NULL,
-        resource_id TEXT,
-        before_state TEXT,
-        after_state TEXT,
-        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-      )
-    `)
+    // Bootstrap all production tables (including audit_log with correct schema + indices)
+    // via the canonical production initializer — prevents schema drift in tests.
+    new MessageQueue(db).initialize()
 
     registry = new PluginRegistry(db)
     registry.initialize()
@@ -105,9 +97,8 @@ describe('Admin Callbacks API', () => {
 
     app.post('/api/v1/admin/callbacks/:id/retry', async (req, reply) => {
       const { id } = (req.params as { id: string })
-      const abandoned = delivery.listAbandonedCallbacks()
-      const record = abandoned.find((r) => r.id === id)
-      if (!record) return reply.status(404).send({ error: 'Dead-letter record not found' })
+      const record = delivery.getCallback(id)
+      if (!record || !record.abandoned_at) return reply.status(404).send({ error: 'Dead-letter record not found' })
 
       const beforeState = {
         attempts: record.attempts,
@@ -205,6 +196,34 @@ describe('Admin Callbacks API', () => {
       const res = await app.inject({
         method: 'POST',
         url: '/api/v1/admin/callbacks/nonexistent-id/retry',
+        headers: authHeaders,
+      })
+      expect(res.statusCode).toBe(404)
+      expect(res.json()).toEqual({ error: 'Dead-letter record not found' })
+    })
+
+    it('returns 404 for an existing failed_callback that is not abandoned', async () => {
+      // Create a failed callback that has NOT been abandoned yet (attempts < 10)
+      vi.useFakeTimers()
+      registerOralsin()
+      mockFetch.mockRejectedValue(new Error('ECONNREFUSED'))
+      const p = delivery.sendResultCallback('oralsin', 'msg-not-abandoned', {
+        idempotency_key: 'not-abandoned-key',
+        status: 'sent',
+        sent_at: '2026-04-27T10:00:00Z',
+        delivery: { ...baseDelivery },
+        error: null,
+      })
+      await vi.advanceTimersByTimeAsync(155_000)
+      await p
+      mockFetch.mockReset()
+      vi.useRealTimers()
+
+      const [record] = delivery.listFailedCallbacks()
+      // Row exists in DB but is NOT abandoned — retry endpoint must reject it
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/admin/callbacks/${record.id}/retry`,
         headers: authHeaders,
       })
       expect(res.statusCode).toBe(404)

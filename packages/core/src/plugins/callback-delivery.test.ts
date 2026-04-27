@@ -651,6 +651,79 @@ describe('CallbackDelivery', () => {
       ).rejects.toThrow('Failed callback not found: nonexistent-id')
     })
 
+    it('coalesces concurrent retries on same id (mutex)', async () => {
+      vi.useFakeTimers()
+      registerOralsin()
+      // Create a failed callback at attempts=4
+      mockFetch.mockRejectedValue(new Error('ECONNREFUSED'))
+      const promise = delivery.sendResultCallback('oralsin', 'msg-mutex', {
+        idempotency_key: 'test-mutex',
+        status: 'sent',
+        sent_at: '2026-04-27T10:00:00Z',
+        delivery: { ...baseDelivery },
+        error: null,
+      })
+      await vi.advanceTimersByTimeAsync(155_000)
+      await promise
+      mockFetch.mockReset()
+      vi.useRealTimers()
+
+      const [record] = delivery.listFailedCallbacks()
+      // Drive to attempts=9 (still failing) so we have a live retryable row
+      mockFetch.mockRejectedValue(new Error('ETIMEDOUT'))
+      for (let i = 0; i < 5; i++) {
+        await delivery.retryFailedCallback(record.id)
+      }
+      mockFetch.mockReset()
+
+      // Now: concurrent retries — mock returns 200 OK on the one real call
+      mockFetch.mockResolvedValueOnce(new Response('OK', { status: 200 }))
+
+      await Promise.all([
+        delivery.retryFailedCallback(record.id),
+        delivery.retryFailedCallback(record.id),
+        delivery.retryFailedCallback(record.id),
+      ])
+
+      // Only one HTTP POST should have been made (mutex coalesced the other two)
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      // Row should be deleted (successful retry)
+      expect(delivery.listFailedCallbacks()).toHaveLength(0)
+      expect(delivery.listAbandonedCallbacks()).toHaveLength(0)
+    })
+
+    it('mutex clears after settle — subsequent sequential retry executes fresh', async () => {
+      vi.useFakeTimers()
+      registerOralsin()
+      mockFetch.mockRejectedValue(new Error('ECONNREFUSED'))
+      const promise = delivery.sendResultCallback('oralsin', 'msg-mutex2', {
+        idempotency_key: 'test-mutex2',
+        status: 'sent',
+        sent_at: '2026-04-27T10:00:00Z',
+        delivery: { ...baseDelivery },
+        error: null,
+      })
+      await vi.advanceTimersByTimeAsync(155_000)
+      await promise
+      mockFetch.mockReset()
+      vi.useRealTimers()
+
+      const [record] = delivery.listFailedCallbacks()
+
+      // First call: fails
+      mockFetch.mockRejectedValueOnce(new Error('first-fail'))
+      await delivery.retryFailedCallback(record.id)
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+
+      // Second call (after first settled): must execute a fresh HTTP call
+      mockFetch.mockResolvedValueOnce(new Response('OK', { status: 200 }))
+      await delivery.retryFailedCallback(record.id)
+      expect(mockFetch).toHaveBeenCalledTimes(2)
+
+      // Row deleted by successful second call
+      expect(delivery.listFailedCallbacks()).toHaveLength(0)
+    })
+
     it('T4.1: marks row abandoned after attempts reaches 10', async () => {
       vi.useFakeTimers()
       registerOralsin()
@@ -814,6 +887,28 @@ describe('CallbackDelivery', () => {
       // Row should be deleted, NOT abandoned
       expect(delivery.listFailedCallbacks()).toHaveLength(0)
       expect(delivery.listAbandonedCallbacks()).toHaveLength(0)
+    })
+  })
+
+  describe('listAbandonedCallbacks LIMIT', () => {
+    it('caps results at 500 when more than 500 abandoned rows exist', () => {
+      registerOralsin()
+      // Bulk-insert 600 abandoned rows in a single transaction for speed
+      db.transaction(() => {
+        const insert = db.prepare(`
+          INSERT INTO failed_callbacks
+            (id, plugin_name, message_id, callback_type, payload, webhook_url, attempts,
+             last_error, abandoned_at, abandoned_reason)
+          VALUES (?, 'oralsin', 'msg-limit', 'result', '{}', 'https://example.com', 10,
+                  'err', strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'max_attempts_exceeded')
+        `)
+        for (let i = 0; i < 600; i++) {
+          insert.run(`limit-row-${i}`)
+        }
+      })()
+
+      const abandoned = delivery.listAbandonedCallbacks()
+      expect(abandoned.length).toBe(500)
     })
   })
 

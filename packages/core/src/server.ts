@@ -797,9 +797,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   server.post('/api/v1/admin/callbacks/:id/retry', async (req, reply) => {
     const { id } = req.params as { id: string }
-    const abandoned = callbackDelivery.listAbandonedCallbacks()
-    const record = abandoned.find((r) => r.id === id)
-    if (!record) return reply.status(404).send({ error: 'Dead-letter record not found' })
+    const record = callbackDelivery.getCallback(id)
+    if (!record || !record.abandoned_at) return reply.status(404).send({ error: 'Dead-letter record not found' })
 
     const beforeState = {
       attempts: record.attempts,

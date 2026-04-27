@@ -28,6 +28,8 @@ export class CallbackDelivery {
   private stmtInsertFailed: Database.Statement | null = null
   private stmtClearAbandoned: Database.Statement | null = null
   private httpTimeoutMs: number
+  /** Per-id in-flight mutex: coalesces concurrent retries on the same row */
+  private inFlightRetries = new Map<string, Promise<void>>()
 
   constructor(
     private db: Database.Database,
@@ -49,7 +51,7 @@ export class CallbackDelivery {
   private getStmtListAbandoned(): Database.Statement {
     if (!this.stmtListAbandoned) {
       this.stmtListAbandoned = this.db.prepare(
-        'SELECT * FROM failed_callbacks WHERE abandoned_at IS NOT NULL ORDER BY abandoned_at DESC',
+        'SELECT * FROM failed_callbacks WHERE abandoned_at IS NOT NULL ORDER BY abandoned_at DESC LIMIT 500',
       )
     }
     return this.stmtListAbandoned
@@ -160,6 +162,19 @@ export class CallbackDelivery {
   }
 
   async retryFailedCallback(failedId: string): Promise<void> {
+    const existing = this.inFlightRetries.get(failedId)
+    if (existing) {
+      // Another caller is already retrying this id — coalesce: wait for it.
+      return existing
+    }
+    const promise = this.doRetryFailedCallback(failedId).finally(() => {
+      this.inFlightRetries.delete(failedId)
+    })
+    this.inFlightRetries.set(failedId, promise)
+    return promise
+  }
+
+  private async doRetryFailedCallback(failedId: string): Promise<void> {
     const record = this.getStmtGetFailed().get(failedId) as FailedCallbackRecord | undefined
 
     if (!record) throw new Error(`Failed callback not found: ${failedId}`)
