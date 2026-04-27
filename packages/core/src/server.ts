@@ -1,5 +1,5 @@
 import { readdir, unlink, stat } from 'node:fs/promises'
-import { timingSafeEqual } from 'node:crypto'
+import { timingSafeEqual, createHmac } from 'node:crypto'
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import Database from 'better-sqlite3'
@@ -52,6 +52,24 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   })
   const corsOrigins = buildCorsOrigins(process.env.DISPATCH_ALLOWED_ORIGINS)
   await server.register(cors, { origin: corsOrigins })
+
+  // Capture raw body alongside JSON parsing so plugin route HMAC verification
+  // can hash the exact bytes the client signed (instead of round-tripping JSON
+  // and risking key-order/whitespace divergence between client and server).
+  // Behaviour-equivalent to the default JSON parser otherwise.
+  server.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
+    ;(req as unknown as { rawBody: string }).rawBody = body as string
+    if (typeof body !== 'string' || body.length === 0) {
+      done(null, undefined)
+      return
+    }
+    try {
+      const json = JSON.parse(body) as unknown
+      done(null, json)
+    } catch (err) {
+      done(err as Error, undefined)
+    }
+  })
 
   // API Auth — must be registered before routes.
   // Accepts X-API-Key (service-to-service) and/or Authorization: Bearer JWT
@@ -412,6 +430,12 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       continue
     }
 
+    // Per-plugin HMAC config. Opt-in via PLUGIN_<NAME>_HMAC_REQUIRED=true so
+    // existing partners can keep working with X-API-Key only while the new
+    // signed flow is rolled out gradually.
+    const pluginHmacSecret = process.env[`PLUGIN_${route.pluginName.toUpperCase()}_HMAC_SECRET`] || ''
+    const pluginHmacRequired = process.env[`PLUGIN_${route.pluginName.toUpperCase()}_HMAC_REQUIRED`] === 'true'
+
     server[method](fullPath, async (req, reply) => {
       // S1/S2: timingSafeEqual auth for ALL HTTP methods
       if (apiKey) {
@@ -421,6 +445,29 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
           return reply.status(401).send({ error: 'Invalid API key' })
         }
       }
+
+      // HMAC verify on body-bearing methods when the plugin opts in. The
+      // signature header is `X-Dispatch-Signature: sha256=<hex_hmac>` and the
+      // HMAC is computed over the raw request body (same bytes the client
+      // sent). Empty body produces an empty-string HMAC, mirroring how most
+      // SDKs behave and avoiding edge cases on GET-style POSTs.
+      if (pluginHmacRequired) {
+        if (!pluginHmacSecret) {
+          server.log.error({ plugin: route.pluginName }, 'HMAC required but secret missing')
+          return reply.status(500).send({ error: 'Server misconfiguration: HMAC secret missing' })
+        }
+        const m = req.method.toUpperCase()
+        if (m === 'POST' || m === 'PUT' || m === 'PATCH') {
+          const provided = (req.headers as Record<string, string>)['x-dispatch-signature'] ?? ''
+          const rawBody = (req as unknown as { rawBody?: string }).rawBody ?? ''
+          const expected = 'sha256=' + createHmac('sha256', pluginHmacSecret).update(rawBody).digest('hex')
+          if (provided.length !== expected.length ||
+              !timingSafeEqual(Buffer.from(provided), Buffer.from(expected))) {
+            return reply.status(401).send({ error: 'Invalid HMAC signature' })
+          }
+        }
+      }
+
       return route.handler(req, reply)
     })
   }
