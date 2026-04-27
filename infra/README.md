@@ -81,6 +81,53 @@ is unaffected by `PasswordAuthentication=no`.
 | Quick health probe | `make health` |
 | Environment sanity check | `make doctor` |
 
+## Core service (systemd)
+
+Production runs the Fastify Core under systemd (not tmux). The unit file lives
+in this repo at `infra/dispatch-core.service` and is installed to
+`/etc/systemd/system/dispatch-core.service` by `bootstrap-secure.sh` (block 5/6).
+
+Hardening flags: `NoNewPrivileges`, `ProtectSystem=strict`,
+`ProtectHome=read-only`, `PrivateTmp`, `ProtectKernelTunables/Modules/ControlGroups`.
+Memory ceiling: `MemoryHigh=1G`, `MemoryMax=2G`. File handles: `LimitNOFILE=65536`.
+Restart: `Restart=always`, `RestartSec=5`, with a 10-burst / 300s start-limit
+guard. Depends on `pipeboard-tunnel.service` (Pipeboard Postgres).
+
+Logs go to journald (`SyslogIdentifier=dispatch-core`), not files.
+
+| Task | Command |
+|------|---------|
+| Start core | `make core-up` |
+| Stop core | `make core-down` |
+| Restart core | `make core-restart` |
+| Tail journal (live) | `make core-logs` |
+| Status | `make core-status` |
+
+These targets SSH to `adb@dispatch` and call `sudo systemctl …` — the
+NOPASSWD entries for `dispatch-core.service` are installed by
+`bootstrap-secure.sh` block 4/6.
+
+### Updating the unit file
+
+Edit `infra/dispatch-core.service` locally, commit, then on Kali:
+
+```bash
+sudo install -m 644 /var/www/adb_tools/infra/dispatch-core.service \
+  /etc/systemd/system/dispatch-core.service
+sudo systemctl daemon-reload
+make -C /var/www/adb_tools core-restart
+```
+
+### Rebuilding the core after a deploy
+
+The unit's `ExecStartPre` checks for `dist/main.js`. Always rebuild before
+restart:
+
+```bash
+ssh adb@dispatch 'cd /var/www/debt-adb-framework && pnpm --filter @dispatch/core build'
+make -C /var/www/adb_tools core-restart
+```
+
 ## Troubleshooting
 
 ### Funnel is up but 502s
@@ -118,12 +165,14 @@ Check `tailscale funnel status` — the error message includes the exact ACL tag
 
 ```
 infra/
-├── Caddyfile        # reverse proxy config
-├── README.md        # this file
-├── tmux-dev.sh      # dev session (HMR)
-├── tmux-prod.sh     # prod-like session (static UI)
-├── logs/            # runtime logs (git-ignored)
-└── run/             # pid files, sockets (git-ignored)
+├── Caddyfile               # reverse proxy config
+├── README.md               # this file
+├── bootstrap-secure.sh     # one-time host hardening + service install
+├── dispatch-core.service   # systemd unit for Fastify Core (prod)
+├── tmux-dev.sh             # dev session (HMR)
+├── tmux-prod.sh            # prod-like session (static UI)
+├── logs/                   # runtime logs (git-ignored)
+└── run/                    # pid files, sockets (git-ignored)
 ```
 
 See the root `Makefile` for target definitions.

@@ -6,11 +6,11 @@
 # - Adds surgical NOPASSWD sudoers for adb (only Dispatch ops)
 set -euo pipefail
 
-echo "==> [1/5] chown id_waha → adb"
+echo "==> [1/6] chown id_waha → adb"
 chown adb:adb /home/adb/.ssh/id_waha
 chmod 600 /home/adb/.ssh/id_waha
 
-echo "==> [2/5] hardening OpenSSH (PasswordAuth=no, key-only)"
+echo "==> [2/6] hardening OpenSSH (PasswordAuth=no, key-only)"
 install -m 644 /dev/stdin /etc/ssh/sshd_config.d/10-dispatch-hardening.conf <<HARDENING_EOF
 # Dispatch hardening — added by dispatch-secure-bootstrap.sh
 PasswordAuthentication no
@@ -28,7 +28,7 @@ sshd -t
 systemctl reload ssh || systemctl reload sshd || true
 echo "    ✓ sshd validated and reloaded"
 
-echo "==> [3/5] pipeboard-tunnel.service"
+echo "==> [3/6] pipeboard-tunnel.service"
 install -m 644 /dev/stdin /etc/systemd/system/pipeboard-tunnel.service <<UNIT_EOF
 [Unit]
 Description=SSH tunnel to Pipeboard Postgres (localhost:25432 -> remote:15432)
@@ -57,7 +57,7 @@ sleep 2
 systemctl is-active pipeboard-tunnel.service && echo "    ✓ tunnel active"
 ss -ltnp | grep 25432 >/dev/null && echo "    ✓ tunnel listening on 25432" || echo "    ⚠ not listening yet (give it 5s)"
 
-echo "==> [4/5] surgical NOPASSWD sudoers"
+echo "==> [4/6] surgical NOPASSWD sudoers"
 install -m 440 /dev/stdin /etc/sudoers.d/dispatch-ops <<SUDOERS_EOF
 # Allow adb to manage Dispatch infra without password.
 # Scope is narrow: only systemctl on Dispatch services + journal reads + tunnel restart.
@@ -69,14 +69,32 @@ adb ALL=(root) NOPASSWD: /bin/systemctl status pipeboard-tunnel.service
 adb ALL=(root) NOPASSWD: /bin/systemctl restart caddy.service
 adb ALL=(root) NOPASSWD: /bin/systemctl reload caddy.service
 adb ALL=(root) NOPASSWD: /bin/systemctl status caddy.service
+adb ALL=(root) NOPASSWD: /bin/systemctl restart dispatch-core.service
+adb ALL=(root) NOPASSWD: /bin/systemctl start dispatch-core.service
+adb ALL=(root) NOPASSWD: /bin/systemctl stop dispatch-core.service
+adb ALL=(root) NOPASSWD: /bin/systemctl status dispatch-core.service
+adb ALL=(root) NOPASSWD: /bin/systemctl reset-failed dispatch-core.service
 adb ALL=(root) NOPASSWD: /bin/journalctl -u pipeboard-tunnel.service *
 adb ALL=(root) NOPASSWD: /bin/journalctl -u caddy.service *
 adb ALL=(root) NOPASSWD: /bin/journalctl -u tailscaled.service *
+adb ALL=(root) NOPASSWD: /bin/journalctl -u dispatch-core.service *
+adb ALL=(root) NOPASSWD: /bin/journalctl -u dispatch-core *
 adb ALL=(root) NOPASSWD: /usr/bin/tailscale funnel *
 SUDOERS_EOF
 visudo -cf /etc/sudoers.d/dispatch-ops >/dev/null && echo "    ✓ sudoers validated"
 
-echo "==> [5/5] summary"
+echo "==> [5/6] dispatch-core.service (Fastify API + Engine)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "${SCRIPT_DIR}/dispatch-core.service" ]; then
+  install -m 644 "${SCRIPT_DIR}/dispatch-core.service" /etc/systemd/system/dispatch-core.service
+  systemctl daemon-reload
+  systemctl enable dispatch-core.service
+  echo "    ✓ dispatch-core.service installed and enabled (not started — start manually with: sudo systemctl start dispatch-core)"
+else
+  echo "    ⚠ dispatch-core.service not found next to bootstrap-secure.sh — skip"
+fi
+
+echo "==> [6/6] summary"
 echo "    SSH password auth: $(grep -E "^PasswordAuthentication" /etc/ssh/sshd_config.d/10-dispatch-hardening.conf)"
 echo "    Tunnel: $(systemctl is-active pipeboard-tunnel.service)"
 echo "    Sudoers: /etc/sudoers.d/dispatch-ops installed"

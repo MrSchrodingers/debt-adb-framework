@@ -1,0 +1,42 @@
+[Unit]
+Description=Dispatch Core (Fastify API + Engine)
+Documentation=https://github.com/MrSchrodingers/debt-adb-framework
+After=network-online.target tailscaled.service pipeboard-tunnel.service
+Wants=network-online.target pipeboard-tunnel.service
+
+[Service]
+Type=simple
+User=adb
+WorkingDirectory=/var/www/debt-adb-framework/packages/core
+EnvironmentFile=/var/www/debt-adb-framework/packages/core/.env
+Environment=NODE_ENV=production
+Environment=NVM_DIR=/home/adb/.nvm
+Environment=PATH=/home/adb/.nvm/versions/node/v22.22.2/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+ExecStartPre=/bin/bash -c 'test -f /var/www/debt-adb-framework/packages/core/dist/main.js'
+ExecStart=/home/adb/.nvm/versions/node/v22.22.2/bin/node dist/main.js
+
+Restart=always
+RestartSec=5
+StartLimitInterval=300
+StartLimitBurst=10
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/www/debt-adb-framework/packages/core
+ProtectHome=read-only
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+LimitNOFILE=65536
+MemoryHigh=1G
+MemoryMax=2G
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dispatch-core
+
+[Install]
+WantedBy=multi-user.target

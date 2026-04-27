@@ -184,6 +184,33 @@ logs: ## Tail all runtime logs
 	tail -F $(INFRA)/logs/core.log $(INFRA)/logs/ui.log $(INFRA)/logs/caddy.log
 
 # ════════════════════════════════════════════════════════════════════════════
+##@ Core (systemd)
+# ════════════════════════════════════════════════════════════════════════════
+
+.PHONY: core-up
+core-up: ## Start dispatch-core systemd service on Kali
+	$(call log,systemctl start dispatch-core.service)
+	ssh adb@dispatch sudo -n /bin/systemctl start dispatch-core.service
+
+.PHONY: core-down
+core-down: ## Stop dispatch-core systemd service on Kali
+	$(call log,systemctl stop dispatch-core.service)
+	ssh adb@dispatch sudo -n /bin/systemctl stop dispatch-core.service
+
+.PHONY: core-restart
+core-restart: ## Restart dispatch-core systemd service on Kali
+	$(call log,systemctl restart dispatch-core.service)
+	ssh adb@dispatch sudo -n /bin/systemctl restart dispatch-core.service
+
+.PHONY: core-logs
+core-logs: ## Tail dispatch-core journal (Ctrl+C to exit)
+	ssh adb@dispatch sudo -n /bin/journalctl -u dispatch-core.service -f
+
+.PHONY: core-status
+core-status: ## Show dispatch-core systemd status
+	ssh adb@dispatch systemctl status dispatch-core.service --no-pager
+
+# ════════════════════════════════════════════════════════════════════════════
 ##@ Caddy
 # ════════════════════════════════════════════════════════════════════════════
 
