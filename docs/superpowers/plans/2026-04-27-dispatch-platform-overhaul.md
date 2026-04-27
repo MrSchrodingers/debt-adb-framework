@@ -1292,6 +1292,193 @@ Commands:
 
 ---
 
+
+---
+
+## Task 7.5 (U-screenshot) — Screenshot lifecycle tracking + clearer "indisponível" UX
+
+> **Sintoma observado:** UI mostra "Screenshot indisponível — Arquivo removido pela política de retenção ou nunca persistiu" sem distinguir os 3 casos reais. O endpoint `/api/v1/messages/:id/screenshot` retorna 404 genérico em (a) engine pulou via policy, (b) catch silencioso na persistência, (c) retenção excluiu o arquivo. UX e debug ficam cegos.
+
+**Files:**
+- Migration: `migrations/2026-04-27-screenshot-lifecycle.sql`
+- Modify: `packages/core/src/queue/index.ts` (novos campos screenshot_status, screenshot_skip_reason, screenshot_deleted_at)
+- Modify: `packages/core/src/engine/send-engine.ts` (registrar reasons no catch, gravar status)
+- Modify: `packages/core/src/api/screenshots.ts` (retornar 404 com code e meta especificos)
+- Modify: `packages/core/src/config/screenshot-policy.ts` (retention sweep marca deletion em vez de soh apagar)
+- Create: `packages/ui/src/components/screenshot-viewer.tsx` (UI fallback rica)
+- Test: `screenshot-policy.test.ts`, `send-engine.test.ts`, `screenshots.test.ts`
+
+- [ ] **Step 7.5.1: Migration**
+
+```sql
+ALTER TABLE messages ADD COLUMN screenshot_status TEXT;
+  -- persisted | skipped_by_policy | persistence_failed | deleted_by_retention | never_persisted
+ALTER TABLE messages ADD COLUMN screenshot_skip_reason TEXT;
+ALTER TABLE messages ADD COLUMN screenshot_deleted_at TEXT;
+ALTER TABLE messages ADD COLUMN screenshot_size_bytes INTEGER;
+CREATE INDEX IF NOT EXISTS idx_messages_screenshot_status ON messages(screenshot_status);
+```
+
+- [ ] **Step 7.5.2: Test red — engine grava screenshot_status em cada path**
+
+Casos:
+- persisted (capture OK + writeFile OK)
+- skipped_by_policy (policy.shouldCapture=false)
+- persistence_failed (writeFile rejects, e.g. ENOSPC)
+- never_persisted (engine pulou ANTES de chegar em screenshot — caso edge)
+
+- [ ] **Step 7.5.3: Implementar — eliminar catch silencioso**
+
+Substituir o catch vazio em `send-engine.ts` por:
+
+```typescript
+try {
+  // capture, mkdir, writeFile, processed = ...
+  this.queue.markScreenshotPersisted(message.id, screenshotPath, processed.length)
+} catch (err) {
+  const reason = err instanceof Error ? err.name + ": " + err.message : String(err)
+  this.queue.markScreenshotFailed(message.id, reason)
+  this.record(message.id, "screenshot_failed", { reason })
+}
+```
+
+E quando `policy.shouldCapture` retorna false:
+
+```typescript
+if (!shouldCapture) {
+  this.queue.markScreenshotSkipped(message.id, this.screenshotPolicy?.skipReason() ?? "policy")
+}
+```
+
+- [ ] **Step 7.5.4: Endpoint retorna shape estruturado em 404**
+
+```typescript
+if (!message.screenshotPath) {
+  return reply.status(404).send({
+    error: "screenshot_unavailable",
+    code: message.screenshotStatus ?? "never_persisted",
+    reason: message.screenshotSkipReason,
+    deleted_at: message.screenshotDeletedAt,
+    message_sent_at: message.sentAt,
+  })
+}
+try { await stat(resolvedPath) } catch {
+  return reply.status(404).send({
+    error: "screenshot_unavailable",
+    code: "file_missing_on_disk",
+    reason: "Path is set in DB but file was removed (retention or manual deletion).",
+    expected_path: message.screenshotPath,
+    message_sent_at: message.sentAt,
+  })
+}
+```
+
+- [ ] **Step 7.5.5: Retention sweep marca deletion em vez de soh apagar**
+
+`screenshot-policy.ts` ganha:
+
+```typescript
+async retentionSweep(now: Date): Promise<{ deleted: number }> {
+  const cutoff = new Date(now.getTime() - this.retentionDays * 86400_000)
+  const stale = this.queue.findScreenshotsOlderThan(cutoff)
+  let deleted = 0
+  for (const m of stale) {
+    try {
+      await unlink(resolve(m.screenshotPath))
+      this.queue.markScreenshotDeleted(m.id, now.toISOString(), "retention_sweep")
+      deleted++
+    } catch (err) {
+      this.queue.markScreenshotDeleted(m.id, now.toISOString(), "retention_sweep_missing: " + (err as Error).message)
+    }
+  }
+  return { deleted }
+}
+```
+
+- [ ] **Step 7.5.6: UI — componente ScreenshotViewer com fallback rico**
+
+```tsx
+type ScreenshotMeta =
+  | { code: "persisted"; url: string }
+  | { code: "never_persisted" | "skipped_by_policy" | "persistence_failed" | "file_missing_on_disk" | "deleted_by_retention"
+      reason?: string; deleted_at?: string; message_sent_at?: string }
+
+export function ScreenshotViewer({ messageId }: { messageId: string }) {
+  const { data } = useScreenshotMeta(messageId)
+  if (data?.code === "persisted") return <img src={data.url} className="rounded-md" />
+  return (
+    <div className="rounded-md border border-zinc-800 bg-zinc-900/40 p-4 space-y-2">
+      <div className="flex items-center gap-2">
+        <Camera className="h-4 w-4 text-zinc-500" />
+        <span className="font-medium text-zinc-200">{labelFor(data?.code)}</span>
+      </div>
+      <p className="text-sm text-zinc-400">{descriptionFor(data?.code, data)}</p>
+      {data?.deleted_at && (
+        <p className="text-xs text-zinc-500">
+          Removida em {new Date(data.deleted_at).toLocaleString("pt-BR")} (retencao: {RETENTION_DAYS} dias)
+        </p>
+      )}
+      {data?.message_sent_at && (
+        <p className="text-xs text-zinc-500">
+          Mensagem enviada em {new Date(data.message_sent_at).toLocaleString("pt-BR")}
+        </p>
+      )}
+      {data?.reason && (
+        <details className="text-xs">
+          <summary className="cursor-pointer text-zinc-500">Detalhes tecnicos</summary>
+          <code className="block mt-1 text-zinc-400">{data.reason}</code>
+        </details>
+      )}
+    </div>
+  )
+}
+
+function labelFor(code?: string): string {
+  switch (code) {
+    case "never_persisted":       return "Screenshot nao capturada"
+    case "skipped_by_policy":     return "Captura ignorada pela politica"
+    case "persistence_failed":    return "Falha ao salvar"
+    case "file_missing_on_disk":  return "Arquivo ausente no disco"
+    case "deleted_by_retention":  return "Excluida pela retencao"
+    default:                       return "Indisponivel"
+  }
+}
+```
+
+- [ ] **Step 7.5.7: Run all tests**
+
+```bash
+pnpm --filter @dispatch/core test -- screenshot 2>&1 | tail -15
+```
+
+Expected: green nos 5 estados.
+
+- [ ] **Step 7.5.8: Backfill — script one-shot pra popular screenshot_status em mensagens antigas**
+
+```bash
+ssh adb@dispatch 'sqlite3 /var/www/debt-adb-framework/packages/core/dispatch.db "
+UPDATE messages SET screenshot_status = CASE
+  WHEN screenshot_path IS NULL THEN "never_persisted"
+  ELSE "persisted"
+END WHERE screenshot_status IS NULL;
+SELECT screenshot_status, COUNT(*) FROM messages GROUP BY screenshot_status;
+"'
+```
+
+- [ ] **Step 7.5.9: Verify no Kali — file_missing_on_disk path**
+
+Pega 1 message-id, apaga o arquivo manualmente, hit endpoint via Bearer, espera 404 com `code: "file_missing_on_disk"` e `expected_path` no body. Restaura arquivo.
+
+- [ ] **Step 7.5.10: Commit + deploy**
+
+```bash
+git add migrations/2026-04-27-screenshot-lifecycle.sql packages/core/src packages/ui/src
+git commit -m "feat(screenshot): lifecycle tracking + structured 404 + UX fallback states"
+git push origin main
+ssh adb@dispatch 'cd /var/www/debt-adb-framework && git pull --ff-only && sqlite3 packages/core/dispatch.db < migrations/2026-04-27-screenshot-lifecycle.sql && pnpm --filter @dispatch/core build && pnpm --filter @dispatch/ui build'
+make -C /var/www/adb_tools core-restart
+```
+
 # Phase 8 — UX Productivity
 
 > **Deps:** P7.
