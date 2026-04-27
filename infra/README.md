@@ -26,6 +26,35 @@ make funnel-up       # expose https://<host>.<tailnet>.ts.net
 make funnel-status   # confirm the URL
 ```
 
+### Secure bootstrap (run once after first SSH-in)
+
+`infra/bootstrap-secure.sh` hardens the host. Copy it to `/tmp` and run with sudo:
+
+```bash
+scp infra/bootstrap-secure.sh adb@dispatch:/tmp/
+ssh -t adb@dispatch 'sudo bash /tmp/bootstrap-secure.sh'
+```
+
+What it does (one-time, idempotent):
+
+1. `chown adb:adb /home/adb/.ssh/id_waha` — lets the systemd service
+   (User=adb) use the key without sudo.
+2. Installs `/etc/ssh/sshd_config.d/10-dispatch-hardening.conf`:
+   `PasswordAuthentication=no`, `PubkeyAuthentication=yes`,
+   `PermitRootLogin=prohibit-password`, `MaxAuthTries=3`. Validates with
+   `sshd -t` before reload — won't break the live session.
+3. Installs `/etc/systemd/system/pipeboard-tunnel.service` (User=adb,
+   Restart=always, ServerAliveInterval=30) and enables it. Required by
+   the `adb-precheck` plugin to reach Pipeboard Postgres.
+4. Installs `/etc/sudoers.d/dispatch-ops` with **surgical NOPASSWD**:
+   only `systemctl restart/start/stop/status/reload` of `pipeboard-tunnel`
+   and `caddy`, plus `journalctl -u <those>` and `tailscale funnel *`.
+   No `ALL`. `apt`, `rm`, etc. still prompt for password.
+
+Tailscale SSH continues to work because Tailscale intercepts port 22 from
+tailnet peers before OpenSSH sees the connection — identity-based auth
+is unaffected by `PasswordAuthentication=no`.
+
 ## Prerequisites in the Tailscale admin console (1x per tailnet)
 
 1. **DNS** → enable MagicDNS + HTTPS certificates.
