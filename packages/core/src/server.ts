@@ -8,7 +8,7 @@ import { MessageQueue } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
 import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
-import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes } from './api/index.js'
+import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes } from './api/index.js'
 import { verifyJwt } from './api/jwt.js'
 import { ContactRegistry } from './contacts/index.js'
 import { HygieneJobService } from './hygiene/index.js'
@@ -79,22 +79,31 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const dispatchJwtSecret = process.env.DISPATCH_JWT_SECRET
   registerApiAuth(server, { apiKey: dispatchApiKey, jwtSecret: dispatchJwtSecret })
 
-  // Login route (public): only mounted when full credential triplet is set.
-  // Otherwise the app boots in "open" mode for local development.
-  const authUser = process.env.DISPATCH_AUTH_USER
-  const authPassword = process.env.DISPATCH_AUTH_PASSWORD
-  if (authUser && authPassword && dispatchJwtSecret) {
-    registerAuthLogin(server, {
-      username: authUser,
-      password: authPassword,
-      jwtSecret: dispatchJwtSecret,
-    })
-  }
-
   const db = new Database(process.env.DB_PATH || 'dispatch.db')
   db.pragma('journal_mode = WAL')
   db.pragma('busy_timeout = 5000')
   db.pragma('wal_autocheckpoint = 400')
+
+  // Login + refresh routes (public): only mounted when full credential triplet
+  // is set. Otherwise the app boots in "open" mode for local development.
+  // Task 3.4: 15min access JWT + 24h refresh token rotation. Refresh tokens
+  // are opaque (random hex), stored as sha256 hashes in `refresh_tokens`.
+  const authUser = process.env.DISPATCH_AUTH_USER
+  const authPassword = process.env.DISPATCH_AUTH_PASSWORD
+  if (authUser && authPassword && dispatchJwtSecret) {
+    const refreshTokenStore = new RefreshTokenStore(db)
+    registerAuthLogin(server, {
+      username: authUser,
+      password: authPassword,
+      jwtSecret: dispatchJwtSecret,
+      refreshTokenStore,
+    })
+    registerAuthRefresh(server, {
+      username: authUser,
+      jwtSecret: dispatchJwtSecret,
+      store: refreshTokenStore,
+    })
+  }
 
   const queue = new MessageQueue(db)
   queue.initialize()

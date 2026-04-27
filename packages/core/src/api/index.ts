@@ -1,5 +1,7 @@
 export { registerApiAuth } from './api-auth.js'
 export { registerAuthLogin } from './auth-login.js'
+export { registerAuthRefresh } from './auth-refresh.js'
+export { RefreshTokenStore } from './refresh-token.js'
 export { signJwt, verifyJwt } from './jwt.js'
 export { buildCorsOrigins } from './cors.js'
 export { registerMessageRoutes } from './messages.js'

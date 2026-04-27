@@ -6,6 +6,7 @@ const PUBLIC_ROUTES = [
   '/api/v1/health',
   '/healthz',            // legacy/k8s-style probe used by Caddy and external monitors
   '/api/v1/auth/login',  // Login is the only way to get a JWT in the first place
+  '/api/v1/auth/refresh', // Task 3.4: caller's access JWT may already be expired
   // S13: /metrics removed — now requires API key (Decision #12)
 ]
 

@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import Fastify from 'fastify'
+import Database from 'better-sqlite3'
 import { registerAuthLogin } from './auth-login.js'
 import { verifyJwt } from './jwt.js'
+import { RefreshTokenStore } from './refresh-token.js'
 
 const CFG = {
   username: 'admin',
@@ -137,5 +139,72 @@ describe('POST /api/v1/auth/login — bcrypt hash mode', () => {
     })
     expect(res.statusCode).toBe(401)
     expect(res.json()).toEqual({ error: 'invalid_credentials' })
+  })
+})
+
+describe('POST /api/v1/auth/login — refresh token issuance (Task 3.4)', () => {
+  let server: ReturnType<typeof Fastify>
+  let db: Database.Database
+  let store: RefreshTokenStore
+
+  beforeEach(() => {
+    db = new Database(':memory:')
+    store = new RefreshTokenStore(db)
+    server = Fastify()
+    registerAuthLogin(server, {
+      username: 'admin',
+      password: 'super-strong-pass',
+      jwtSecret: 'jwt-test-secret',
+      ttlSeconds: 60,
+      refreshTtlSeconds: 120,
+      refreshTokenStore: store,
+    })
+  })
+
+  afterEach(async () => {
+    await server.close()
+    db.close()
+  })
+
+  it('returns refresh_token + refresh_expires_at on successful login', async () => {
+    const res = await server.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { username: 'admin', password: 'super-strong-pass' },
+      headers: { 'user-agent': 'vitest/1.0' },
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body).toHaveProperty('token')
+    expect(body).toHaveProperty('refresh_token')
+    expect(body).toHaveProperty('expires_at')
+    expect(body).toHaveProperty('refresh_expires_at')
+    expect(body.sub).toBe('admin')
+    expect(typeof body.refresh_token).toBe('string')
+    expect(body.refresh_token).toMatch(/^[a-f0-9]{64}$/)
+  })
+
+  it('persists refresh token with user-agent metadata', async () => {
+    await server.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { username: 'admin', password: 'super-strong-pass' },
+      headers: { 'user-agent': 'vitest/1.0' },
+    })
+    const rows = db.prepare('SELECT user_agent FROM refresh_tokens WHERE user_id = ?').all('admin') as { user_agent: string | null }[]
+    expect(rows.length).toBe(1)
+    expect(rows[0].user_agent).toBe('vitest/1.0')
+  })
+
+  it('issued refresh token verifies cleanly via the store', async () => {
+    const res = await server.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { username: 'admin', password: 'super-strong-pass' },
+    })
+    const body = res.json()
+    const v = store.verify(body.refresh_token)
+    expect(v.valid).toBe(true)
+    if (v.valid) expect(v.userId).toBe('admin')
   })
 })
