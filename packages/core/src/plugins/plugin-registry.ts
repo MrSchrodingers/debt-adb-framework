@@ -65,12 +65,12 @@ export class PluginRegistry {
         ON failed_callbacks(plugin_name);
       CREATE INDEX IF NOT EXISTS idx_failed_callbacks_retry
         ON failed_callbacks(attempts, created_at);
-      CREATE INDEX IF NOT EXISTS idx_failed_callbacks_abandoned
-        ON failed_callbacks(abandoned_at) WHERE abandoned_at IS NULL;
     `)
 
     // Idempotent ALTER guard for pre-existing production databases.
     // SQLite does not support ADD COLUMN IF NOT EXISTS, so we check PRAGMA first.
+    // IMPORTANT: the partial index on abandoned_at must be created AFTER the column
+    // exists, so it cannot be in the CREATE TABLE exec block above.
     const cols = this.db.prepare('PRAGMA table_info(failed_callbacks)').all() as Array<{ name: string }>
     const colNames = new Set(cols.map((c) => c.name))
     if (!colNames.has('abandoned_at')) {
@@ -79,6 +79,12 @@ export class PluginRegistry {
     if (!colNames.has('abandoned_reason')) {
       this.db.exec('ALTER TABLE failed_callbacks ADD COLUMN abandoned_reason TEXT')
     }
+
+    // Partial index for fast retry-list scans (skip abandoned rows).
+    // Created here — after ALTER guard — so the column is guaranteed to exist.
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_failed_callbacks_abandoned ON failed_callbacks(abandoned_at) WHERE abandoned_at IS NULL',
+    )
 
     this.prepareStatements()
   }
