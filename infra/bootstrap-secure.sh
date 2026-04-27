@@ -99,6 +99,10 @@ apt-get install -y -qq fail2ban
 install -m 644 /dev/stdin /etc/fail2ban/jail.d/dispatch-ssh.conf <<'F2B_SSH_EOF'
 # Dispatch — SSH bruteforce jail
 # Watches sshd auth failures and bans persistent attackers at the firewall.
+# NOTE: 100.64.0.0/10 (Tailscale CGNAT) is intentionally NOT in ignoreip here.
+# SSH is restricted to tailnet via ACL, so all attempts arrive from 100.x.x.x.
+# If a tailnet member tries to brute-force, we still want fail2ban to ban them
+# (compromised tailnet member shouldn't be allowed to bruteforce).
 [sshd]
 enabled  = true
 port     = ssh
@@ -106,21 +110,30 @@ backend  = systemd
 maxretry = 5
 findtime = 10m
 bantime  = 1h
-ignoreip = 127.0.0.1/8 ::1
+ignoreip = 127.0.0.0/8 ::1
 F2B_SSH_EOF
 
 install -m 644 /dev/stdin /etc/fail2ban/filter.d/dispatch-login.conf <<'F2B_FILTER_EOF'
 # Dispatch — match failed POSTs to the login endpoint in Caddy JSON access logs.
 # Caddy log format is JSON on stdout (captured by journald via caddy.service).
-# We match status 401/403 on POST /api/v1/auth/login* and extract remote_ip.
+#
+# Topology: Tailscale Funnel terminates TLS on ingress and proxies to localhost,
+# so Caddy ALWAYS sees request.remote_ip = 127.0.0.1 (which is in fail2ban's
+# default ignoreip → every match would be silently dropped). The real client IP
+# is injected by Funnel into the X-Forwarded-For header, so that's what we match.
+# Anchors: POST + uri /api/v1/auth/login + X-Forwarded-For + top-level status 401/403.
 [Definition]
-failregex = ^.*"request":\{[^}]*"remote_ip":"<HOST>"[^}]*"method":"POST"[^}]*"uri":"/api/v1/auth/login[^"]*"[^}]*\}.*"status":(?:401|403).*$
+failregex = ^.*"method":"POST"[^}]*"uri":"/api/v1/auth/login[^"]*"[^}]*"X-Forwarded-For":\["<HOST>"\].*"status":(?:401|403).*$
 ignoreregex =
 F2B_FILTER_EOF
 
 install -m 644 /dev/stdin /etc/fail2ban/jail.d/dispatch-login.conf <<'F2B_LOGIN_EOF'
 # Dispatch — login bruteforce jail
 # Reads Caddy access logs from journald (unit caddy.service).
+# ignoreip includes 100.64.0.0/10 (Tailscale CGNAT) because every legitimate
+# request from a tailnet member arrives with that IP in X-Forwarded-For — we
+# don't want tailnet → tailnet auth attempts (admins fat-fingering passwords)
+# to trip the jail. Only WAN attackers reaching the Funnel can be banned.
 [dispatch-login]
 enabled  = true
 filter   = dispatch-login
@@ -129,7 +142,7 @@ journalmatch = _SYSTEMD_UNIT=caddy.service
 maxretry = 5
 findtime = 10m
 bantime  = 1h
-ignoreip = 127.0.0.1/8 ::1
+ignoreip = 127.0.0.0/8 ::1 100.64.0.0/10
 F2B_LOGIN_EOF
 
 systemctl enable --now fail2ban >/dev/null 2>&1 || true

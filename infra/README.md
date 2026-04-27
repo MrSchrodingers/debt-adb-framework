@@ -160,6 +160,23 @@ make -C /var/www/adb_tools core-restart
 - UI up? `curl -fsS localhost:5174`
 - Funnel listening? `tailscale funnel status` must show `https://<host>.ts.net (Funnel on)`.
 
+### fail2ban — login filter under Tailscale Funnel
+
+The `dispatch-login` filter intentionally extracts `<HOST>` from the
+`X-Forwarded-For` header, **not** from `request.remote_ip`. Tailscale Funnel
+terminates TLS on ingress and proxies to localhost, so Caddy always sees
+`remote_ip = 127.0.0.1` — which is in fail2ban's default `ignoreip`, so every
+match was being silently dropped. Funnel injects the real client IP into XFF.
+
+`dispatch-login`'s `ignoreip` includes `100.64.0.0/10` (Tailscale CGNAT) so
+tailnet members can't accidentally ban each other when an admin fat-fingers a
+password — every legitimate request from a tailnet peer carries `100.x.x.x` in
+XFF. The live `Total failed` counter therefore only increments for non-tailnet
+WAN attackers; testing the jail from inside the tailnet will show 0 matches by
+design. The `sshd` jail does **not** include the CGNAT range — SSH is already
+ACL-restricted to tailnet, but a compromised peer trying to brute-force should
+still be banned.
+
 ### Caddy logs
 
 Caddy runs under a systemd sandbox that blocks writes to `/var/log/caddy`, so
