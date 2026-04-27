@@ -6,11 +6,11 @@
 # - Adds surgical NOPASSWD sudoers for adb (only Dispatch ops)
 set -euo pipefail
 
-echo "==> [1/6] chown id_waha → adb"
+echo "==> [1/7] chown id_waha → adb"
 chown adb:adb /home/adb/.ssh/id_waha
 chmod 600 /home/adb/.ssh/id_waha
 
-echo "==> [2/6] hardening OpenSSH (PasswordAuth=no, key-only)"
+echo "==> [2/7] hardening OpenSSH (PasswordAuth=no, key-only)"
 install -m 644 /dev/stdin /etc/ssh/sshd_config.d/10-dispatch-hardening.conf <<HARDENING_EOF
 # Dispatch hardening — added by dispatch-secure-bootstrap.sh
 PasswordAuthentication no
@@ -28,7 +28,7 @@ sshd -t
 systemctl reload ssh || systemctl reload sshd || true
 echo "    ✓ sshd validated and reloaded"
 
-echo "==> [3/6] pipeboard-tunnel.service"
+echo "==> [3/7] pipeboard-tunnel.service"
 install -m 644 /dev/stdin /etc/systemd/system/pipeboard-tunnel.service <<UNIT_EOF
 [Unit]
 Description=SSH tunnel to Pipeboard Postgres (localhost:25432 -> remote:15432)
@@ -57,7 +57,7 @@ sleep 2
 systemctl is-active pipeboard-tunnel.service && echo "    ✓ tunnel active"
 ss -ltnp | grep 25432 >/dev/null && echo "    ✓ tunnel listening on 25432" || echo "    ⚠ not listening yet (give it 5s)"
 
-echo "==> [4/6] surgical NOPASSWD sudoers"
+echo "==> [4/7] surgical NOPASSWD sudoers"
 install -m 440 /dev/stdin /etc/sudoers.d/dispatch-ops <<SUDOERS_EOF
 # Allow adb to manage Dispatch infra without password.
 # Scope is narrow: only systemctl on Dispatch services + journal reads + tunnel restart.
@@ -83,7 +83,7 @@ adb ALL=(root) NOPASSWD: /usr/bin/tailscale funnel *
 SUDOERS_EOF
 visudo -cf /etc/sudoers.d/dispatch-ops >/dev/null && echo "    ✓ sudoers validated"
 
-echo "==> [5/6] dispatch-core.service (Fastify API + Engine)"
+echo "==> [5/7] dispatch-core.service (Fastify API + Engine)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "${SCRIPT_DIR}/dispatch-core.service" ]; then
   install -m 644 "${SCRIPT_DIR}/dispatch-core.service" /etc/systemd/system/dispatch-core.service
@@ -94,9 +94,52 @@ else
   echo "    ⚠ dispatch-core.service not found next to bootstrap-secure.sh — skip"
 fi
 
-echo "==> [6/6] summary"
+echo "==> [6/7] fail2ban (SSH + login bruteforce protection)"
+apt-get install -y -qq fail2ban
+install -m 644 /dev/stdin /etc/fail2ban/jail.d/dispatch-ssh.conf <<'F2B_SSH_EOF'
+# Dispatch — SSH bruteforce jail
+# Watches sshd auth failures and bans persistent attackers at the firewall.
+[sshd]
+enabled  = true
+port     = ssh
+backend  = systemd
+maxretry = 5
+findtime = 10m
+bantime  = 1h
+ignoreip = 127.0.0.1/8 ::1
+F2B_SSH_EOF
+
+install -m 644 /dev/stdin /etc/fail2ban/filter.d/dispatch-login.conf <<'F2B_FILTER_EOF'
+# Dispatch — match failed POSTs to the login endpoint in Caddy JSON access logs.
+# Caddy log format is JSON on stdout (captured by journald via caddy.service).
+# We match status 401/403 on POST /api/v1/auth/login* and extract remote_ip.
+[Definition]
+failregex = ^.*"request":\{[^}]*"remote_ip":"<HOST>"[^}]*"method":"POST"[^}]*"uri":"/api/v1/auth/login[^"]*"[^}]*\}.*"status":(?:401|403).*$
+ignoreregex =
+F2B_FILTER_EOF
+
+install -m 644 /dev/stdin /etc/fail2ban/jail.d/dispatch-login.conf <<'F2B_LOGIN_EOF'
+# Dispatch — login bruteforce jail
+# Reads Caddy access logs from journald (unit caddy.service).
+[dispatch-login]
+enabled  = true
+filter   = dispatch-login
+backend  = systemd
+journalmatch = _SYSTEMD_UNIT=caddy.service
+maxretry = 5
+findtime = 10m
+bantime  = 1h
+ignoreip = 127.0.0.1/8 ::1
+F2B_LOGIN_EOF
+
+systemctl enable --now fail2ban >/dev/null 2>&1 || true
+systemctl reload fail2ban
+echo "    ✓ fail2ban configured (sshd + dispatch-login jails)"
+
+echo "==> [7/7] summary"
 echo "    SSH password auth: $(grep -E "^PasswordAuthentication" /etc/ssh/sshd_config.d/10-dispatch-hardening.conf)"
 echo "    Tunnel: $(systemctl is-active pipeboard-tunnel.service)"
 echo "    Sudoers: /etc/sudoers.d/dispatch-ops installed"
+echo "    fail2ban: $(systemctl is-active fail2ban)"
 echo
 echo "✓ Bootstrap complete. Future SSH only with key, sudo only for whitelisted ops."
