@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, Fragment } from 'react'
 import { ChevronLeft, ChevronRight, Check, CheckCheck, AlertCircle, X, ZoomIn, ImageOff, Radio } from 'lucide-react'
-import { CORE_URL, API_KEY, authHeaders } from '../config'
+import { CORE_URL, authHeaders } from '../config'
 import { formatRelativeTime } from '../utils/time'
 
 const PAGE_SIZE = 50
@@ -217,24 +217,41 @@ type ShotState = 'probing' | 'available' | 'missing' | 'via-fallback' | 'never-c
 
 function ScreenshotSlot({ msg, onZoom }: { msg: OralsinMessage; onZoom: (url: string) => void }) {
   const [state, setState] = useState<ShotState>('probing')
-  const url = `${CORE_URL}/api/v1/messages/${msg.id}/screenshot${API_KEY ? `?key=${API_KEY}` : ''}`
+  const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  const url = `${CORE_URL}/api/v1/messages/${msg.id}/screenshot`
 
   useEffect(() => {
     let cancelled = false
+    let createdObjectUrl: string | null = null
+
     // If we know upfront the message was sent via WAHA fallback, ADB screenshot was never captured.
     if (msg.fallbackUsed && msg.fallbackProvider && msg.fallbackProvider !== 'adb') {
       setState('via-fallback')
       return
     }
-    // Probe with HEAD first to decide between available/missing without flashing a broken <img>.
-    fetch(url, { method: 'HEAD', headers: authHeaders() })
-      .then((r) => {
+
+    // JWT-only mode: <img src> cannot send Authorization headers. Fetch the
+    // bytes via fetch() with the Bearer token, then expose the result as a
+    // blob: URL the <img> can render without further auth.
+    fetch(url, { headers: authHeaders() })
+      .then(async (r) => {
         if (cancelled) return
-        if (r.ok) setState('available')
-        else setState('missing')
+        if (!r.ok) {
+          setState('missing')
+          return
+        }
+        const blob = await r.blob()
+        if (cancelled) return
+        createdObjectUrl = URL.createObjectURL(blob)
+        setBlobUrl(createdObjectUrl)
+        setState('available')
       })
       .catch(() => { if (!cancelled) setState('missing') })
-    return () => { cancelled = true }
+
+    return () => {
+      cancelled = true
+      if (createdObjectUrl) URL.revokeObjectURL(createdObjectUrl)
+    }
   }, [url, msg.fallbackUsed, msg.fallbackProvider])
 
   if (state === 'probing') {
@@ -270,13 +287,23 @@ function ScreenshotSlot({ msg, onZoom }: { msg: OralsinMessage; onZoom: (url: st
     )
   }
 
+  if (!blobUrl) {
+    // available state but blob not yet materialized — show skeleton
+    return (
+      <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-500 w-fit">
+        <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-zinc-600" />
+        carregando screenshot…
+      </div>
+    )
+  }
+
   return (
     <div
       className="relative group cursor-pointer w-fit"
-      onClick={() => onZoom(url)}
+      onClick={() => onZoom(blobUrl)}
     >
       <img
-        src={url}
+        src={blobUrl}
         alt="Screenshot do envio"
         className="rounded-lg border border-zinc-800 max-h-48 object-contain bg-zinc-900"
         onError={() => setState('missing')}
