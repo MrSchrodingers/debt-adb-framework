@@ -107,6 +107,29 @@ These targets SSH to `adb@dispatch` and call `sudo systemctl …` — the
 NOPASSWD entries for `dispatch-core.service` are installed by
 `bootstrap-secure.sh` block 4/6.
 
+> **NVM pinning warning**: `dispatch-core.service` pins both `ExecStart` and
+> `Environment=PATH` to the exact NVM Node version (currently `v22.22.2`).
+> After any `nvm install <newer>` or `nvm alias default <newer>` on Kali, the
+> service will keep launching the old Node — possibly silently if the old
+> binary still exists. To upgrade: edit `infra/dispatch-core.service`, commit,
+> then redeploy via the **Updating the unit file** runbook below.
+
+### Applying the reset-failed extension (one-time on existing hosts)
+
+Hosts bootstrapped before Task 2.1 B5 are missing the `systemctl reset-failed
+dispatch-core.service` NOPASSWD entry. `infra/dispatch-core-sudoers-extend.sh`
+applies it surgically and idempotently (safe to re-run). On a fresh
+`bootstrap-secure.sh` run this is already covered — only run the extender on
+pre-existing hosts.
+
+```bash
+scp infra/dispatch-core-sudoers-extend.sh adb@dispatch:/tmp/
+ssh -t adb@dispatch 'sudo bash /tmp/dispatch-core-sudoers-extend.sh'
+```
+
+The script validates the resulting sudoers file with `visudo -cf` before
+atomically replacing `/etc/sudoers.d/dispatch-ops`.
+
 ### Updating the unit file
 
 Edit `infra/dispatch-core.service` locally, commit, then on Kali:
@@ -168,6 +191,7 @@ infra/
 ├── Caddyfile               # reverse proxy config
 ├── README.md               # this file
 ├── bootstrap-secure.sh     # one-time host hardening + service install
+├── dispatch-core-sudoers-extend.sh  # idempotent reset-failed sudoers patch
 ├── dispatch-core.service   # systemd unit for Fastify Core (prod)
 ├── tmux-dev.sh             # dev session (HMR)
 ├── tmux-prod.sh            # prod-like session (static UI)

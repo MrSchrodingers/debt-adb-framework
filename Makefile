@@ -203,7 +203,7 @@ core-restart: ## Restart dispatch-core systemd service on Kali
 	ssh adb@dispatch sudo -n /bin/systemctl restart dispatch-core.service
 
 .PHONY: core-logs
-core-logs: ## Tail dispatch-core journal (Ctrl+C to exit)
+core-logs: ## Tail dispatch-core journal (blocking; Ctrl+C to exit)
 	ssh adb@dispatch sudo -n /bin/journalctl -u dispatch-core.service -f
 
 .PHONY: core-status
