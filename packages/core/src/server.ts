@@ -9,6 +9,7 @@ import { AdbBridge } from './adb/index.js'
 import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
 import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes } from './api/index.js'
+import { verifyJwt } from './api/jwt.js'
 import { ContactRegistry } from './contacts/index.js'
 import { HygieneJobService } from './hygiene/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
@@ -456,8 +457,31 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     }
 
     server[method](fullPath, async (req, reply) => {
-      // S1/S2: timingSafeEqual auth for ALL HTTP methods
-      if (apiKey) {
+      // Auth: Bearer JWT first (logged-in UI session), then X-API-Key.
+      // Without the Bearer-first ordering, a UI navigating between plugin
+      // tabs would 401 whenever the build-time VITE_API_KEY drifts from
+      // the rotated PLUGIN_<NAME>_API_KEY in the .env, which the global
+      // window.fetch wrapper turns into an auto-logout. Bearer is the
+      // canonical UI credential — we should accept it here too.
+      const dispatchJwtSecret = process.env.DISPATCH_JWT_SECRET || ''
+      const authHdr = (req.headers as Record<string, string>)['authorization'] ?? ''
+      let bearerOk = false
+      if (authHdr.startsWith('Bearer ') && dispatchJwtSecret) {
+        const token = authHdr.slice(7).trim()
+        const verified = verifyJwt(token, dispatchJwtSecret)
+        if (!verified.ok) {
+          // Bearer presented but invalid — reject explicitly so the UI
+          // can auto-logout on { reason: 'expired' | 'bad_signature' | ... }
+          return reply.status(401).send({ error: 'Unauthorized', reason: verified.reason })
+        }
+        bearerOk = true
+      }
+
+      // S1/S2: timingSafeEqual auth — only required when Bearer was NOT
+      // accepted. Plugin api key remains the canonical service-to-service
+      // credential (Oralsin/precheck), but a logged-in operator browsing
+      // the UI should not need it.
+      if (!bearerOk && apiKey) {
         const providedKey = (req.headers as Record<string, string>)['x-api-key'] ?? ''
         if (providedKey.length !== apiKey.length ||
             !timingSafeEqual(Buffer.from(providedKey), Buffer.from(apiKey))) {
