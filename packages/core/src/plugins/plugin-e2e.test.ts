@@ -146,12 +146,14 @@ describe('Plugin E2E — Full Callback Loop', () => {
     expect(callBody.delivery.device_serial).toBe(TEST_DEVICE_SERIAL)
     expect(callBody.context).toEqual({ clinic_id: 'uuid-clinic', schedule_id: 'uuid-sched' })
 
-    // 12. Verify: HMAC is cryptographically correct
+    // 12. Verify: HMAC is cryptographically correct (Task 3.2 / B16: sha256= prefix)
     const headers = callInit.headers as Record<string, string>
-    const expectedHmac = createHmac('sha256', TEST_HMAC_SECRET)
-      .update(callInit.body as string)
-      .digest('hex')
-    expect(headers['X-Dispatch-Signature']).toBe(expectedHmac)
+    const expectedSig =
+      'sha256=' +
+      createHmac('sha256', TEST_HMAC_SECRET)
+        .update(callInit.body as string)
+        .digest('hex')
+    expect(headers['X-Dispatch-Signature']).toBe(expectedSig)
   })
 
   it('enqueue batch -> dequeue -> mixed results -> callbacks for each', async () => {
@@ -289,13 +291,15 @@ describe('Plugin E2E — Full Callback Loop', () => {
       expect(mockFetch).toHaveBeenCalledTimes(1)
     })
 
-    // Verify HMAC on the callback
+    // Verify HMAC on the callback (Task 3.2 / B16: sha256= prefix)
     const [, init] = mockFetch.mock.calls[0]
     const headers = init.headers as Record<string, string>
-    const expectedHmac = createHmac('sha256', TEST_HMAC_SECRET)
-      .update(init.body as string)
-      .digest('hex')
-    expect(headers['X-Dispatch-Signature']).toBe(expectedHmac)
+    const expectedSig =
+      'sha256=' +
+      createHmac('sha256', TEST_HMAC_SECRET)
+        .update(init.body as string)
+        .digest('hex')
+    expect(headers['X-Dispatch-Signature']).toBe(expectedSig)
   })
 
   it('no callback is sent for messages without plugin_name', async () => {

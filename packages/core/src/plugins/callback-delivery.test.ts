@@ -125,7 +125,7 @@ describe('CallbackDelivery', () => {
       expect(headers['X-Dispatch-Signature'].length).toBeGreaterThan(0)
     })
 
-    it('T3: HMAC signature matches exact cryptographic computation', async () => {
+    it('T3: HMAC signature matches exact cryptographic computation (sha256= prefix)', async () => {
       registerOralsin()
       mockFetch.mockResolvedValueOnce(new Response('OK', { status: 200 }))
 
@@ -144,14 +144,62 @@ describe('CallbackDelivery', () => {
       const headers = init.headers as Record<string, string>
       const body = init.body as string
 
-      // Compute expected HMAC independently
-      const expectedHmac = createHmac('sha256', 'test-hmac-secret')
-        .update(body)
-        .digest('hex')
+      // Compute expected HMAC independently — format must match the inbound
+      // verifier in server.ts: `sha256=<hex>` (Task 3.2 / B16).
+      const expectedSig =
+        'sha256=' +
+        createHmac('sha256', 'test-hmac-secret').update(body).digest('hex')
 
-      expect(headers['X-Dispatch-Signature']).toBe(expectedHmac)
-      // Verify it is a valid 64-char hex string (SHA-256 output)
-      expect(headers['X-Dispatch-Signature']).toMatch(/^[a-f0-9]{64}$/)
+      expect(headers['X-Dispatch-Signature']).toBe(expectedSig)
+      expect(headers['X-Dispatch-Signature']).toMatch(/^sha256=[a-f0-9]{64}$/)
+    })
+
+    it('B16: signs outbound callback body with HMAC-SHA256 when hmacSecret is set', async () => {
+      registerOralsin() // hmacSecret: 'test-hmac-secret'
+      mockFetch.mockResolvedValueOnce(new Response('OK', { status: 200 }))
+
+      await delivery.sendResultCallback('oralsin', 'msg-signed', {
+        idempotency_key: 'signed-key',
+        status: 'sent',
+        sent_at: '2026-04-27T18:00:00Z',
+        delivery: { ...baseDelivery },
+        error: null,
+      })
+
+      const [, init] = mockFetch.mock.calls[0]
+      const headers = init.headers as Record<string, string>
+      const body = init.body as string
+
+      const expected =
+        'sha256=' +
+        createHmac('sha256', 'test-hmac-secret').update(body).digest('hex')
+      expect(headers['X-Dispatch-Signature']).toBe(expected)
+    })
+
+    it('B16: omits X-Dispatch-Signature when no hmacSecret configured', async () => {
+      // Register a plugin with empty hmacSecret — header must be absent.
+      registry.register({
+        name: 'oralsin',
+        version: '1.0.0',
+        webhookUrl: 'https://oralsin.example.com/api/webhooks/dispatch/',
+        apiKey: 'key-1',
+        hmacSecret: '',
+        events: ['message:sent'],
+      })
+      mockFetch.mockResolvedValueOnce(new Response('OK', { status: 200 }))
+
+      await delivery.sendResultCallback('oralsin', 'msg-no-secret', {
+        idempotency_key: 'no-secret-key',
+        status: 'sent',
+        sent_at: '2026-04-27T18:00:00Z',
+        delivery: { ...baseDelivery },
+        error: null,
+      })
+
+      const [, init] = mockFetch.mock.calls[0]
+      const headers = init.headers as Record<string, string>
+      expect(headers['X-Dispatch-Signature']).toBeUndefined()
+      expect('X-Dispatch-Signature' in headers).toBe(false)
     })
 
     it('includes context pass-through in callback body', async () => {

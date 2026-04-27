@@ -124,15 +124,12 @@ export class CallbackDelivery {
     if (!plugin) throw new Error(`Plugin not found: ${record.plugin_name}`)
 
     const body = record.payload
-    const signature = this.sign(body, plugin.hmac_secret)
+    const headers = this.buildHeaders(body, plugin.hmac_secret)
 
     try {
       const response = await this.fetchWithTimeout(plugin.webhook_url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Dispatch-Signature': signature,
-        },
+        headers,
         body,
       })
       if (response.ok) {
@@ -159,7 +156,7 @@ export class CallbackDelivery {
     if (!plugin) return
 
     const body = JSON.stringify(payload)
-    const signature = this.sign(body, plugin.hmac_secret)
+    const headers = this.buildHeaders(body, plugin.hmac_secret)
     let lastError = ''
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -169,10 +166,7 @@ export class CallbackDelivery {
       try {
         const response = await this.fetchWithTimeout(plugin.webhook_url, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Dispatch-Signature': signature,
-          },
+          headers,
           body,
         })
         if (response.ok) return
@@ -190,7 +184,7 @@ export class CallbackDelivery {
             await sleep(BACKOFF_503_MS[retry503])
             const retryResponse = await this.fetchWithTimeout(plugin.webhook_url, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'X-Dispatch-Signature': signature },
+              headers,
               body,
             })
             if (retryResponse.ok) return
@@ -228,8 +222,18 @@ export class CallbackDelivery {
     }
   }
 
-  private sign(body: string, secret: string): string {
-    if (!secret) return ''
-    return createHmac('sha256', secret).update(body).digest('hex')
+  /**
+   * Build outbound headers, including HMAC signature when the plugin has a
+   * shared secret. Format matches the inbound verifier in `server.ts`:
+   *   X-Dispatch-Signature: sha256=<hex>
+   * The header is omitted entirely when no secret is configured (Task 3.2 / B16).
+   */
+  private buildHeaders(body: string, secret: string | null | undefined): Record<string, string> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (secret) {
+      const sig = 'sha256=' + createHmac('sha256', secret).update(body).digest('hex')
+      headers['X-Dispatch-Signature'] = sig
+    }
+    return headers
   }
 }
