@@ -954,7 +954,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     utcOffsetHours: Number(process.env.SEND_WINDOW_OFFSET_HOURS) || -3,
   })
 
-  const circuitBreaker = new DeviceCircuitBreaker()
+  const circuitBreaker = new DeviceCircuitBreaker(db, emitter)
+  circuitBreaker.initialize()
 
   const orchestrator = new WorkerOrchestrator({
     db, queue, engine, adb, emitter, senderMapping, senderHealth,
@@ -1037,6 +1038,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     'message:queued', 'message:sending', 'message:sent', 'message:failed',
     'message:delivered', 'message:read',
     'device:connected', 'device:disconnected', 'device:health', 'alert:new',
+    'device:circuit:opened', 'device:circuit:half_open', 'device:circuit:closed',
     'waha:message_received', 'waha:message_sent', 'waha:session_status', 'waha:message_ack',
     'contact:opted_out',
     'sender:quarantined', 'sender:released',

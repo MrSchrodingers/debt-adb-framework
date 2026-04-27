@@ -29,6 +29,15 @@ export interface DispatchEventMap {
   'contact:opted_out': { phone: string; pattern: string; sourceSession: string; messageText: string }
   'sender:quarantined': { sender: string; failureCount: number; quarantinedUntil: string }
   'sender:released': { sender: string; quarantineDurationActualMs: number }
+  'device:circuit:opened': {
+    serial: string
+    reason: string
+    openedAt: string
+    nextAttemptAt: string
+    consecutiveFailures: number
+  }
+  'device:circuit:half_open': { serial: string }
+  'device:circuit:closed': { serial: string }
   'number:invalid': {
     id: string
     phone_input: string

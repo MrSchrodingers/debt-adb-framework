@@ -363,7 +363,8 @@ export class WorkerOrchestrator {
 
       // Circuit breaker: record failure on unhandled batch error
       if (this.deps.circuitBreaker) {
-        this.deps.circuitBreaker.recordFailure(deviceSerial)
+        const reason = err instanceof Error ? err.message : String(err)
+        this.deps.circuitBreaker.recordFailure(deviceSerial, reason)
       }
     } finally {
       if (releaseMutex) releaseMutex()

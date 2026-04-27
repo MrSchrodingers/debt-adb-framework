@@ -1,183 +1,272 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import Database from 'better-sqlite3'
 import { DeviceCircuitBreaker } from './device-circuit-breaker.js'
+import { DispatchEmitter } from '../events/dispatch-emitter.js'
 
-describe('DeviceCircuitBreaker', () => {
-  let breaker: DeviceCircuitBreaker
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+function makeDb(): Database.Database {
+  const db = new Database(':memory:')
+  db.pragma('journal_mode = WAL')
+  return db
+}
+
+function makeBreaker(
+  db: Database.Database,
+  emitter: DispatchEmitter,
+  opts?: { failureThreshold?: number; cooldownMs?: number; now?: () => number },
+) {
+  const breaker = new DeviceCircuitBreaker(db, emitter, {
+    failureThreshold: opts?.failureThreshold ?? 5,
+    cooldownMs: opts?.cooldownMs ?? 300_000,
+    now: opts?.now,
+  })
+  breaker.initialize()
+  return breaker
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────────
+
+describe('DeviceCircuitBreaker (SQLite-persistent)', () => {
+  let db: Database.Database
+  let emitter: DispatchEmitter
 
   beforeEach(() => {
-    vi.useFakeTimers()
-    breaker = new DeviceCircuitBreaker({
-      failureThreshold: 3,
-      resetTimeoutMs: 30_000,
-      halfOpenMaxCalls: 1,
-    })
+    db = makeDb()
+    emitter = new DispatchEmitter()
   })
 
   afterEach(() => {
-    vi.useRealTimers()
+    db.close()
   })
 
-  // 1. starts in closed state
-  it('starts in closed state', () => {
-    expect(breaker.getState('device-A')).toBe('closed')
-    expect(breaker.canExecute('device-A')).toBe(true)
+  // 1. Fresh device -> canUse === true (closed by default)
+  it('fresh device: canUse returns true (no row exists)', () => {
+    const breaker = makeBreaker(db, emitter)
+    expect(breaker.canUse('device-1')).toBe(true)
+    expect(breaker.getState('device-1')).toBeNull()
   })
 
-  // 2. stays closed after failures below threshold
-  it('stays closed after failures below threshold', () => {
-    breaker.recordFailure('device-A')
-    breaker.recordFailure('device-A')
-    expect(breaker.getState('device-A')).toBe('closed')
-    expect(breaker.canExecute('device-A')).toBe(true)
+  // 2. Below threshold: 4 failures (threshold=5) keep state closed, canUse true
+  it('stays closed and allows use below the failure threshold', () => {
+    const breaker = makeBreaker(db, emitter, { failureThreshold: 5 })
+    breaker.recordFailure('device-1', 'err')
+    breaker.recordFailure('device-1', 'err')
+    breaker.recordFailure('device-1', 'err')
+    breaker.recordFailure('device-1', 'err')
+
+    const state = breaker.getState('device-1')
+    expect(state?.state).toBe('closed')
+    expect(state?.consecutiveFailures).toBe(4)
+    expect(breaker.canUse('device-1')).toBe(true)
   })
 
-  // 3. opens after 3 consecutive failures
-  it('opens after failureThreshold consecutive failures', () => {
-    breaker.recordFailure('device-A')
-    breaker.recordFailure('device-A')
-    breaker.recordFailure('device-A')
-    expect(breaker.getState('device-A')).toBe('open')
+  // 3. At threshold: 5th failure opens the circuit, canUse returns false
+  it('opens circuit at failureThreshold and blocks subsequent canUse', () => {
+    const emittedEvents: unknown[] = []
+    emitter.on('device:circuit:opened', (data) => emittedEvents.push(data))
+
+    const now = () => 1_000_000
+    const breaker = makeBreaker(db, emitter, { failureThreshold: 5, cooldownMs: 300_000, now })
+
+    for (let i = 0; i < 5; i++) {
+      breaker.recordFailure('device-1', 'connection refused')
+    }
+
+    expect(breaker.canUse('device-1')).toBe(false)
+
+    const state = breaker.getState('device-1')
+    expect(state?.state).toBe('open')
+    expect(state?.consecutiveFailures).toBe(5)
+
+    expect(emittedEvents).toHaveLength(1)
+    const evt = emittedEvents[0] as { serial: string; reason: string; consecutiveFailures: number }
+    expect(evt.serial).toBe('device-1')
+    expect(evt.reason).toBe('connection refused')
+    expect(evt.consecutiveFailures).toBe(5)
   })
 
-  // 4. canExecute returns false when open
-  it('canExecute returns false when open', () => {
-    breaker.recordFailure('device-A')
-    breaker.recordFailure('device-A')
-    breaker.recordFailure('device-A')
-    expect(breaker.canExecute('device-A')).toBe(false)
+  // 4. Cooldown elapsed: canUse returns true AND state transitions to half_open
+  it('transitions open -> half_open when cooldown elapses, emits device:circuit:half_open', () => {
+    const halfOpenEvents: unknown[] = []
+    emitter.on('device:circuit:half_open', (data) => halfOpenEvents.push(data))
+
+    let mockNow = 1_000_000
+    const breaker = makeBreaker(db, emitter, { failureThreshold: 5, cooldownMs: 300_000, now: () => mockNow })
+
+    for (let i = 0; i < 5; i++) breaker.recordFailure('device-1', 'err')
+
+    expect(breaker.canUse('device-1')).toBe(false)
+
+    // Advance clock past cooldown
+    mockNow += 300_001
+
+    expect(breaker.canUse('device-1')).toBe(true)
+    expect(breaker.getState('device-1')?.state).toBe('half_open')
+    expect(halfOpenEvents).toHaveLength(1)
+    expect((halfOpenEvents[0] as { serial: string }).serial).toBe('device-1')
   })
 
-  // 5. transitions to half-open after reset timeout
-  it('transitions to half-open after reset timeout', () => {
-    breaker.recordFailure('device-A')
-    breaker.recordFailure('device-A')
-    breaker.recordFailure('device-A')
-    expect(breaker.getState('device-A')).toBe('open')
+  // 5. Half-open success: transitions to closed, resets consecutive_failures, emits device:circuit:closed
+  it('half-open success: closes circuit, resets failures, emits device:circuit:closed', () => {
+    const closedEvents: unknown[] = []
+    emitter.on('device:circuit:closed', (data) => closedEvents.push(data))
 
-    // Advance time past resetTimeoutMs
-    vi.advanceTimersByTime(30_001)
+    let mockNow = 1_000_000
+    const breaker = makeBreaker(db, emitter, { failureThreshold: 5, cooldownMs: 300_000, now: () => mockNow })
 
-    expect(breaker.getState('device-A')).toBe('half-open')
-    expect(breaker.canExecute('device-A')).toBe(true)
+    for (let i = 0; i < 5; i++) breaker.recordFailure('device-1', 'err')
+
+    mockNow += 300_001
+    breaker.canUse('device-1') // triggers open -> half_open
+
+    breaker.recordSuccess('device-1')
+
+    const state = breaker.getState('device-1')
+    expect(state?.state).toBe('closed')
+    expect(state?.consecutiveFailures).toBe(0)
+
+    expect(closedEvents).toHaveLength(1)
+    expect((closedEvents[0] as { serial: string }).serial).toBe('device-1')
   })
 
-  // 6. closes on success in half-open state
-  it('closes on success in half-open state', () => {
-    breaker.recordFailure('device-A')
-    breaker.recordFailure('device-A')
-    breaker.recordFailure('device-A')
-    vi.advanceTimersByTime(30_001)
+  // 6. Half-open failure: re-opens with new cooldown window
+  it('half-open failure: re-opens circuit with updated next_attempt_at', () => {
+    const openedEvents: { nextAttemptAt: string }[] = []
+    emitter.on('device:circuit:opened', (data) => openedEvents.push(data as { nextAttemptAt: string }))
 
-    // Trigger transition to half-open
-    expect(breaker.canExecute('device-A')).toBe(true)
+    let mockNow = 1_000_000
+    const cooldownMs = 300_000
+    const breaker = makeBreaker(db, emitter, { failureThreshold: 5, cooldownMs, now: () => mockNow })
 
-    // Record success in half-open → should close
-    breaker.recordSuccess('device-A')
-    expect(breaker.getState('device-A')).toBe('closed')
-    expect(breaker.canExecute('device-A')).toBe(true)
+    for (let i = 0; i < 5; i++) breaker.recordFailure('device-1', 'initial err')
+
+    mockNow += 300_001
+    breaker.canUse('device-1') // open -> half_open
+
+    // Advance time a bit more then fail
+    mockNow += 10_000
+    breaker.recordFailure('device-1', 're-open reason')
+
+    const state = breaker.getState('device-1')
+    expect(state?.state).toBe('open')
+
+    // next_attempt_at should be based on the new mockNow
+    const expectedNext = new Date(mockNow + cooldownMs).toISOString()
+    expect(state?.nextAttemptAt).toBe(expectedNext)
+
+    // Two opened events: initial open + re-open
+    expect(openedEvents).toHaveLength(2)
+    expect(openedEvents[1].nextAttemptAt).toBe(expectedNext)
   })
 
-  // 7. re-opens on failure in half-open state
-  it('re-opens on failure in half-open state', () => {
-    breaker.recordFailure('device-A')
-    breaker.recordFailure('device-A')
-    breaker.recordFailure('device-A')
-    vi.advanceTimersByTime(30_001)
+  // 7. recordSuccess in closed state resets consecutive_failures to 0
+  it('recordSuccess in closed state resets failure counter', () => {
+    const breaker = makeBreaker(db, emitter, { failureThreshold: 5 })
 
-    // Trigger transition to half-open
-    expect(breaker.canExecute('device-A')).toBe(true)
+    breaker.recordFailure('device-1', 'e')
+    breaker.recordFailure('device-1', 'e')
+    breaker.recordFailure('device-1', 'e')
 
-    // Record failure in half-open → should re-open
-    breaker.recordFailure('device-A')
-    expect(breaker.getState('device-A')).toBe('open')
-    expect(breaker.canExecute('device-A')).toBe(false)
+    expect(breaker.getState('device-1')?.consecutiveFailures).toBe(3)
+
+    breaker.recordSuccess('device-1')
+
+    const state = breaker.getState('device-1')
+    expect(state?.state).toBe('closed')
+    expect(state?.consecutiveFailures).toBe(0)
   })
 
-  // 8. tracks separate circuit per device
-  it('tracks separate circuit per device', () => {
-    // Trip device-A
-    breaker.recordFailure('device-A')
-    breaker.recordFailure('device-A')
-    breaker.recordFailure('device-A')
+  // 8. Persistence: state survives creating a new breaker on the same db
+  it('state persists across breaker instances (simulates process restart)', () => {
+    let mockNow = 1_000_000
+    const breaker1 = makeBreaker(db, emitter, { failureThreshold: 5, cooldownMs: 300_000, now: () => mockNow })
 
-    expect(breaker.getState('device-A')).toBe('open')
-    expect(breaker.canExecute('device-A')).toBe(false)
+    for (let i = 0; i < 5; i++) breaker1.recordFailure('device-1', 'err')
 
-    // device-B should be unaffected
-    expect(breaker.getState('device-B')).toBe('closed')
-    expect(breaker.canExecute('device-B')).toBe(true)
+    // Simulate restart: new breaker on same db
+    const breaker2 = makeBreaker(db, new DispatchEmitter(), { failureThreshold: 5, cooldownMs: 300_000, now: () => mockNow })
+
+    expect(breaker2.canUse('device-1')).toBe(false)
+    expect(breaker2.getState('device-1')?.state).toBe('open')
   })
 
-  // 9. getState returns correct state for each transition
-  it('getState returns correct state through full lifecycle', () => {
-    // closed
-    expect(breaker.getState('device-A')).toBe('closed')
+  // 9. Reason field is captured in getState
+  it('reason field is captured in getState', () => {
+    const breaker = makeBreaker(db, emitter, { failureThreshold: 1 })
 
-    // trip to open
-    breaker.recordFailure('device-A')
-    breaker.recordFailure('device-A')
-    breaker.recordFailure('device-A')
-    expect(breaker.getState('device-A')).toBe('open')
+    breaker.recordFailure('device-1', 'WAHA returned 400')
 
-    // wait → half-open
-    vi.advanceTimersByTime(30_001)
-    expect(breaker.getState('device-A')).toBe('half-open')
-
-    // success → closed
-    breaker.canExecute('device-A') // trigger actual transition
-    breaker.recordSuccess('device-A')
-    expect(breaker.getState('device-A')).toBe('closed')
+    const state = breaker.getState('device-1')
+    expect(state?.reason).toBe('WAHA returned 400')
   })
 
-  // 10. recordSuccess in closed state resets failure count
-  it('recordSuccess in closed state resets failure count', () => {
-    breaker.recordFailure('device-A')
-    breaker.recordFailure('device-A')
-    // 2 failures, 1 away from open
+  // 10. Reason truncation: reasons longer than 500 chars are truncated
+  it('truncates reason field to 500 chars', () => {
+    const breaker = makeBreaker(db, emitter, { failureThreshold: 1 })
+    const longReason = 'x'.repeat(600)
 
-    breaker.recordSuccess('device-A')
+    breaker.recordFailure('device-1', longReason)
 
-    // After reset, need 3 fresh failures to open
-    breaker.recordFailure('device-A')
-    breaker.recordFailure('device-A')
-    expect(breaker.getState('device-A')).toBe('closed')
-
-    breaker.recordFailure('device-A')
-    expect(breaker.getState('device-A')).toBe('open')
+    const state = breaker.getState('device-1')
+    expect(state?.reason?.length).toBeLessThanOrEqual(500)
   })
 
-  // Edge case: half-open limits concurrent probe calls
-  it('limits calls in half-open state to halfOpenMaxCalls', () => {
-    breaker.recordFailure('device-A')
-    breaker.recordFailure('device-A')
-    breaker.recordFailure('device-A')
-    vi.advanceTimersByTime(30_001)
+  // 11. Idempotent initialize(): calling twice does not throw
+  it('initialize() is idempotent — calling twice does not throw', () => {
+    const breaker = new DeviceCircuitBreaker(db, emitter, { failureThreshold: 5, cooldownMs: 300_000 })
 
-    // First call in half-open: allowed
-    expect(breaker.canExecute('device-A')).toBe(true)
-
-    // canExecute transitions to half-open and increments halfOpenCalls internally
-    // but the second call should be blocked because halfOpenMaxCalls = 1
-    // We need to simulate the call being "in flight" — canExecute doesn't auto-increment
-    // The class tracks halfOpenCalls; canExecute allows based on < maxCalls
-    // Since the first canExecute returned true and no success/failure recorded yet,
-    // the halfOpenCalls is still 0 from the transition. We need to understand the flow:
-    // canExecute transitions open→half-open, sets halfOpenCalls=0, returns true.
-    // The caller should record success or failure after execution.
-    // Without recording, subsequent canExecute still sees halfOpenCalls=0 < 1 → true.
-    // This is correct behavior — the circuit breaker doesn't track in-flight calls,
-    // it relies on recordSuccess/recordFailure to close or re-open.
+    expect(() => {
+      breaker.initialize()
+      breaker.initialize()
+    }).not.toThrow()
   })
 
-  // Edge case: uses default config when none provided
-  it('uses default config when none provided', () => {
-    const defaultBreaker = new DeviceCircuitBreaker()
+  // 12. canExecute() is a backward-compatible alias for canUse()
+  it('canExecute() is a backward-compatible alias for canUse()', () => {
+    const breaker = makeBreaker(db, emitter, { failureThreshold: 5 })
 
-    // Default failureThreshold = 3
-    defaultBreaker.recordFailure('d1')
-    defaultBreaker.recordFailure('d1')
-    expect(defaultBreaker.getState('d1')).toBe('closed')
-    defaultBreaker.recordFailure('d1')
-    expect(defaultBreaker.getState('d1')).toBe('open')
+    expect(breaker.canExecute('device-1')).toBe(true)
+
+    for (let i = 0; i < 5; i++) breaker.recordFailure('device-1', 'err')
+
+    expect(breaker.canExecute('device-1')).toBe(false)
+  })
+
+  // 13. No-db mode: canUse always true, no errors thrown
+  it('no-db mode: canUse always returns true and no methods throw', () => {
+    const noDbBreaker = new DeviceCircuitBreaker(undefined, undefined, { failureThreshold: 5, cooldownMs: 300_000 })
+    noDbBreaker.initialize()
+
+    expect(noDbBreaker.canUse('device-1')).toBe(true)
+    expect(() => noDbBreaker.recordFailure('device-1', 'err')).not.toThrow()
+    expect(() => noDbBreaker.recordSuccess('device-1')).not.toThrow()
+    expect(noDbBreaker.getState('device-1')).toBeNull()
+  })
+
+  // 14. device:circuit:opened contains correct payload shape
+  it('device:circuit:opened payload contains all required fields', () => {
+    let mockNow = 2_000_000
+    const cooldownMs = 300_000
+    const events: unknown[] = []
+    emitter.on('device:circuit:opened', (data) => events.push(data))
+
+    const breaker = makeBreaker(db, emitter, { failureThreshold: 5, cooldownMs, now: () => mockNow })
+
+    for (let i = 0; i < 5; i++) breaker.recordFailure('device-1', 'ADB timeout')
+
+    expect(events).toHaveLength(1)
+    const payload = events[0] as {
+      serial: string
+      reason: string
+      openedAt: string
+      nextAttemptAt: string
+      consecutiveFailures: number
+    }
+    expect(payload.serial).toBe('device-1')
+    expect(payload.reason).toBe('ADB timeout')
+    expect(payload.consecutiveFailures).toBe(5)
+    expect(new Date(payload.openedAt).getTime()).toBe(mockNow)
+    expect(new Date(payload.nextAttemptAt).getTime()).toBe(mockNow + cooldownMs)
   })
 })
