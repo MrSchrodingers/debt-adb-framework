@@ -4,6 +4,7 @@ import { verifyJwt } from './jwt.js'
 
 const PUBLIC_ROUTES = [
   '/api/v1/health',
+  '/healthz',            // legacy/k8s-style probe used by Caddy and external monitors
   '/api/v1/auth/login',  // Login is the only way to get a JWT in the first place
   // S13: /metrics removed — now requires API key (Decision #12)
 ]
