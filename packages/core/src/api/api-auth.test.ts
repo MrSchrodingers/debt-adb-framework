@@ -114,4 +114,70 @@ describe('API Auth Hook', () => {
       expect(res.statusCode).toBe(200)
     })
   })
+
+  describe('Bearer JWT auth (UI login flow)', () => {
+    const SECRET = 'jwt-secret-test'
+
+    beforeEach(() => {
+      registerApiAuth(server, { apiKey: 'test-secret-key', jwtSecret: SECRET })
+    })
+
+    it('accepts a valid Bearer JWT in lieu of X-API-Key', async () => {
+      const { signJwt } = await import('./jwt.js')
+      const token = signJwt({ sub: 'admin' }, SECRET, 60)
+      const res = await server.inject({
+        method: 'GET',
+        url: '/api/v1/messages',
+        headers: { authorization: `Bearer ${token}` },
+      })
+      expect(res.statusCode).toBe(200)
+    })
+
+    it('rejects an expired Bearer JWT', async () => {
+      const { signJwt } = await import('./jwt.js')
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const token = signJwt({ sub: 'admin' }, SECRET, 60)
+      vi.setSystemTime(new Date('2026-01-01T00:02:00Z'))
+      const res = await server.inject({
+        method: 'GET',
+        url: '/api/v1/messages',
+        headers: { authorization: `Bearer ${token}` },
+      })
+      vi.useRealTimers()
+      expect(res.statusCode).toBe(401)
+      expect(res.json().reason).toBe('expired')
+    })
+
+    it('rejects a Bearer JWT signed with the wrong secret', async () => {
+      const { signJwt } = await import('./jwt.js')
+      const token = signJwt({ sub: 'admin' }, 'other-secret', 60)
+      const res = await server.inject({
+        method: 'GET',
+        url: '/api/v1/messages',
+        headers: { authorization: `Bearer ${token}` },
+      })
+      expect(res.statusCode).toBe(401)
+      expect(res.json().reason).toBe('bad_signature')
+    })
+
+    it('still accepts X-API-Key when Bearer is absent', async () => {
+      const res = await server.inject({
+        method: 'GET',
+        url: '/api/v1/messages',
+        headers: { 'x-api-key': 'test-secret-key' },
+      })
+      expect(res.statusCode).toBe(200)
+    })
+
+    it('allows POST /api/v1/auth/login as a public route', async () => {
+      server.post('/api/v1/auth/login', async () => ({ token: 'fake' }))
+      const res = await server.inject({
+        method: 'POST',
+        url: '/api/v1/auth/login',
+        payload: { username: 'a', password: 'b' },
+      })
+      expect(res.statusCode).toBe(200)
+    })
+  })
 })

@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!-- Preconnect/DNS-Prefetch - DEVE estar no topo -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="preconnect" href="https://www.googletagmanager.com" />
+    <link rel="dns-prefetch" href="https://fonts.googleapis.com" />
+    <link rel="dns-prefetch" href="https://fonts.gstatic.com" />
+    <link rel="dns-prefetch" href="https://www.googletagmanager.com" />
+    <link rel="dns-prefetch" href="https://www.google-analytics.com" />
+
+    <!-- Google Fonts - carregamento otimizado não-bloqueante -->
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" media="print" onload="this.media='all'" />
+    <noscript>
+      <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" />
+    </noscript>
+
+    <title>DEBT | Cobrança Empresarial e Recuperação de Crédito</title>
+    <meta name="description" content="DEBT: cobrança empresarial e recuperação de crédito preservando o relacionamento com seus clientes. Parceira estratégica de grandes instituições no Brasil." />
+    <meta name="keywords" content="recuperacao de credito, cobranca, inadimplencia, seguradora, cooperativa, instituicao financeira, HDI, Liberty, Yelum, Sicoob" />
+
+    <!-- Favicons -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+    <link rel="manifest" href="/site.webmanifest">
+    <link rel="mask-icon" href="/safari-pinned-tab.svg" color="#1E3F66">
+    <meta name="msapplication-TileColor" content="#1E3F66">
+    <meta name="theme-color" content="#1E3F66">
+    <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon">
+
+    <!-- Canonical & Language são gerenciados pelo React Helmet em cada página -->
+
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "LocalBusiness",
+      "name": "DEBT Cobranças Empresariais",
+      "image": "https://debt.com.br/images/Logo Branco.webp",
+      "description": "Recuperação de crédito empresarial e cobrança com tecnologia e soluções personalizadas. Parceira estratégica de grandes instituições para otimização do fluxo de caixa e redução de inadimplência.",
+      "address": {
+        "@type": "PostalAddress",
+        "streetAddress": "Avenida Paraná, 453, Sala 505",
+        "addressLocality": "Londrina",
+        "addressRegion": "PR",
+        "postalCode": "86010-922",
+        "addressCountry": "BR"
+      },
+      "geo": {
+        "@type": "GeoCoordinates",
+        "latitude": -23.311288,
+        "longitude": -51.159502
+      },
+      "url": "https://debt.com.br/",
+      "telephone": ["+55 43 3378-5450", "0800 400 5450"],
+      "email": "contato@debt.com.br",
+      "openingHours": ["Seg-Sex 09:00-18:00"],
+      "priceRange": "Sob consulta",
+      "makesOffer": [
+        {
+          "@type": "Offer",
+          "itemOffered": {
+            "@type": "Service",
+            "name": "Parceria com HDI, Liberty, Yelum, Sompo, Oral Sin, Sicoob"
+          }
+        }
+      ]
+    }
+    </script>
+
+    <!-- Schema Organization -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Organization",
+      "name": "DEBT",
+      "legalName": "DEBT Cobranças Empresariais Ltda",
+      "url": "https://debt.com.br/",
+      "logo": "https://debt.com.br/images/Logo Completo.webp",
+      "description": "Empresa especializada em recuperação de crédito empresarial com abordagem humanizada e tecnologia de ponta.",
+      "foundingDate": "2019",
+      "address": {
+        "@type": "PostalAddress",
+        "streetAddress": "Avenida Paraná, 453, Sala 505",
+        "addressLocality": "Londrina",
+        "addressRegion": "PR",
+        "postalCode": "86010-922",
+        "addressCountry": "BR"
+      },
+      "contactPoint": [
+        {
+          "@type": "ContactPoint",
+          "telephone": "+55-43-3378-5450",
+          "contactType": "customer service",
+          "areaServed": "BR",
+          "availableLanguage": "Portuguese"
+        },
+        {
+          "@type": "ContactPoint",
+          "telephone": "0800-400-5450",
+          "contactType": "customer service",
+          "areaServed": "BR",
+          "availableLanguage": "Portuguese",
+          "contactOption": "TollFree"
+        }
+      ],
+      "sameAs": [
+        "https://www.linkedin.com/company/debt-cobran%C3%A7as",
+        "https://www.instagram.com/debt.cobrancas"
+      ]
+    }
+    </script>
+
+    <!-- Schema Service - Serviços oferecidos -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Service",
+      "serviceType": "Recuperação de Crédito Empresarial",
+      "provider": {
+        "@type": "Organization",
+        "name": "DEBT"
+      },
+      "areaServed": {
+        "@type": "Country",
+        "name": "Brasil"
+      },
+      "hasOfferCatalog": {
+        "@type": "OfferCatalog",
+        "name": "Serviços de Recuperação de Crédito",
+        "itemListElement": [
+          {
+            "@type": "Offer",
+            "itemOffered": {
+              "@type": "Service",
+              "name": "Cobrança Amigável",
+              "description": "Recuperação de crédito com abordagem humanizada, preservando o relacionamento com seus clientes através de múltiplos canais de comunicação."
+            }
+          },
+          {
+            "@type": "Offer",
+            "itemOffered": {
+              "@type": "Service",
+              "name": "Cobrança para Seguradoras",
+              "description": "Serviço especializado de ressarcimento e recuperação de valores para seguradoras, com expertise em sinistros e franquias."
+            }
+          },
+          {
+            "@type": "Offer",
+            "itemOffered": {
+              "@type": "Service",
+              "name": "Cobrança para Cooperativas",
+              "description": "Soluções personalizadas para cooperativas de crédito, respeitando os valores cooperativistas e o relacionamento com associados."
+            }
+          },
+          {
+            "@type": "Offer",
+            "itemOffered": {
+              "@type": "Service",
+              "name": "Integração via API",
+              "description": "Integração segura e automatizada com seu sistema, em conformidade com a LGPD, para envio e acompanhamento de carteiras."
+            }
+          },
+          {
+            "@type": "Offer",
+            "itemOffered": {
+              "@type": "Service",
+              "name": "Dashboard de Acompanhamento",
+              "description": "Plataforma completa para acompanhamento em tempo real de métricas, acordos e resultados da recuperação."
+            }
+          }
+        ]
+      }
+    }
+    </script>
+
+    <!-- Schema FAQPage para rich snippets -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Quanto custa o serviço da DEBT?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Trabalhamos com modelo de remuneração por performance. Isso significa que você só paga quando recuperamos seu dinheiro. Sem taxas fixas, sem mensalidades. Zero risco para sua empresa."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Como vocês preservam o relacionamento com meu cliente?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Nossa abordagem é humanizada e respeitosa. Usamos múltiplos canais (WhatsApp, e-mail, telefone) e linguagem adequada ao perfil do devedor. O objetivo é recuperar o crédito E manter a porta aberta para novos negócios."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Em quanto tempo vejo resultados?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Os primeiros acordos costumam acontecer em até 15 dias após recebermos sua carteira. Você acompanha tudo em tempo real pelo dashboard e recebe relatórios semanais de performance."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Vocês atendem empresas de qualquer tamanho?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Sim! Embora tenhamos expertise com grandes instituições, oferecemos soluções personalizadas para empresas de todos os portes. Entre em contato para avaliarmos sua necessidade."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Como funciona a integração com meu sistema?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Desenvolvemos integrações seguras e personalizadas via API. Seus dados são enviados de forma automatizada e protegida, em total conformidade com a LGPD."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Posso acompanhar os resultados em tempo real?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Sim! Você terá acesso a um dashboard completo com métricas de recuperação, acordos fechados, parcelas recebidas e muito mais. Também enviamos relatórios semanais personalizados."
+          }
+        }
+      ]
+    }
+    </script>
+
+    <meta name="robots" content="index, follow" />
+    <meta name="author" content="DEBT Cobranças Empresariais" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="DEBT | Cobrança Empresarial e Recuperação de Crédito" />
+    <meta property="og:description" content="DEBT: cobrança empresarial e recuperação de crédito preservando o relacionamento com seus clientes. Parceira estratégica de grandes instituições no Brasil." />
+    <meta property="og:image" content="https://debt.com.br/og-image.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="DEBT - Soluções estratégicas em recuperação de crédito" />
+    <meta property="og:url" content="https://debt.com.br/" />
+    <meta property="og:locale" content="pt_BR" />
+    
+    <!-- Google tag (gtag.js) - Google Ads + GA4 -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-WSF7G5WV5P"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-WSF7G5WV5P');
+      gtag('config', 'AW-16797584051');
+    </script>
+    <script type="module" crossorigin src="/assets/index-CH84T9NC.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-BBIAM2ZL.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

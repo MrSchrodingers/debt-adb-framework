@@ -8,7 +8,7 @@ import { MessageQueue } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
 import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
-import { buildCorsOrigins, registerApiAuth, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes } from './api/index.js'
+import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes } from './api/index.js'
 import { ContactRegistry } from './contacts/index.js'
 import { HygieneJobService } from './hygiene/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
@@ -53,8 +53,24 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const corsOrigins = buildCorsOrigins(process.env.DISPATCH_ALLOWED_ORIGINS)
   await server.register(cors, { origin: corsOrigins })
 
-  // API Auth — must be registered before routes
-  registerApiAuth(server, process.env.DISPATCH_API_KEY)
+  // API Auth — must be registered before routes.
+  // Accepts X-API-Key (service-to-service) and/or Authorization: Bearer JWT
+  // (UI login). Both gates are optional; absence of both = dev mode.
+  const dispatchApiKey = process.env.DISPATCH_API_KEY
+  const dispatchJwtSecret = process.env.DISPATCH_JWT_SECRET
+  registerApiAuth(server, { apiKey: dispatchApiKey, jwtSecret: dispatchJwtSecret })
+
+  // Login route (public): only mounted when full credential triplet is set.
+  // Otherwise the app boots in "open" mode for local development.
+  const authUser = process.env.DISPATCH_AUTH_USER
+  const authPassword = process.env.DISPATCH_AUTH_PASSWORD
+  if (authUser && authPassword && dispatchJwtSecret) {
+    registerAuthLogin(server, {
+      username: authUser,
+      password: authPassword,
+      jwtSecret: dispatchJwtSecret,
+    })
+  }
 
   const db = new Database(process.env.DB_PATH || 'dispatch.db')
   db.pragma('journal_mode = WAL')

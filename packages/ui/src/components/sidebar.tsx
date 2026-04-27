@@ -1,4 +1,6 @@
-import { Smartphone, Send, Users, Radio, BarChart3, FileText, X, AlertTriangle, Puzzle, BookUser } from 'lucide-react'
+import { Smartphone, Send, Users, Radio, BarChart3, FileText, X, AlertTriangle, Puzzle, BookUser, LogOut } from 'lucide-react'
+import { useAuth } from '../auth/auth-context'
+import { BrandMark } from './brand-mark'
 
 type TabId = 'devices' | 'queue' | 'senders' | 'sessions' | 'metricas' | 'auditoria' | 'plugins' | 'contatos'
 
@@ -94,11 +96,16 @@ function SidebarContent({
 }) {
   return (
     <>
-      {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-zinc-800">
-        <div className="flex items-center gap-2">
-          <h1 className="text-lg font-bold text-zinc-100">Dispatch</h1>
-          <div className={`h-2 w-2 rounded-full ${connected ? 'bg-emerald-500' : 'bg-red-500'}`} />
+      {/* Header — DEBT brand mark */}
+      <div className="flex items-center justify-between px-4 py-4 border-b border-white/5 bg-gradient-to-b from-brand-900/30 to-transparent">
+        <div className="flex items-center gap-3">
+          <BrandMark size={26} withWordmark={true} />
+          <span
+            title={connected ? 'Conectado' : 'Desconectado'}
+            className={`h-2 w-2 rounded-full transition-colors ${
+              connected ? 'bg-brand-400 shadow-[0_0_10px_rgba(60,194,92,0.7)]' : 'bg-red-500'
+            }`}
+          />
         </div>
         {showClose && (
           <button
@@ -140,12 +147,35 @@ function SidebarContent({
         </div>
       )}
 
-      {/* Footer */}
-      <div className="p-4 border-t border-zinc-800">
-        <span className="text-xs text-zinc-600">
+      {/* Footer — device count + logout */}
+      <SidebarFooter deviceCount={deviceCount} />
+    </>
+  )
+}
+
+function SidebarFooter({ deviceCount }: { deviceCount: number }) {
+  const { mode, username, logout } = useAuth()
+  return (
+    <div className="border-t border-white/5 px-4 py-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="font-mono text-[0.65rem] uppercase tracking-[0.2em] text-white/40">
           {deviceCount} device{deviceCount !== 1 ? 's' : ''}
         </span>
+        {username && (
+          <span className="font-mono text-[0.65rem] text-brand-300/70 truncate max-w-[120px]">
+            {username}
+          </span>
+        )}
       </div>
-    </>
+      {mode === 'closed' && (
+        <button
+          onClick={logout}
+          className="flex w-full items-center justify-center gap-2 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-xs font-medium text-white/60 transition hover:border-red-500/30 hover:bg-red-500/10 hover:text-red-200"
+        >
+          <LogOut className="h-3.5 w-3.5" />
+          Sair
+        </button>
+      )}
+    </div>
   )
 }

@@ -5,6 +5,9 @@ dist/
 *.png
 *.jpg
 *.jpeg
+# Allow brand assets shipped with the UI bundle
+!packages/ui/public/**
+!packages/ui/src/assets/**
 .DS_Store
 .turbo
 *.db

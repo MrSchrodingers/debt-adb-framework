@@ -509,3 +509,40 @@ As Fases 4/5 (WAHA+Chatwoot) rodam em paralelo com 2/3 e convergem na Fase 7.
 2. Criar repositorio GitHub `amaral-dispatch`
 3. `/prd-to-issues` — criar issues a partir das fases
 4. Implementar Fase 1 via `/tdd`
+
+---
+
+## Addendum 2026-04-27 — Tela de Login + DEBT Branding
+
+**Escopo**: tornar a UI um produto identificavel (DEBT ADB Dispatcher) com gate de autenticacao leve baseado em credenciais em `.env`.
+
+**Backend (`packages/core/src`):**
+- `api/jwt.ts` — sign/verify HS256 (Node `crypto`, sem deps externas), 8h expiry default.
+- `api/auth-login.ts` — `POST /api/v1/auth/login` publico; compara `username/password` (timing-safe) com `DISPATCH_AUTH_USER` / `DISPATCH_AUTH_PASSWORD`; retorna `{ token, expires_at }`.
+- `api/api-auth.ts` — aceita `Authorization: Bearer <jwt>` *alem* de `X-API-Key` (compat); login route fica em `PUBLIC_ROUTES`.
+- Env novos: `DISPATCH_AUTH_USER`, `DISPATCH_AUTH_PASSWORD`, `DISPATCH_JWT_SECRET` (gerado `openssl rand -hex 32`).
+- Fallback dev: se nenhum dos tres estiver setado, login fica desabilitado (mesmo padrao do `DISPATCH_API_KEY`).
+
+**UI (`packages/ui/src`):**
+- `auth/auth-context.tsx` — provider + `useAuth()` (`token`, `login`, `logout`, `expiresAt`); persiste em `localStorage`.
+- `components/login.tsx` — full-screen, dark, com logo DEBT centralizado, gradient sutil verde-debt, campos com floating labels, botao `Entrar` com loading state.
+- `components/brand-mark.tsx` — wrapper reutilizavel do logo + wordmark "ADB DISPATCHER".
+- `App.tsx` — gate: sem token → `<Login />`; com token expirado → logout + reload no Login. `Sidebar` ganha botao de logout no rodape.
+- `index.html` — titulo "DEBT ADB Dispatcher", favicon DEBT, meta theme-color #0c1410.
+- Tipografia: Space Grotesk (display) + Inter (UI) + JetBrains Mono (mono) via Google Fonts `<link>`. Tailwind v4 ganha `--font-display`, `--font-sans`, `--font-mono` em `@theme`.
+- Brand tokens: `--brand-green` (proximo do logo), `--brand-deep` (#0a1410), `--brand-accent`.
+
+**Criterios de aceite:**
+1. Sem `DISPATCH_AUTH_*` setado → app abre direto (compat com dev local).
+2. Com vars setadas → app mostra Login antes de qualquer fetch; credenciais erradas → erro inline; sucesso → redirect para dashboard.
+3. JWT em `Authorization: Bearer` aceito em todas as rotas existentes (paridade com X-API-Key).
+4. Logout limpa localStorage e forca login na proxima request.
+5. Token expirado retorna 401 → UI captura e forca logout.
+6. Titulo "DEBT ADB Dispatcher" em browser tab + sidebar header.
+7. Suite verde (auth-login.test.ts cobre 6 cenarios: ok, wrong user, wrong password, missing fields, expired token, malformed JWT).
+
+**Nao-objetivos (este addendum):**
+- Multiplos usuarios / RBAC.
+- Refresh tokens.
+- 2FA / SSO.
+- Reset de senha (admin edita `.env` + reinicia).

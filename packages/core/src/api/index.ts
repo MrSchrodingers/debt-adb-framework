@@ -1,4 +1,6 @@
 export { registerApiAuth } from './api-auth.js'
+export { registerAuthLogin } from './auth-login.js'
+export { signJwt, verifyJwt } from './jwt.js'
 export { buildCorsOrigins } from './cors.js'
 export { registerMessageRoutes } from './messages.js'
 export { registerDeviceRoutes } from './devices.js'
