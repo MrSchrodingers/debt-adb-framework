@@ -33,6 +33,7 @@ import { AdbProbeStrategy, WahaCheckStrategy, CacheOnlyStrategy } from './check-
 import { ContactValidator } from './validator/contact-validator.js'
 import type { DispatchEventName } from './events/index.js'
 import type { DispatchPlugin, PluginRecord } from './plugins/types.js'
+import { BanPredictionDaemon } from './research/ban-prediction-daemon.js'
 
 export interface DispatchCore {
   server: ReturnType<typeof Fastify>
@@ -1103,6 +1104,18 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   })
   circuitBreaker.initialize()
 
+  // ── Ban Prediction Daemon (Task 12.2 — experimental, default off) ──
+  let banPredictionDaemon: BanPredictionDaemon | null = null
+  if (process.env.DISPATCH_BAN_PREDICTION_ENABLED === 'true') {
+    banPredictionDaemon = new BanPredictionDaemon(emitter, circuitBreaker, {
+      port: Number(process.env.DISPATCH_BAN_PREDICTION_PORT) || 9871,
+      suspectThreshold: Number(process.env.DISPATCH_BAN_PREDICTION_SUSPECT_THRESHOLD) || 3,
+      windowMs: Number(process.env.DISPATCH_BAN_PREDICTION_WINDOW_MS) || 60_000,
+    })
+    banPredictionDaemon.start()
+    server.log.info('Ban prediction daemon started (EXPERIMENTAL)')
+  }
+
   const orchestrator = new WorkerOrchestrator({
     db, queue, engine, adb, emitter, senderMapping, senderHealth,
     rateLimitGuard, receiptTracker, accountMutex, wahaFallback,
@@ -1210,6 +1223,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   shutdown.addHandler('intervals', async () => {
     deviceManager.stop()
     sessionManager?.stop()
+    banPredictionDaemon?.stop()
     clearInterval(healthInterval)
     clearInterval(accountInterval)
     clearInterval(healthCleanupInterval)
