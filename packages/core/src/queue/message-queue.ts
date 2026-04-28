@@ -113,6 +113,60 @@ export class MessageQueue {
     if (!cols.some(c => c.name === 'sent_at')) {
       this.db.exec("ALTER TABLE messages ADD COLUMN sent_at TEXT DEFAULT NULL")
     }
+
+    // Task 5.4: extend blacklist with hit counter + last_hit_at
+    const blCols = this.db.prepare('PRAGMA table_info(blacklist)').all() as { name: string }[]
+    const blColNames = new Set(blCols.map(c => c.name))
+    if (!blColNames.has('hits')) {
+      this.db.exec('ALTER TABLE blacklist ADD COLUMN hits INTEGER NOT NULL DEFAULT 1')
+    }
+    if (!blColNames.has('last_hit_at')) {
+      // SQLite does not accept non-constant defaults in ALTER TABLE — use NULL;
+      // populated on first recordBan() call.
+      this.db.exec('ALTER TABLE blacklist ADD COLUMN last_hit_at TEXT')
+    }
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_blacklist_source_hit ON blacklist(reason, last_hit_at)',
+    )
+  }
+
+  /**
+   * Record a banned number. If already present, increments `hits` and updates
+   * `last_hit_at`. If new, inserts with hits=1.
+   *
+   * Phone is stored as-is (no normalization) to stay consistent with the
+   * `isBlacklisted` lookup which also does no normalization. Callers must
+   * ensure the value they pass here matches the format used at enqueue time.
+   *
+   * @param phone   The recipient phone number.
+   * @param source  'engine_failures' | 'precheck_invalid' | 'ocr_ban_detected'
+   * @param meta    Optional forensic context.
+   */
+  recordBan(
+    phone: string,
+    source: string,
+    meta?: { detectedMessage?: string; detectedPattern?: string; sourceSession?: string },
+  ): void {
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO blacklist (phone_number, reason, detected_message, detected_pattern, source_session, created_at, hits, last_hit_at)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+      ON CONFLICT(phone_number) DO UPDATE SET
+        hits             = hits + 1,
+        last_hit_at      = excluded.last_hit_at,
+        reason           = excluded.reason,
+        detected_message = COALESCE(excluded.detected_message, detected_message),
+        detected_pattern = COALESCE(excluded.detected_pattern, detected_pattern),
+        source_session   = COALESCE(excluded.source_session, source_session)
+    `).run(
+      phone,
+      source,
+      meta?.detectedMessage ?? null,
+      meta?.detectedPattern ?? null,
+      meta?.sourceSession ?? null,
+      now,
+      now,
+    )
   }
 
   isBlacklisted(phone: string): boolean {

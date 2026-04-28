@@ -78,6 +78,7 @@ export class WorkerOrchestrator {
         const cached = contactRegistry.lookup(norm.normalized)
         if (cached?.exists_on_wa === 0 && cached.recheck_due_at === null) {
           queue.markPermanentlyFailed(message.id, message.attempts + 1)
+          queue.recordBan(message.to, 'engine_failures', { sourceSession: deviceSerial })
           emitter.emit('number:invalid', {
             id: message.id,
             phone_input: message.to,
@@ -122,6 +123,7 @@ export class WorkerOrchestrator {
         const totalAttempts = message.attempts + 1
         if (totalAttempts >= message.maxRetries) {
           queue.markPermanentlyFailed(message.id, totalAttempts)
+          queue.recordBan(message.to, 'engine_failures', { sourceSession: deviceSerial })
           emitter.emit('message:failed', {
             id: message.id,
             error: `ADB and WAHA fallback both failed after ${message.maxRetries} attempts: ${wahaErr instanceof Error ? wahaErr.message : String(wahaErr)}`,

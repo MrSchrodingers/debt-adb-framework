@@ -136,6 +136,17 @@ export class OralsinPlugin implements DispatchPlugin {
 
       for (let i = 0; i < items.length; i++) {
         const item = items[i]
+
+        // Task 5.4: pre-enqueue ban check — reject before sender resolution
+        if (this.ctx.isBlacklisted(item.patient.phone)) {
+          rejected.push({
+            index: i,
+            idempotency_key: item.idempotency_key,
+            reason: `Phone ${item.patient.phone} is banned`,
+          })
+          continue
+        }
+
         // Resolve sender via mapping — walk senders[] in order
         const resolved = this.ctx.resolveSenderChain(item.senders)
 
@@ -193,8 +204,11 @@ export class OralsinPlugin implements DispatchPlugin {
       }
 
       if (params.length === 0 && deduped.length === 0) {
+        const allBanned = rejected.length > 0 && rejected.every(r => r.reason.includes('is banned'))
         return reply.status(422).send({
-          error: 'No messages could be enqueued — all sender resolutions failed',
+          error: allBanned
+            ? 'No messages could be enqueued — all recipient phones are banned'
+            : 'No messages could be enqueued — all sender resolutions failed',
           rejected,
         })
       }

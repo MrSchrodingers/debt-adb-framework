@@ -496,9 +496,15 @@ describe('WorkerOrchestrator — circuit breaker wiring', () => {
     })
     vi.spyOn(deps.wahaFallback, 'send').mockRejectedValue(new Error('WAHA down'))
 
-    // Drive 5 ticks, each enqueuing a fresh message
+    // Drive 5 ticks, each enqueuing a fresh message to a unique phone to
+    // avoid auto-ban blocking subsequent enqueues on the same number.
     for (let i = 0; i < 5; i++) {
-      enqueueTestMessage(deps, `-cb${i}`)
+      deps.queue.enqueue({
+        to: `554399193${8200 + i}`,
+        body: `CB test ${i}`,
+        idempotencyKey: `cb-iter-${i}-${Date.now()}`,
+        senderNumber: SENDER_NUMBER,
+      })
       await orchestrator.tick()
     }
 
@@ -523,9 +529,14 @@ describe('WorkerOrchestrator — circuit breaker wiring', () => {
     })
     vi.spyOn(deps.wahaFallback, 'send').mockRejectedValue(new Error('WAHA down'))
 
-    // Exhaust threshold
+    // Exhaust threshold — use unique phones to avoid auto-ban blocking enqueues
     for (let i = 0; i < 5; i++) {
-      enqueueTestMessage(deps, `-open${i}`)
+      deps.queue.enqueue({
+        to: `554399193${9200 + i}`,
+        body: `Open test ${i}`,
+        idempotencyKey: `open-iter-${i}-${Date.now()}`,
+        senderNumber: SENDER_NUMBER,
+      })
       await orchestrator.tick()
     }
 
@@ -533,9 +544,87 @@ describe('WorkerOrchestrator — circuit breaker wiring', () => {
 
     // 6th tick: circuit is open — no further sends should happen
     const sendCallsBefore = sendSpy.mock.calls.length
-    enqueueTestMessage(deps, '-after-open')
+    deps.queue.enqueue({
+      to: '5543991939300',
+      body: 'After open test',
+      idempotencyKey: `after-open-${Date.now()}`,
+      senderNumber: SENDER_NUMBER,
+    })
     await orchestrator.tick()
 
     expect(sendSpy.mock.calls.length).toBe(sendCallsBefore) // no new send attempts
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Task 5.4 — Auto-ban trigger tests
+// ---------------------------------------------------------------------------
+
+describe('WorkerOrchestrator — auto-ban (Task 5.4)', () => {
+  let db: InstanceType<typeof Database>
+  let deps: WorkerOrchestratorDeps
+  let orchestrator: WorkerOrchestrator
+
+  beforeEach(() => {
+    db = createTestDb()
+    // High quarantine threshold so sender quarantine doesn't interfere
+    const senderHealth = new SenderHealth(db, { quarantineAfterFailures: 100 })
+    deps = createDeps(db, { senderHealth })
+    vi.spyOn(deps.rateLimitGuard, 'getInterMessageDelay').mockReturnValue(0)
+    orchestrator = new WorkerOrchestrator(deps)
+  })
+
+  afterEach(() => db.close())
+
+  it('records ban when message reaches permanently_failed after exhausting retries', async () => {
+    seedDeviceOnline(deps)
+    seedSenderMapping(deps)
+    // Set attempts to maxRetries-1 so next failure triggers permanently_failed
+    const msg = deps.queue.enqueue({
+      to: '5543991938235',
+      body: 'Ban test',
+      idempotencyKey: `ban-trigger-${Date.now()}`,
+      senderNumber: SENDER_NUMBER,
+      maxRetries: 1,
+    })
+    // Attempts already at 0, maxRetries=1 → totalAttempts(1) >= maxRetries(1) → permanent fail
+
+    vi.spyOn(deps.engine, 'send').mockImplementation(async (message) => {
+      deps.queue.updateStatus(message.id, 'locked', 'sending')
+      throw new Error('ADB failed')
+    })
+    vi.spyOn(deps.wahaFallback, 'send').mockRejectedValue(new Error('WAHA down'))
+
+    await orchestrator.tick()
+
+    const updated = deps.queue.getById(msg.id)
+    expect(updated!.status).toBe('permanently_failed')
+    // Ban must be recorded
+    expect(deps.queue.isBlacklisted('5543991938235')).toBe(true)
+  })
+
+  it('does NOT ban when message is requeued for retry (below maxRetries threshold)', async () => {
+    seedDeviceOnline(deps)
+    seedSenderMapping(deps)
+    const msg = deps.queue.enqueue({
+      to: '5543991938111',
+      body: 'Retry test',
+      idempotencyKey: `ban-retry-${Date.now()}`,
+      senderNumber: SENDER_NUMBER,
+      maxRetries: 3, // attempts=0, so 0+1=1 < 3 → requeue, not permanently_failed
+    })
+
+    vi.spyOn(deps.engine, 'send').mockImplementation(async (message) => {
+      deps.queue.updateStatus(message.id, 'locked', 'sending')
+      throw new Error('transient ADB failure')
+    })
+    vi.spyOn(deps.wahaFallback, 'send').mockRejectedValue(new Error('WAHA down'))
+
+    await orchestrator.tick()
+
+    const updated = deps.queue.getById(msg.id)
+    expect(updated!.status).toBe('queued') // requeued, not permanently failed
+    // No ban — single failure below threshold
+    expect(deps.queue.isBlacklisted('5543991938111')).toBe(false)
   })
 })

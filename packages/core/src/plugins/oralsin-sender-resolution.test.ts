@@ -305,4 +305,73 @@ describe('OralsinPlugin sender resolution', () => {
       expect(response.code).toBe(201)
     })
   })
+
+  // Task 5.4 — pre-enqueue ban check
+  describe('banned-number pre-enqueue check (Task 5.4)', () => {
+    beforeEach(() => {
+      senderMapping.create({
+        phoneNumber: '+554396837945',
+        deviceSerial: '9b01005930533036',
+        profileId: 0,
+        appPackage: 'com.whatsapp',
+        wahaSession: 'oralsin_1_4',
+      })
+    })
+
+    const SENDERS = [{ phone: '+554396837945', session: 'oralsin_1_4', pair: 'oralsin-1-4', role: 'primary' as const }]
+
+    it('returns 422 when entire single-item request is banned', async () => {
+      queue.recordBan('5543991938235', 'engine_failures')
+
+      const response = await callEnqueue(
+        buildEnqueueRequest(SENDERS, { idempotency_key: 'ban-422-single' }),
+      )
+
+      expect(response.code).toBe(422)
+      const body = response.body as { error: string; rejected: Array<{ reason: string }> }
+      expect(body.error).toContain('banned')
+      expect(body.rejected).toHaveLength(1)
+      expect(body.rejected[0].reason).toContain('banned')
+    })
+
+    it('returns 422 when ALL items in a batch are banned', async () => {
+      queue.recordBan('5543991938235', 'engine_failures')
+      queue.recordBan('5543991938000', 'precheck_invalid')
+
+      const batch = [
+        buildEnqueueRequest(SENDERS, { idempotency_key: 'ban-422-batch-1', patient: { phone: '5543991938235', name: 'Patient A' } }),
+        buildEnqueueRequest(SENDERS, { idempotency_key: 'ban-422-batch-2', patient: { phone: '5543991938000', name: 'Patient B' } }),
+      ]
+
+      const response = await callEnqueue(batch)
+      expect(response.code).toBe(422)
+      const body = response.body as { error: string; rejected: unknown[] }
+      expect(body.error).toContain('banned')
+      expect(body.rejected).toHaveLength(2)
+    })
+
+    it('returns 201 with mixed result when SOME items are banned', async () => {
+      queue.recordBan('5543991938235', 'engine_failures')
+
+      const batch = [
+        buildEnqueueRequest(SENDERS, { idempotency_key: 'ban-mixed-1', patient: { phone: '5543991938235', name: 'Banned Patient' } }),
+        buildEnqueueRequest(SENDERS, { idempotency_key: 'ban-mixed-2', patient: { phone: '5543991938999', name: 'Clean Patient' } }),
+      ]
+
+      const response = await callEnqueue(batch)
+      expect(response.code).toBe(201)
+      const body = response.body as { enqueued: number; rejected: number }
+      expect(body.enqueued).toBe(1)
+      expect(body.rejected).toBe(1)
+    })
+
+    it('does not record a message for a banned recipient', async () => {
+      queue.recordBan('5543991938235', 'engine_failures')
+
+      await callEnqueue(buildEnqueueRequest(SENDERS, { idempotency_key: 'ban-no-msg' }))
+
+      const msgs = queue.list(undefined, 100).filter(m => m.to === '5543991938235')
+      expect(msgs).toHaveLength(0)
+    })
+  })
 })

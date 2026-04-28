@@ -61,6 +61,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   private defaultDeviceSerial: string | undefined
   private defaultWahaSession: string | undefined
   private hmacSecret: string | undefined
+  private readonly onInvalidPhoneCb: ((phone: string) => void) | undefined
 
   constructor(
     opts: {
@@ -75,6 +76,12 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       hmacSecret?: string
       /** WAHA API client (optional — disables L2 tiebreaker when absent). */
       wahaClient?: WahaApiClient
+      /**
+       * Task 5.4: callback to record a phone in the central blacklist when
+       * precheck confirms outcome=invalid.  Optional — omit to disable ban
+       * recording (useful in isolated test environments).
+       */
+      onInvalidPhone?: (phone: string) => void
     },
     private db: Database.Database,
     private registry: ContactRegistry,
@@ -84,6 +91,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     this.defaultDeviceSerial = opts.defaultDeviceSerial
     this.defaultWahaSession = opts.defaultWahaSession
     this.hmacSecret = opts.hmacSecret
+    this.onInvalidPhoneCb = opts.onInvalidPhone
     this.pg = new PipeboardPg(opts.pgConnectionString, opts.pgMaxConnections ?? 4)
     this.store = new PrecheckJobStore(db)
 
@@ -118,6 +126,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       deviceSerial: this.defaultDeviceSerial,
       wahaSession: this.defaultWahaSession,
       onJobFinished: (jobId) => this.deliverJobCompletedCallback(jobId),
+      onInvalidPhone: this.onInvalidPhoneCb,
     })
 
     ctx.registerRoute('GET',  '/health',     this.handleHealth.bind(this))

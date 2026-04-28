@@ -407,6 +407,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
           defaultWahaSession: process.env.PLUGIN_ADB_PRECHECK_WAHA_SESSION,
           hmacSecret: process.env.PLUGIN_ADB_PRECHECK_HMAC_SECRET,
           wahaClient,
+          // Task 5.4: record precheck-invalid phones in the central blacklist
+          onInvalidPhone: (phone) => queue.recordBan(phone, 'precheck_invalid'),
         },
         db,
         contactRegistry,

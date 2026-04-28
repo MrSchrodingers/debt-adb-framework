@@ -177,3 +177,70 @@ describe('PrecheckScanner — blocklist + archive integration', () => {
     expect(pg.clearInvalidPhone).not.toHaveBeenCalled()
   })
 })
+
+// Task 5.4 — onInvalidPhone callback wiring
+describe('PrecheckScanner — onInvalidPhone ban callback (Task 5.4)', () => {
+  it('calls onInvalidPhone for each invalid phone found', async () => {
+    const onInvalidPhone = vi.fn()
+    const row = buildRow({ telefone_1: '5543991938235', telefone_2: '5511988880000' })
+
+    const { scanner } = buildScanner([row], (phone) => ({
+      exists_on_wa: 0, // all invalid
+      from_cache: false,
+      phone_normalized: phone,
+      source: 'adb',
+      confidence: 0.9,
+      attempts: [],
+    }))
+
+    // Inject the callback by casting deps (scanner constructor merges into deps)
+    const scannerWithBan = new PrecheckScanner({
+      ...( (scanner as unknown as { deps: ScannerDeps }).deps),
+      onInvalidPhone,
+    })
+
+    await scannerWithBan.runJob('job-ban-1', {})
+
+    expect(onInvalidPhone).toHaveBeenCalledTimes(2)
+    expect(onInvalidPhone).toHaveBeenCalledWith('5543991938235')
+    expect(onInvalidPhone).toHaveBeenCalledWith('5511988880000')
+  })
+
+  it('does NOT call onInvalidPhone for valid phones', async () => {
+    const onInvalidPhone = vi.fn()
+    const row = buildRow({ telefone_1: '5543991938235' })
+
+    const { scanner } = buildScanner([row], () => ({
+      exists_on_wa: 1, // valid
+      from_cache: false,
+      phone_normalized: '5543991938235',
+      source: 'adb',
+      confidence: 0.95,
+      attempts: [],
+    }))
+
+    const scannerWithBan = new PrecheckScanner({
+      ...( (scanner as unknown as { deps: ScannerDeps }).deps),
+      onInvalidPhone,
+    })
+
+    await scannerWithBan.runJob('job-ban-2', {})
+
+    expect(onInvalidPhone).not.toHaveBeenCalled()
+  })
+
+  it('is safe when onInvalidPhone is not provided (no crash)', async () => {
+    const row = buildRow({ telefone_1: '5543991938235' })
+    const { scanner } = buildScanner([row], () => ({
+      exists_on_wa: 0,
+      from_cache: false,
+      phone_normalized: '5543991938235',
+      source: 'adb',
+      confidence: 0.9,
+      attempts: [],
+    }))
+
+    // No onInvalidPhone in deps — must not throw
+    await expect(scanner.runJob('job-ban-3', {})).resolves.not.toThrow()
+  })
+})

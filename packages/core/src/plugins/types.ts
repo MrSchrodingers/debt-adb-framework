@@ -34,6 +34,12 @@ export interface PluginContext {
    *  Present when the server boots with a DB — undefined in minimal test fixtures
    *  that don't pass an IdempotencyCache to PluginLoader. */
   idempotencyCache?: IdempotencyCache
+  /**
+   * Task 5.4: check whether a phone number is in the central blacklist.
+   * Plugins should call this before building enqueue params to surface
+   * rejected-due-to-ban items in their own response bodies.
+   */
+  isBlacklisted(phone: string): boolean
 }
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'

@@ -218,6 +218,10 @@ export class PluginLoader {
       logger,
 
       idempotencyCache: this.idempotencyCache,
+
+      isBlacklisted: (phone: string): boolean => {
+        return this.queue.isBlacklisted(phone)
+      },
     }
   }
 }

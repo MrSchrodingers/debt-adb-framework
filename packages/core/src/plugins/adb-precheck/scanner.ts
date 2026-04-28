@@ -20,6 +20,12 @@ export interface ScannerDeps {
   wahaSession?: string
   /** Called after each finished job (completed/cancelled/failed). */
   onJobFinished?: (jobId: string) => Promise<void>
+  /**
+   * Task 5.4: called for each phone whose outcome is 'invalid' so the
+   * central blacklist is updated. Optional — omit in tests that do not
+   * need ban recording.
+   */
+  onInvalidPhone?: (normalizedPhone: string) => void
 }
 
 /**
@@ -85,6 +91,8 @@ export class PrecheckScanner {
                 if (!primaryValid) primaryValid = r.phone_normalized
               } else if (outcome === 'invalid') {
                 invalidCount++
+                // Task 5.4: record invalid phones in the central blacklist
+                this.deps.onInvalidPhone?.(r.phone_normalized)
               } else {
                 errorCount++
               }
