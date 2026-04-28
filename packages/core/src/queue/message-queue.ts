@@ -126,6 +126,24 @@ export class MessageQueue {
       this.db.exec("ALTER TABLE messages ADD COLUMN sent_at TEXT DEFAULT NULL")
     }
 
+    // Task 7.5: screenshot lifecycle columns
+    const msgColNames = new Set(cols.map(c => c.name))
+    if (!msgColNames.has('screenshot_status')) {
+      this.db.exec('ALTER TABLE messages ADD COLUMN screenshot_status TEXT')
+    }
+    if (!msgColNames.has('screenshot_skip_reason')) {
+      this.db.exec('ALTER TABLE messages ADD COLUMN screenshot_skip_reason TEXT')
+    }
+    if (!msgColNames.has('screenshot_deleted_at')) {
+      this.db.exec('ALTER TABLE messages ADD COLUMN screenshot_deleted_at TEXT')
+    }
+    if (!msgColNames.has('screenshot_size_bytes')) {
+      this.db.exec('ALTER TABLE messages ADD COLUMN screenshot_size_bytes INTEGER')
+    }
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_messages_screenshot_status ON messages(screenshot_status)',
+    )
+
     // Task 5.4: extend blacklist with hit counter + last_hit_at
     const blCols = this.db.prepare('PRAGMA table_info(blacklist)').all() as { name: string }[]
     const blColNames = new Set(blCols.map(c => c.name))
@@ -656,6 +674,10 @@ export class MessageQueue {
       fallbackUsed: (row.fallback_used as number) ?? 0,
       fallbackProvider: (row.fallback_provider as string) ?? null,
       screenshotPath: (row.screenshot_path as string) ?? null,
+      screenshotStatus: (row.screenshot_status as string) ?? null,
+      screenshotSkipReason: (row.screenshot_skip_reason as string) ?? null,
+      screenshotDeletedAt: (row.screenshot_deleted_at as string) ?? null,
+      screenshotSizeBytes: (row.screenshot_size_bytes as number) ?? null,
       mediaUrl: (row.media_url as string) ?? null,
       mediaType: (row.media_type as string) ?? null,
       mediaCaption: (row.media_caption as string) ?? null,
@@ -749,6 +771,64 @@ export class MessageQueue {
     this.db.prepare(
       "UPDATE messages SET screenshot_path = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
     ).run(screenshotPath, id)
+  }
+
+  markScreenshotPersisted(id: string, screenshotPath: string, sizeBytes: number): void {
+    this.db.prepare(`
+      UPDATE messages
+      SET screenshot_path = ?,
+          screenshot_status = 'persisted',
+          screenshot_size_bytes = ?,
+          screenshot_skip_reason = NULL,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = ?
+    `).run(screenshotPath, sizeBytes, id)
+  }
+
+  markScreenshotSkipped(id: string, reason: string): void {
+    this.db.prepare(`
+      UPDATE messages
+      SET screenshot_status = 'skipped_by_policy',
+          screenshot_skip_reason = ?,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = ?
+    `).run(reason, id)
+  }
+
+  markScreenshotFailed(id: string, reason: string): void {
+    this.db.prepare(`
+      UPDATE messages
+      SET screenshot_status = 'persistence_failed',
+          screenshot_skip_reason = ?,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = ?
+    `).run(reason, id)
+  }
+
+  markScreenshotDeleted(id: string, deletedAtIso: string, reason: string): void {
+    this.db.prepare(`
+      UPDATE messages
+      SET screenshot_status = 'deleted_by_retention',
+          screenshot_deleted_at = ?,
+          screenshot_skip_reason = ?,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = ?
+    `).run(deletedAtIso, reason, id)
+  }
+
+  /**
+   * Returns messages that have a persisted screenshot older than the given cutoff date.
+   * Used by the retention sweep to find and delete stale screenshots.
+   */
+  findScreenshotsOlderThan(cutoff: Date): Array<{ id: string; screenshotPath: string }> {
+    const cutoffIso = cutoff.toISOString()
+    const rows = this.db.prepare(`
+      SELECT id, screenshot_path FROM messages
+      WHERE screenshot_status = 'persisted'
+        AND screenshot_path IS NOT NULL
+        AND sent_at < ?
+    `).all(cutoffIso) as Array<{ id: string; screenshot_path: string }>
+    return rows.map(r => ({ id: r.id, screenshotPath: r.screenshot_path }))
   }
 
   markFallbackUsed(id: string, provider: string): void {

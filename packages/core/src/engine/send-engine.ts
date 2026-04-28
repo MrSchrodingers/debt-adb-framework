@@ -291,24 +291,29 @@ export class SendEngine {
 
       let screenshot: Buffer = Buffer.alloc(0)
       if (shouldCapture) {
-        screenshot = await this.adb.screenshot(deviceSerial) as Buffer
-        const screenshotPath = this.screenshotPolicy
-          ? this.screenshotPolicy.getOutputPath(message.id)
-          : `reports/sends/${message.id}.png`
-
         try {
+          screenshot = await this.adb.screenshot(deviceSerial) as Buffer
+          const screenshotPath = this.screenshotPolicy
+            ? this.screenshotPolicy.getOutputPath(message.id)
+            : `reports/sends/${message.id}.png`
+
           await mkdir('reports/sends', { recursive: true })
           const processed = this.screenshotPolicy
             ? await this.screenshotPolicy.processBuffer(screenshot)
             : screenshot
           await writeFile(screenshotPath, processed)
-          this.queue.updateScreenshotPath(message.id, screenshotPath)
+          this.queue.markScreenshotPersisted(message.id, screenshotPath, processed.length)
           this.record(message.id, 'screenshot_saved', { path: screenshotPath, format: this.screenshotPolicy?.format ?? 'png' })
-        } catch {
+        } catch (err) {
           // Screenshot persistence is best-effort — don't fail the send
+          const reason = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+          this.queue.markScreenshotFailed(message.id, reason)
+          this.record(message.id, 'screenshot_failed', { reason })
         }
       } else {
-        this.record(message.id, 'screenshot_skipped', { mode: 'sample' })
+        const skipReason = this.screenshotPolicy?.skipReason() ?? 'policy'
+        this.queue.markScreenshotSkipped(message.id, skipReason)
+        this.record(message.id, 'screenshot_skipped', { mode: 'sample', reason: skipReason })
       }
 
       span.setAttributes({ 'send.method': method, 'result': 'sent' })
