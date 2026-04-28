@@ -3,6 +3,7 @@ import { createHmac } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { WebhookHandler } from './webhook-handler.js'
 import { MessageHistory } from './message-history.js'
+import { AckHistory } from './ack-history.js'
 import { DispatchEmitter } from '../events/index.js'
 import type { WahaWebhookPayload } from './types.js'
 
@@ -53,6 +54,7 @@ describe('WebhookHandler', () => {
   let db: Database.Database
   let emitter: DispatchEmitter
   let history: MessageHistory
+  let ackHistory: AckHistory
   let handler: WebhookHandler
 
   beforeEach(() => {
@@ -61,7 +63,9 @@ describe('WebhookHandler', () => {
     emitter = new DispatchEmitter()
     history = new MessageHistory(db)
     history.initialize()
-    handler = new WebhookHandler(emitter, history, { hmacSecret: HMAC_SECRET })
+    ackHistory = new AckHistory(db, history)
+    ackHistory.initialize()
+    handler = new WebhookHandler(emitter, history, ackHistory, { hmacSecret: HMAC_SECRET })
   })
 
   afterEach(() => {
@@ -224,6 +228,64 @@ describe('WebhookHandler', () => {
 
       expect(result.processed).toBe(true)
       expect(result.event).toBe('message.ack')
+    })
+
+    it('persists ack to message_ack_history with denormalized sender/recipient', async () => {
+      history.insert({
+        direction: 'outgoing',
+        fromNumber: '554396835104',
+        toNumber: '5543991938235',
+        text: 'Test',
+        wahaMessageId: 'true_554396835104@c.us_PERSIST',
+        capturedVia: 'waha_webhook',
+      })
+
+      const ackTimestamp = Math.floor(Date.now() / 1000)
+      const payload: WahaWebhookPayload = {
+        event: 'message.ack',
+        session: 'oralsin_main_1',
+        payload: {
+          id: 'true_554396835104@c.us_PERSIST',
+          ack: 3,
+          timestamp: ackTimestamp,
+        },
+        engine: 'GOWS',
+      }
+
+      await handler.processWebhook(payload)
+
+      const records = ackHistory.queryByMessageId('true_554396835104@c.us_PERSIST')
+      expect(records).toHaveLength(1)
+      expect(records[0].ackLevel).toBe(3)
+      expect(records[0].ackLevelName).toBe('read')
+      expect(records[0].senderPhone).toBe('554396835104')
+      expect(records[0].recipientPhone).toBe('5543991938235')
+      expect(records[0].readAt).not.toBeNull()
+    })
+
+    it('does not throw on duplicate ack (UNIQUE conflict on waha_message_id+ack_level)', async () => {
+      history.insert({
+        direction: 'outgoing',
+        fromNumber: '554396835104',
+        toNumber: '5543991938235',
+        text: 'Test',
+        wahaMessageId: 'true_554396835104@c.us_DUPACK',
+        capturedVia: 'waha_webhook',
+      })
+
+      const payload: WahaWebhookPayload = {
+        event: 'message.ack',
+        session: 'oralsin_main_1',
+        payload: { id: 'true_554396835104@c.us_DUPACK', ack: 3, timestamp: Date.now() / 1000 },
+        engine: 'GOWS',
+      }
+
+      await handler.processWebhook(payload)
+      // Replay same ack → must not throw, must not duplicate
+      await expect(handler.processWebhook(payload)).resolves.toBeDefined()
+
+      const records = ackHistory.queryByMessageId('true_554396835104@c.us_DUPACK')
+      expect(records).toHaveLength(1)
     })
   })
 
