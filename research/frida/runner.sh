@@ -26,13 +26,12 @@ echo "[runner] Press Ctrl+C to stop."
 echo ""
 
 # Spawn WhatsApp in fresh state, attach hooks from the start, and pipe all
-# send() output (JSONL) to the output file. --no-pause lets WA continue
-# running immediately without waiting for a resume() call.
+# send() output (JSONL) to the output file. Frida 17.x removed --no-pause
+# (auto-resume is now default for -f spawn mode).
 frida \
   -U \
   -D "$DEVICE_SERIAL" \
   -f com.whatsapp \
   -l "$SCRIPT_DIR/hook-whatsapp.js" \
   --parameters "{\"serial\":\"$DEVICE_SERIAL\"}" \
-  --no-pause \
   -o "$OUT"

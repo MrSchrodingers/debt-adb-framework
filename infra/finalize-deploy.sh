@@ -31,24 +31,56 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq apktool jq python3-pip python3-full python3-venv
 
-# ── Step 2: frida-tools (per-user pip) ────────────────────────────
+# ── Step 2: frida-tools (per-user pip) + frida-server download ────
 echo ""
-echo "[2/7] Installing frida-tools for user '$ADB_USER'..."
-if ! sudo -u "$ADB_USER" bash -lc 'command -v frida >/dev/null'; then
-  sudo -u "$ADB_USER" bash -lc '
+echo "[2/7] Installing frida-tools + frida-server (host + device)..."
+sudo -u "$ADB_USER" bash -lc '
+  set -e
+  if ! command -v ~/.venv-frida/bin/frida >/dev/null 2>&1; then
     if [ ! -d ~/.venv-frida ]; then python3 -m venv ~/.venv-frida; fi
     ~/.venv-frida/bin/pip install --upgrade pip frida-tools >/dev/null
-    if ! grep -q ".venv-frida/bin" ~/.bashrc 2>/dev/null; then
-      echo "export PATH=\"\$HOME/.venv-frida/bin:\$PATH\"" >> ~/.bashrc
-    fi
-    if ! grep -q ".venv-frida/bin" ~/.zshrc 2>/dev/null; then
-      echo "export PATH=\"\$HOME/.venv-frida/bin:\$PATH\"" >> ~/.zshrc
-    fi
-  '
-  echo "  frida installed at ~$ADB_USER/.venv-frida/bin/frida"
+    grep -q ".venv-frida/bin" ~/.bashrc 2>/dev/null || echo "export PATH=\"\$HOME/.venv-frida/bin:\$PATH\"" >> ~/.bashrc
+    grep -q ".venv-frida/bin" ~/.zshrc  2>/dev/null || echo "export PATH=\"\$HOME/.venv-frida/bin:\$PATH\"" >> ~/.zshrc
+  fi
+  FRIDA_VER="$(~/.venv-frida/bin/frida --version)"
+  if [ ! -f ~/frida-server ]; then
+    echo "  downloading frida-server-${FRIDA_VER}-android-arm64..."
+    curl -sSL -o ~/frida-server.xz "https://github.com/frida/frida/releases/download/${FRIDA_VER}/frida-server-${FRIDA_VER}-android-arm64.xz"
+    xz -d ~/frida-server.xz
+    chmod +x ~/frida-server
+  fi
+'
+echo "  frida client: $(sudo -u "$ADB_USER" bash -lc '~/.venv-frida/bin/frida --version')"
+echo "  frida-server binary: $(ls -la $(getent passwd $ADB_USER | cut -d: -f6)/frida-server 2>/dev/null | awk "{print \$5}") bytes"
+
+# Install/start frida-server on the device if a device is connected
+SERIAL="$(sudo -u "$ADB_USER" adb devices 2>/dev/null | awk 'NR==2 {print $1}')"
+if [ -n "$SERIAL" ]; then
+  echo "  pushing frida-server to device $SERIAL..."
+  sudo -u "$ADB_USER" bash -lc "
+    cd /var/www/debt-adb-framework
+    bash research/frida/setup-device.sh '$SERIAL' ~/frida-server 2>&1 | tail -5
+  " || echo "  (frida-server setup had warnings; check manually with research/frida/setup-device.sh)"
 else
-  echo "  frida already installed; skipping."
+  echo "  no ADB device connected; skipping frida-server push."
 fi
+
+# ── Step 2b: apktool-modern (upstream JAR, distro 2.7 is too old for WA) ──
+echo ""
+echo "[2b/7] Installing apktool-modern (upstream JAR)..."
+sudo -u "$ADB_USER" bash -lc '
+  set -e
+  mkdir -p ~/.local/bin
+  if [ ! -f ~/.local/bin/apktool.jar ]; then
+    curl -sSL -o ~/.local/bin/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.10.0/apktool_2.10.0.jar
+  fi
+  cat > ~/.local/bin/apktool-modern << "EOF"
+#!/usr/bin/env bash
+exec java -jar "$HOME/.local/bin/apktool.jar" "$@"
+EOF
+  chmod +x ~/.local/bin/apktool-modern
+  ~/.local/bin/apktool-modern --version
+'
 
 # ── Step 3: Jaeger ────────────────────────────────────────────────
 echo ""
@@ -95,14 +127,23 @@ systemctl is-active dispatch-core.service
 echo ""
 echo "[7/7] Smoke tests..."
 
-echo -n "  apktool         → "
-sudo -u "$ADB_USER" apktool --version 2>&1 | head -1 || echo "FAIL"
+echo -n "  apktool-modern  → "
+sudo -u "$ADB_USER" bash -lc '~/.local/bin/apktool-modern --version' 2>&1 | head -1 || echo "FAIL"
 
 echo -n "  jq              → "
 jq --version || echo "FAIL"
 
-echo -n "  frida           → "
+echo -n "  frida (client)  → "
 sudo -u "$ADB_USER" bash -lc '~/.venv-frida/bin/frida --version' 2>&1 | head -1 || echo "FAIL"
+
+echo -n "  frida-server    → "
+SERIAL="$(sudo -u "$ADB_USER" adb devices 2>/dev/null | awk 'NR==2 {print $1}')"
+if [ -n "$SERIAL" ]; then
+  sudo -u "$ADB_USER" adb -s "$SERIAL" shell "su -c 'pidof frida-server'" 2>/dev/null \
+    && echo "  (running on $SERIAL)" || echo "NOT RUNNING on device"
+else
+  echo "no ADB device"
+fi
 
 echo -n "  Jaeger UI       → "
 if curl -sS --max-time 5 -o /dev/null -w "HTTP %{http_code}" http://127.0.0.1:16686/ ; then echo ""; else echo " FAIL"; fi
