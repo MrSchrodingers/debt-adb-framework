@@ -378,6 +378,39 @@ export class MessageQueue {
     return this.rowToMessage(row)
   }
 
+  /**
+   * Replay a message from any terminal or failed state back to `queued`.
+   * Unlike `requeueForRetry`, this accepts `permanently_failed` and `waiting_device`
+   * as source states, and resets `attempts` to 0 so the full retry budget is restored.
+   *
+   * Refuses to replay `sent` messages unless `allowSent` is true.
+   */
+  replay(id: string, allowSent = false): Message {
+    const current = this.db.prepare(
+      'SELECT status FROM messages WHERE id = ?',
+    ).get(id) as { status: string } | undefined
+
+    if (!current) throw new Error(`Message not found: ${id}`)
+
+    if (current.status === 'sent' && !allowSent) {
+      throw new Error(`Refusing to replay message ${id} with status 'sent'. Pass allowSent=true to override.`)
+    }
+
+    const row = this.db.prepare(`
+      UPDATE messages
+      SET status = 'queued',
+          attempts = 0,
+          locked_by = NULL,
+          locked_at = NULL,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = ?
+      RETURNING *
+    `).get(id) as Record<string, unknown> | undefined
+
+    if (!row) throw new Error(`Failed to replay message: ${id}`)
+    return this.rowToMessage(row)
+  }
+
   markPermanentlyFailed(id: string, attempts?: number): Message {
     const attemptsClause = attempts !== undefined ? ', attempts = ?' : ''
     const binds = attempts !== undefined

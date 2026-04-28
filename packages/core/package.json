@@ -8,7 +8,8 @@
     ".": "./dist/index.js"
   },
   "bin": {
-    "dispatch": "dist/cli.js"
+    "dispatch": "dist/cli.js",
+    "dispatch-replay": "dist/cli/replay.js"
   },
   "scripts": {
     "dev": "tsx watch src/main.ts",
