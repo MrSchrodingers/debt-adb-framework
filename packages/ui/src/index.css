@@ -63,6 +63,50 @@ html, body, #root {
   50%      { opacity: 1;    transform: scale(1.04); }
 }
 
+/* ── Light theme ────────────────────────────────────────────────────────────
+   Activated by data-theme="light" on <html> (set via preferences-menu.tsx).
+   Overrides the dark-first palette with neutral warm-whites.                */
+[data-theme="light"] {
+  --color-ink-950: #f8f9f8;
+  --color-ink-900: #f0f3f1;
+  --color-ink-800: #e4eae6;
+  --color-ink-700: #d0d9d4;
+}
+
+[data-theme="light"] html,
+[data-theme="light"] body,
+[data-theme="light"] #root {
+  background-color: var(--color-ink-950);
+  color: #1a201d;
+}
+
+/* Tailwind utility surface-swaps in light mode */
+[data-theme="light"] .bg-zinc-950 { background-color: #f8f9f8; }
+[data-theme="light"] .bg-zinc-900 { background-color: #f0f3f1; }
+[data-theme="light"] .bg-zinc-900\/95 { background-color: rgba(240, 243, 241, 0.95); }
+[data-theme="light"] .bg-zinc-900\/60 { background-color: rgba(240, 243, 241, 0.6); }
+[data-theme="light"] .bg-zinc-900\/80 { background-color: rgba(240, 243, 241, 0.8); }
+[data-theme="light"] .bg-zinc-900\/40 { background-color: rgba(240, 243, 241, 0.4); }
+[data-theme="light"] .bg-zinc-950\/80 { background-color: rgba(248, 249, 248, 0.8); }
+[data-theme="light"] .bg-zinc-800 { background-color: #e4eae6; }
+[data-theme="light"] .bg-zinc-800\/60 { background-color: rgba(228, 234, 230, 0.6); }
+[data-theme="light"] .bg-zinc-800\/30 { background-color: rgba(228, 234, 230, 0.3); }
+[data-theme="light"] .bg-zinc-800\/80 { background-color: rgba(228, 234, 230, 0.8); }
+[data-theme="light"] .bg-zinc-700\/60 { background-color: rgba(208, 217, 212, 0.6); }
+[data-theme="light"] .border-zinc-800 { border-color: #d0d9d4; }
+[data-theme="light"] .border-zinc-800\/60 { border-color: rgba(208, 217, 212, 0.6); }
+[data-theme="light"] .border-zinc-800\/50 { border-color: rgba(208, 217, 212, 0.5); }
+[data-theme="light"] .border-zinc-700\/40 { border-color: rgba(180, 195, 187, 0.6); }
+[data-theme="light"] .border-zinc-700\/60 { border-color: rgba(180, 195, 187, 0.7); }
+[data-theme="light"] .text-zinc-100 { color: #1a201d; }
+[data-theme="light"] .text-zinc-200 { color: #2d3830; }
+[data-theme="light"] .text-zinc-300 { color: #3e4e46; }
+[data-theme="light"] .text-zinc-400 { color: #5a6e64; }
+[data-theme="light"] .text-zinc-500 { color: #7a9085; }
+[data-theme="light"] .text-zinc-600 { color: #96b0a4; }
+[data-theme="light"] .border-white\/5 { border-color: rgba(0, 0, 0, 0.08); }
+[data-theme="light"] .bg-white\/\[0\.02\] { background-color: rgba(0, 0, 0, 0.03); }
+
 /* Subtle animated mesh-gradient backdrop for the login screen.
    Pure CSS, no images, ~140 bytes once minified. */
 @keyframes brand-aurora {
