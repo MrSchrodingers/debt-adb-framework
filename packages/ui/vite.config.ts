@@ -14,37 +14,60 @@ export default defineConfig({
       // Generates sw.js via workbox-build; keep the manifest separate.
       manifest: false, // We provide our own manifest.webmanifest in public/
       workbox: {
-        // Network-first for API and socket calls; cache-first for static assets.
+        // Order matters — first match wins. Bypass binary/streaming endpoints
+        // BEFORE the generic /api/ NetworkFirst rule, otherwise NS_BINDING_ABORTED
+        // happens when SW caches a partial PNG/stream response.
         runtimeCaching: [
+          // Screenshot images (PNG bytes) — never cache, bypass SW
           {
-            // All API requests — network-first with fallback
+            urlPattern: /\/api\/v1\/messages\/[^/]+\/screenshot/,
+            handler: 'NetworkOnly',
+          },
+          // Live device screen — periodic refresh, no cache
+          {
+            urlPattern: /\/api\/v1\/devices\/[^/]+\/screen/,
+            handler: 'NetworkOnly',
+          },
+          // Health/metrics — no cache (stale data is misleading)
+          {
+            urlPattern: /\/(healthz|metrics)/,
+            handler: 'NetworkOnly',
+          },
+          // Socket.IO long-poll/upgrade — must NEVER be cached or buffered
+          {
+            urlPattern: /\/socket\.io\//,
+            handler: 'NetworkOnly',
+          },
+          // JSON API — network-first with short timeout + small cache
+          {
             urlPattern: /\/api\//,
             handler: 'NetworkFirst',
             options: {
               cacheName: 'dispatch-api-cache',
               networkTimeoutSeconds: 5,
-              expiration: {
-                maxEntries: 50,
-                maxAgeSeconds: 60 * 5, // 5 minutes
-              },
+              expiration: { maxEntries: 50, maxAgeSeconds: 60 * 5 },
             },
           },
+          // Static font resources — stale-while-revalidate
           {
-            // Static font resources — stale-while-revalidate
             urlPattern: /fonts\.(googleapis|gstatic)\.com/,
             handler: 'StaleWhileRevalidate',
             options: {
               cacheName: 'dispatch-fonts-cache',
-              expiration: {
-                maxEntries: 20,
-                maxAgeSeconds: 60 * 60 * 24 * 30, // 30 days
-              },
+              expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 * 30 },
             },
           },
         ],
-        // Skip caching socket.io and API routes in the precache manifest
         navigateFallback: 'index.html',
+        // Don't precache the dynamic API JSON or any large binary
+        navigateFallbackDenylist: [/^\/api\//, /^\/socket\.io\//, /^\/admin\/jaeger/],
         globPatterns: ['**/*.{js,css,html,ico,png,webp,svg,woff2}'],
+        // Drop any cache built by an older SW version. Combined with skipWaiting
+        // (already in registerType: 'autoUpdate'), this clears stale screenshot
+        // /image entries the previous SW may have stored.
+        cleanupOutdatedCaches: true,
+        skipWaiting: true,
+        clientsClaim: true,
       },
       devOptions: {
         // Enable SW in dev for local testing
