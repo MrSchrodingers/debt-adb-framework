@@ -1,9 +1,10 @@
 import { timingSafeEqual } from 'node:crypto'
 import { z } from 'zod'
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { signJwt } from './jwt.js'
 import { verifyPassword } from './password-hash.js'
 import type { RefreshTokenStore } from './refresh-token.js'
+import type { RateLimitOptions } from '@fastify/rate-limit'
 
 const LoginSchema = z.object({
   username: z.string().min(1).max(120),
@@ -30,6 +31,12 @@ export interface AuthLoginConfig {
    * backward compat with tests that don't care about refresh).
    */
   refreshTokenStore?: RefreshTokenStore
+  /**
+   * Task 11.1: optional route-level rate limit config.
+   * When omitted, no rate limit is applied on this route (useful in tests
+   * where @fastify/rate-limit is not registered).
+   */
+  rateLimitConfig?: RateLimitOptions
 }
 
 /**
@@ -57,7 +64,7 @@ export function registerAuthLogin(server: FastifyInstance, cfg: AuthLoginConfig)
   const ttl = cfg.ttlSeconds ?? 15 * 60
   const refreshTtl = cfg.refreshTtlSeconds ?? 24 * 60 * 60
 
-  server.post('/api/v1/auth/login', async (request, reply) => {
+  const handler = async (request: FastifyRequest, reply: FastifyReply) => {
     const parsed = LoginSchema.safeParse(request.body)
     if (!parsed.success) {
       return reply.status(400).send({ error: 'invalid_payload' })
@@ -86,5 +93,12 @@ export function registerAuthLogin(server: FastifyInstance, cfg: AuthLoginConfig)
     }
 
     return reply.send({ token, expires_at: expiresAt, sub: cfg.username })
+  }
+
+  server.route({
+    method: 'POST',
+    url: '/api/v1/auth/login',
+    config: cfg.rateLimitConfig ? { rateLimit: cfg.rateLimitConfig } : {},
+    handler,
   })
 }
