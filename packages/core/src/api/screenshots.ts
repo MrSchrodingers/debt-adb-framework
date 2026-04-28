@@ -16,7 +16,14 @@ export function registerScreenshotRoutes(server: FastifyInstance, queue: Message
     }
 
     if (!message.screenshotPath) {
-      return reply.status(404).send({ error: 'No screenshot available for this message' })
+      // Structured 404 — distinguish why the screenshot is absent
+      return reply.status(404).send({
+        error: 'screenshot_unavailable',
+        code: message.screenshotStatus ?? 'never_persisted',
+        reason: message.screenshotSkipReason ?? null,
+        deleted_at: message.screenshotDeletedAt ?? null,
+        message_sent_at: message.sentAt ?? null,
+      })
     }
 
     // Prevent path traversal — only serve files within reports/sends/
@@ -28,7 +35,14 @@ export function registerScreenshotRoutes(server: FastifyInstance, queue: Message
     try {
       await stat(resolvedPath)
     } catch {
-      return reply.status(404).send({ error: 'Screenshot file not found on disk' })
+      // Path set in DB but file gone (manual deletion or race with retention)
+      return reply.status(404).send({
+        error: 'screenshot_unavailable',
+        code: 'file_missing_on_disk',
+        reason: 'Path is set in DB but file was removed (retention or manual deletion).',
+        expected_path: message.screenshotPath,
+        message_sent_at: message.sentAt ?? null,
+      })
     }
 
     const contentType = resolvedPath.endsWith('.jpg') || resolvedPath.endsWith('.jpeg')

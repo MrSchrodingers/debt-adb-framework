@@ -10,6 +10,8 @@
  * If sharp is not installed, processBuffer falls back to returning the original PNG.
  * Install with: npm install sharp (adds ~30MB native dep — only if you want JPEG).
  */
+import { unlink } from 'node:fs/promises'
+import { resolve } from 'node:path'
 
 export interface ScreenshotPolicyConfig {
   mode: 'all' | 'sample' | 'none'
@@ -53,6 +55,15 @@ export class ScreenshotPolicy {
     return Math.random() < this.config.sampleRate
   }
 
+  /**
+   * Human-readable reason why the screenshot was skipped.
+   * Only meaningful after shouldCapture() returns false.
+   */
+  skipReason(): string {
+    if (this.config.mode === 'none') return 'mode=none'
+    return `mode=sample,sampleRate=${this.config.sampleRate}`
+  }
+
   /** Get the file extension for screenshots */
   get format(): 'png' | 'jpeg' {
     return this.config.format
@@ -88,5 +99,42 @@ export class ScreenshotPolicy {
 
   get retentionDays(): number {
     return this.config.retentionDays
+  }
+
+  /**
+   * Delete screenshot files that are older than retentionDays.
+   * Marks each message as 'deleted_by_retention' in the DB regardless of whether
+   * the file was present — ensures screenshot_status is always up-to-date.
+   *
+   * @param queue  An object that exposes findScreenshotsOlderThan + markScreenshotDeleted.
+   * @param now    Reference time (injectable for testing).
+   * @returns      Count of rows processed.
+   */
+  async retentionSweep(
+    queue: {
+      findScreenshotsOlderThan(cutoff: Date): Array<{ id: string; screenshotPath: string }>
+      markScreenshotDeleted(id: string, deletedAtIso: string, reason: string): void
+    },
+    now: Date = new Date(),
+  ): Promise<{ deleted: number }> {
+    const cutoff = new Date(now.getTime() - this.config.retentionDays * 86_400_000)
+    const stale = queue.findScreenshotsOlderThan(cutoff)
+    let deleted = 0
+    for (const m of stale) {
+      try {
+        await unlink(resolve(m.screenshotPath))
+        queue.markScreenshotDeleted(m.id, now.toISOString(), 'retention_sweep')
+        deleted++
+      } catch (err) {
+        // File already gone — still mark as deleted in DB so the status is correct
+        queue.markScreenshotDeleted(
+          m.id,
+          now.toISOString(),
+          `retention_sweep_missing: ${(err as Error).message}`,
+        )
+        deleted++
+      }
+    }
+    return { deleted }
   }
 }

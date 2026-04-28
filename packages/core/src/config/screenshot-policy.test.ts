@@ -1,6 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { ScreenshotPolicy } from './screenshot-policy.js'
 
+// ── Minimal queue stub for retentionSweep tests ──
+function makeQueueStub(rows: Array<{ id: string; screenshotPath: string }> = []) {
+  const deleted: Array<{ id: string; deletedAtIso: string; reason: string }> = []
+  return {
+    findScreenshotsOlderThan: vi.fn().mockReturnValue(rows),
+    markScreenshotDeleted: vi.fn().mockImplementation(
+      (id: string, deletedAtIso: string, reason: string) => { deleted.push({ id, deletedAtIso, reason }) },
+    ),
+    _deleted: deleted,
+  }
+}
+
 describe('ScreenshotPolicy', () => {
   describe('shouldCapture', () => {
     it('returns true when mode=all regardless of success', () => {
@@ -155,6 +167,84 @@ describe('ScreenshotPolicy', () => {
       // Default mode=all
       expect(policy.shouldCapture(true)).toBe(true)
       expect(policy.shouldCapture(false)).toBe(true)
+    })
+  })
+
+  describe('skipReason()', () => {
+    it('returns "mode=none" when mode is none', () => {
+      const policy = new ScreenshotPolicy({ mode: 'none' })
+      expect(policy.skipReason()).toBe('mode=none')
+    })
+
+    it('encodes mode + sampleRate for sample mode', () => {
+      const policy = new ScreenshotPolicy({ mode: 'sample', sampleRate: 0.2 })
+      expect(policy.skipReason()).toBe('mode=sample,sampleRate=0.2')
+    })
+
+    it('includes sampleRate=0 for extreme case', () => {
+      const policy = new ScreenshotPolicy({ mode: 'sample', sampleRate: 0 })
+      expect(policy.skipReason()).toContain('sampleRate=0')
+    })
+  })
+
+  describe('retentionSweep()', () => {
+    it('returns { deleted: 0 } when no stale screenshots', async () => {
+      const policy = new ScreenshotPolicy({ retentionDays: 7 })
+      const queue = makeQueueStub([])
+      const result = await policy.retentionSweep(queue, new Date())
+      expect(result.deleted).toBe(0)
+    })
+
+    it('calls markScreenshotDeleted for each stale screenshot (files may or may not exist)', async () => {
+      const policy = new ScreenshotPolicy({ retentionDays: 7 })
+
+      const rows = [
+        { id: 'msg-1', screenshotPath: 'reports/sends/msg-1.png' },
+        { id: 'msg-2', screenshotPath: 'reports/sends/msg-2.png' },
+      ]
+      const queue = makeQueueStub(rows)
+      const now = new Date('2026-04-27T12:00:00.000Z')
+      const result = await policy.retentionSweep(queue, now)
+
+      // Regardless of whether files exist, all rows must be processed
+      expect(result.deleted).toBe(2)
+      expect(queue.markScreenshotDeleted).toHaveBeenCalledTimes(2)
+      // Calls should include the message ids and the correct timestamp
+      const calls = (queue.markScreenshotDeleted as ReturnType<typeof vi.fn>).mock.calls
+      expect(calls.some(([id]: [string]) => id === 'msg-1')).toBe(true)
+      expect(calls.some(([id]: [string]) => id === 'msg-2')).toBe(true)
+      calls.forEach(([, ts]: [string, string]) => expect(ts).toBe(now.toISOString()))
+    })
+
+    it('still marks deleted and counts when file does not exist on disk', async () => {
+      const policy = new ScreenshotPolicy({ retentionDays: 7 })
+      const { default: fsPromises } = await import('node:fs/promises')
+      vi.spyOn(fsPromises, 'unlink').mockRejectedValue(Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' }))
+
+      const rows = [{ id: 'msg-3', screenshotPath: 'reports/sends/msg-3.png' }]
+      const queue = makeQueueStub(rows)
+      const now = new Date('2026-04-27T13:00:00.000Z')
+      const result = await policy.retentionSweep(queue, now)
+
+      expect(result.deleted).toBe(1)
+      expect(queue.markScreenshotDeleted).toHaveBeenCalledWith(
+        'msg-3',
+        now.toISOString(),
+        expect.stringContaining('retention_sweep_missing'),
+      )
+      vi.restoreAllMocks()
+    })
+
+    it('uses configured retentionDays as cutoff for findScreenshotsOlderThan', async () => {
+      const policy = new ScreenshotPolicy({ retentionDays: 14 })
+      const queue = makeQueueStub([])
+      const now = new Date('2026-04-27T00:00:00.000Z')
+      await policy.retentionSweep(queue, now)
+
+      const [cutoff] = (queue.findScreenshotsOlderThan as ReturnType<typeof vi.fn>).mock.calls[0]
+      const expectedCutoff = new Date(now.getTime() - 14 * 86_400_000)
+      // Allow 1 second tolerance for test timing
+      expect(Math.abs(cutoff.getTime() - expectedCutoff.getTime())).toBeLessThan(1000)
     })
   })
 })

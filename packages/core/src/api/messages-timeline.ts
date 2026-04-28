@@ -61,19 +61,9 @@ export function registerMessageTimelineRoutes(
 
     if (message.screenshotPath) {
       screenshotUrl = `/api/v1/messages/${id}/screenshot`
-      screenshotCode = 'persisted'
+      screenshotCode = message.screenshotStatus ?? 'persisted'
     } else {
-      // Try to get screenshot_status from DB (if Phase 7.5 columns exist) — defensive query
-      try {
-        const row = db.prepare('SELECT screenshot_status FROM messages WHERE id = ?').get(id) as
-          | { screenshot_status: string | null }
-          | undefined
-        const status = row?.screenshot_status ?? null
-        screenshotCode = status ?? 'never_persisted'
-      } catch {
-        // Column doesn't exist yet (pre-Phase 7.5 schema) — safe default
-        screenshotCode = 'never_persisted'
-      }
+      screenshotCode = message.screenshotStatus ?? 'never_persisted'
     }
 
     // Fetch linked failed_callbacks for this message (if table exists)

@@ -40,6 +40,10 @@ export interface Message {
   fallbackUsed: number
   fallbackProvider: string | null
   screenshotPath: string | null
+  screenshotStatus: string | null
+  screenshotSkipReason: string | null
+  screenshotDeletedAt: string | null
+  screenshotSizeBytes: number | null
   mediaUrl: string | null
   mediaType: string | null
   mediaCaption: string | null

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
-import { Camera, CheckCircle, Clock, AlertTriangle, RefreshCw } from 'lucide-react'
+import { Clock, AlertTriangle, RefreshCw } from 'lucide-react'
 import { CORE_URL, authHeaders } from '../config'
+import { ScreenshotViewer } from './screenshot-viewer'
 
 // ── Types ──
 
@@ -24,11 +25,6 @@ interface TimelineEvent {
   metadata: Record<string, unknown> | null
 }
 
-interface ScreenshotMeta {
-  url: string | null
-  code: string | null
-}
-
 interface FailedCallback {
   id: number
   callbackType: string
@@ -41,7 +37,6 @@ interface FailedCallback {
 interface TimelineData {
   message: MessageRecord
   events: TimelineEvent[]
-  screenshot: ScreenshotMeta
   failedCallbacks: FailedCallback[]
 }
 
@@ -145,7 +140,7 @@ export function MessageTimeline({ messageId }: MessageTimelineProps) {
     )
   }
 
-  const { message, events, screenshot, failedCallbacks } = data
+  const { message, events, failedCallbacks } = data
 
   const baseTime = message.createdAt
 
@@ -228,7 +223,7 @@ export function MessageTimeline({ messageId }: MessageTimelineProps) {
       {/* Screenshot */}
       <div>
         <h4 className="text-xs font-medium text-zinc-400 mb-3">Screenshot</h4>
-        <ScreenshotInline screenshot={screenshot} messageId={messageId} />
+        <ScreenshotViewer messageId={messageId} />
       </div>
 
       {/* Failed callbacks */}
@@ -260,45 +255,3 @@ export function MessageTimeline({ messageId }: MessageTimelineProps) {
   )
 }
 
-// ── Screenshot inline sub-component ──
-
-function ScreenshotInline({ screenshot, messageId }: { screenshot: ScreenshotMeta; messageId: string }) {
-  const [imgError, setImgError] = useState(false)
-
-  if (screenshot.url && !imgError) {
-    return (
-      <div className="space-y-2">
-        <div className="flex items-center gap-2 text-xs text-zinc-500">
-          <CheckCircle className="h-3.5 w-3.5 text-emerald-400" />
-          <span>Screenshot disponivel</span>
-        </div>
-        <img
-          src={`${CORE_URL}${screenshot.url}`}
-          alt={`Screenshot da mensagem ${messageId}`}
-          onError={() => setImgError(true)}
-          className="max-w-full rounded-lg border border-zinc-700/40 shadow-lg"
-          style={{ maxHeight: 300 }}
-        />
-      </div>
-    )
-  }
-
-  const codeLabel: Record<string, string> = {
-    never_persisted:       'Screenshot nao capturada',
-    skipped_by_policy:     'Ignorada pela politica',
-    persistence_failed:    'Falha ao salvar',
-    file_missing_on_disk:  'Arquivo ausente no disco',
-    deleted_by_retention:  'Removida pela retencao',
-  }
-
-  const label = imgError
-    ? 'Arquivo ausente no disco'
-    : (screenshot.code ? (codeLabel[screenshot.code] ?? 'Indisponivel') : 'Indisponivel')
-
-  return (
-    <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/40 p-3 text-sm text-zinc-400">
-      <Camera className="h-4 w-4 text-zinc-600 shrink-0" />
-      <span>{label}</span>
-    </div>
-  )
-}
