@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import type { DispatchEmitter } from '../events/index.js'
 import type { MessageHistory } from './message-history.js'
+import type { AckHistory } from './ack-history.js'
 import type { MessageQueue } from '../queue/message-queue.js'
 import type { WahaWebhookPayload, WahaMessagePayload } from './types.js'
 
@@ -20,6 +21,7 @@ export class WebhookHandler {
   constructor(
     private readonly emitter: DispatchEmitter,
     private readonly history: MessageHistory,
+    private readonly ackHistory: AckHistory,
     private readonly config: WebhookHandlerConfig = {},
   ) {}
 
@@ -138,14 +140,45 @@ export class WebhookHandler {
 
     if (ack.id) {
       const ackLevel = ack.ack ?? 0
-      const ackNames: Record<number, string> = { 1: 'server', 2: 'device', 3: 'read', 4: 'played' }
+      const ackNames: Record<number, string> = {
+        [-1]: 'error',
+        0: 'pending',
+        1: 'server',
+        2: 'device',
+        3: 'read',
+        4: 'played',
+      }
+      const ackLevelName = ackNames[ackLevel] ?? 'unknown'
       const ackTimestamp = new Date((ack.timestamp ?? 0) * 1000).toISOString()
+      const deliveredAt = ackLevel >= 2 ? ackTimestamp : null
+      const readAt = ackLevel >= 3 ? ackTimestamp : null
+
+      // Persist ack for the calibrator (research/ack-rate-calibrator.ts).
+      // INSERT OR IGNORE makes this idempotent across webhook replays.
+      // Persistence failure must NOT 500 the webhook — that triggers WAHA
+      // retry storms. Log and continue; the emitter event still fires below.
+      try {
+        this.ackHistory.insert({
+          wahaMessageId: ack.id,
+          ackLevel,
+          ackLevelName,
+          deliveredAt,
+          readAt,
+        })
+      } catch (err) {
+        this.emitter.emit('waha:ack_persist_failed', {
+          wahaMessageId: ack.id,
+          ackLevel,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+
       this.emitter.emit('waha:message_ack', {
         wahaMessageId: ack.id,
         ackLevel,
-        ackLevelName: ackNames[ackLevel] ?? 'unknown',
-        deliveredAt: ackLevel >= 2 ? ackTimestamp : null,
-        readAt: ackLevel >= 3 ? ackTimestamp : null,
+        ackLevelName,
+        deliveredAt,
+        readAt,
       })
     }
 

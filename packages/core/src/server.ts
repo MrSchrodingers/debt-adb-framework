@@ -16,7 +16,7 @@ import { verifyJwt } from './api/jwt.js'
 import { ContactRegistry } from './contacts/index.js'
 import { HygieneJobService } from './hygiene/index.js'
 import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
-import { SessionManager, WebhookHandler, MessageHistory } from './waha/index.js'
+import { SessionManager, WebhookHandler, MessageHistory, AckHistory } from './waha/index.js'
 import { createWahaHttpClient } from './waha/waha-http-client.js'
 import { createChatwootHttpClient, ManagedSessions, InboxAutomation } from './chatwoot/index.js'
 import { PluginRegistry, PluginEventBus, CallbackDelivery, PluginLoader } from './plugins/index.js'
@@ -223,10 +223,14 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const messageHistory = new MessageHistory(db)
   messageHistory.initialize()
 
+  // Phase 12 — ack-rate calibration persistence (replaces Frida path; ADR 0001)
+  const ackHistory = new AckHistory(db, messageHistory)
+  ackHistory.initialize()
+
   const wahaApiUrl = process.env.WAHA_API_URL
   const wahaApiKey = process.env.WAHA_API_KEY
   // WebhookHandler works without WAHA client (receives webhooks regardless)
-  const webhookHandler = new WebhookHandler(emitter, messageHistory, {
+  const webhookHandler = new WebhookHandler(emitter, messageHistory, ackHistory, {
     hmacSecret: process.env.WAHA_WEBHOOK_HMAC_SECRET,
     queue,
   })

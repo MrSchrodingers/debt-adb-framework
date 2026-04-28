@@ -5,6 +5,8 @@ export { WebhookHandler } from './webhook-handler.js'
 export type { WebhookHandlerConfig, WebhookResult } from './webhook-handler.js'
 export { MessageHistory } from './message-history.js'
 export type { InsertHistoryParams, HistoryQuery } from './message-history.js'
+export { AckHistory } from './ack-history.js'
+export type { InsertAckParams, AckHistoryRecord } from './ack-history.js'
 export type {
   WahaSessionInfo,
   WahaWebhookConfig,

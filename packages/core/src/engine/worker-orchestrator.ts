@@ -322,6 +322,22 @@ export class WorkerOrchestrator {
       }
     }
 
+    // Research-track guard: refuse to dispatch to any device flagged as sacrificial.
+    // These serials host Frida hooks / ban-prediction calibration and must NEVER
+    // process production sends. Empty/unset env var = no devices flagged (default).
+    const sacrificial = (process.env.RESEARCH_SACRIFICIAL_SERIALS ?? '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean)
+    if (sacrificial.includes(deviceSerial)) {
+      this.deps.logger.warn(
+        { device: deviceSerial },
+        'Worker: serial is in RESEARCH_SACRIFICIAL_SERIALS, refusing to dispatch',
+      )
+      this.devicesRunning.delete(deviceSerial)
+      return
+    }
+
     const { queue, senderMapping, senderHealth, rateLimitGuard, accountMutex, logger } = this.deps
     let releaseMutex: (() => void) | null = null
 

@@ -24,6 +24,7 @@ export interface DispatchEventMap {
   'waha:message_sent': { sessionName: string; fromNumber: string; toNumber: string; historyId: string; deduplicated: boolean; wahaMessageId?: string }
   'waha:session_status': { sessionName: string; status: string; phoneNumber?: string }
   'waha:message_ack': { wahaMessageId: string; ackLevel: number; ackLevelName: string; deliveredAt: string | null; readAt: string | null }
+  'waha:ack_persist_failed': { wahaMessageId: string; ackLevel: number; error: string }
   'message:delivered': { id: string; wahaMessageId: string; deliveredAt: string }
   'message:read': { id: string; wahaMessageId: string; readAt: string }
   'contact:opted_out': { phone: string; pattern: string; sourceSession: string; messageText: string }
