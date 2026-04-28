@@ -46,6 +46,19 @@
 		}
 	}
 
+	# Jaeger UI — protected by dispatch-core bearer auth via forward_auth.
+	# Jaeger listens on 127.0.0.1:16686 (Docker, loopback-only).
+	# Step 5.1.4: run infra/jaeger-deploy.sh on Kali before this takes effect.
+	handle /admin/jaeger* {
+		forward_auth 127.0.0.1:7890 {
+			uri /api/v1/auth/check-bearer
+			copy_headers Authorization
+		}
+		reverse_proxy 127.0.0.1:16686 {
+			header_up Host {host}
+		}
+	}
+
 	# UI (Vite dev server OR `vite preview` on same port 5174)
 	handle {
 		reverse_proxy 127.0.0.1:5174 {

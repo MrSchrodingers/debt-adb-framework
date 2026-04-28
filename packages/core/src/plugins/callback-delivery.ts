@@ -3,6 +3,8 @@ import type Database from 'better-sqlite3'
 import { nanoid } from 'nanoid'
 import type { PluginRegistry } from './plugin-registry.js'
 import type { ResultCallback, AckCallback, ResponseCallback, InterimFailureCallback, ExpiredCallback, NumberInvalidCallback, FailedCallbackRecord, CallbackType } from './types.js'
+import { getTracer } from '../telemetry/tracer.js'
+import { SpanStatusCode } from '@opentelemetry/api'
 
 type FetchFn = (url: string, init: RequestInit) => Promise<Response>
 
@@ -215,59 +217,95 @@ export class CallbackDelivery {
     if (!plugin) return
 
     const body = JSON.stringify(payload)
-    const headers = this.buildHeaders(body, plugin.hmac_secret)
-    let lastError = ''
 
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      const delay = BACKOFF_DELAYS_MS[attempt - 1] ?? 0
-      await sleep(delay)
+    // Extract idempotency_key from the payload if present (all result/ack/response types carry it)
+    const idempotencyKey = (payload as { idempotency_key?: string }).idempotency_key ?? ''
+
+    const tracer = getTracer()
+    return tracer.startActiveSpan('callback.send', async (span) => {
+      span.setAttributes({
+        'idempotency_key': idempotencyKey,
+        'plugin_name': pluginName,
+        'message.id': messageId,
+        'callback.type': callbackType,
+        'webhook.url': plugin.webhook_url,
+      })
 
       try {
-        const response = await this.fetchWithTimeout(plugin.webhook_url, {
-          method: 'POST',
-          headers,
-          body,
-        })
-        if (response.ok) return
+        const headers = this.buildHeaders(body, plugin.hmac_secret)
+        let lastError = ''
 
-        // A5: capture response body in last_error
-        const bodyText = await response.text().catch(() => '')
-        lastError = `HTTP ${response.status}: ${bodyText.slice(0, 500)}`
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+          const delay = BACKOFF_DELAYS_MS[attempt - 1] ?? 0
+          await sleep(delay)
 
-        // 4xx = client error (non-retryable)
-        if (response.status >= 400 && response.status < 500) break
+          span.setAttribute('callback.attempt', attempt)
 
-        // Decision #40: 503 is retryable with short backoff
-        if (response.status === 503) {
-          for (let retry503 = 1; retry503 < BACKOFF_503_MS.length; retry503++) {
-            await sleep(BACKOFF_503_MS[retry503])
-            const retryResponse = await this.fetchWithTimeout(plugin.webhook_url, {
+          try {
+            const response = await this.fetchWithTimeout(plugin.webhook_url, {
               method: 'POST',
               headers,
               body,
             })
-            if (retryResponse.ok) return
-            const retryBodyText = await retryResponse.text().catch(() => '')
-            lastError = `HTTP ${retryResponse.status}: ${retryBodyText.slice(0, 500)}`
-          }
-          break // 503 retries exhausted
-        }
-      } catch (err) {
-        lastError = err instanceof Error ? err.message : String(err)
-      }
-    }
+            if (response.ok) {
+              span.setAttribute('callback.http_status', response.status)
+              span.setStatus({ code: SpanStatusCode.OK })
+              return
+            }
 
-    // All retries failed — persist to failed_callbacks
-    this.getStmtInsertFailed().run(
-      nanoid(),
-      pluginName,
-      messageId,
-      callbackType,
-      body,
-      plugin.webhook_url,
-      MAX_RETRIES,
-      lastError,
-    )
+            // A5: capture response body in last_error
+            const bodyText = await response.text().catch(() => '')
+            lastError = `HTTP ${response.status}: ${bodyText.slice(0, 500)}`
+            span.setAttribute('callback.http_status', response.status)
+
+            // 4xx = client error (non-retryable)
+            if (response.status >= 400 && response.status < 500) break
+
+            // Decision #40: 503 is retryable with short backoff
+            if (response.status === 503) {
+              for (let retry503 = 1; retry503 < BACKOFF_503_MS.length; retry503++) {
+                await sleep(BACKOFF_503_MS[retry503])
+                const retryResponse = await this.fetchWithTimeout(plugin.webhook_url, {
+                  method: 'POST',
+                  headers,
+                  body,
+                })
+                if (retryResponse.ok) {
+                  span.setAttribute('callback.http_status', retryResponse.status)
+                  span.setStatus({ code: SpanStatusCode.OK })
+                  return
+                }
+                const retryBodyText = await retryResponse.text().catch(() => '')
+                lastError = `HTTP ${retryResponse.status}: ${retryBodyText.slice(0, 500)}`
+              }
+              break // 503 retries exhausted
+            }
+          } catch (err) {
+            lastError = err instanceof Error ? err.message : String(err)
+          }
+        }
+
+        // All retries failed — persist to failed_callbacks
+        span.setAttribute('callback.failed', true)
+        span.setStatus({ code: SpanStatusCode.ERROR, message: lastError })
+        this.getStmtInsertFailed().run(
+          nanoid(),
+          pluginName,
+          messageId,
+          callbackType,
+          body,
+          plugin.webhook_url,
+          MAX_RETRIES,
+          lastError,
+        )
+      } catch (err) {
+        span.recordException(err as Error)
+        span.setStatus({ code: SpanStatusCode.ERROR, message: err instanceof Error ? err.message : String(err) })
+        throw err
+      } finally {
+        span.end()
+      }
+    })
   }
 
   /** S15/R11: All outbound HTTP uses AbortSignal timeout */

@@ -8,6 +8,8 @@ import type { ScreenshotPolicy } from '../config/screenshot-policy.js'
 import type { ContactCache } from './contact-cache.js'
 import type { MediaSender } from './media-sender.js'
 import { ScreenshotValidator } from './screenshot-validator.js'
+import { getTracer } from '../telemetry/tracer.js'
+import { SpanStatusCode } from '@opentelemetry/api'
 
 /** Packages allowed in am start/force-stop commands. Reject everything else. */
 const ALLOWED_PACKAGES = new Set(['com.whatsapp', 'com.whatsapp.w4b'])
@@ -142,6 +144,19 @@ export class SendEngine {
     if (!DEVICE_SERIAL_RE.test(deviceSerial)) {
       throw new Error(`Rejected device serial: contains unsafe characters`)
     }
+
+    const tracer = getTracer()
+    const span = tracer.startSpan('engine.send', {
+      attributes: {
+        'idempotency_key': message.idempotencyKey,
+        'message.id': message.id,
+        'message.to': message.to,
+        'device.serial': deviceSerial,
+        'plugin_name': message.pluginName ?? '',
+        'provider': 'adb',
+        'app_package': appPackage,
+      },
+    })
 
     let method: string = 'unknown' // enrichment: populated in text/media branch, used in emit
 
@@ -296,12 +311,19 @@ export class SendEngine {
         this.record(message.id, 'screenshot_skipped', { mode: 'sample' })
       }
 
+      span.setAttributes({ 'send.method': method, 'result': 'sent' })
+      span.setStatus({ code: SpanStatusCode.OK })
+      span.end()
       return { screenshot, durationMs, contactRegistered, dialogsDismissed }
     } catch (err) {
       // Status transitions on failure are handled by the caller (worker-orchestrator or manual send)
       // so we only clean up device state here and re-throw
       try { await this.ensureCleanState(deviceSerial, appPackage) } catch { /* device may be disconnected */ }
 
+      span.setAttribute('result', 'failed')
+      span.recordException(err as Error)
+      span.setStatus({ code: SpanStatusCode.ERROR, message: err instanceof Error ? err.message : String(err) })
+      span.end()
       throw err
     } finally {
       this.processing = false

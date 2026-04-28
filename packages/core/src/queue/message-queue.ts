@@ -2,6 +2,8 @@ import type Database from 'better-sqlite3'
 import { nanoid } from 'nanoid'
 import type { EnqueueParams, Message, MessageStatus, PaginatedFilters, PaginatedResult, BatchResult, SkippedItem } from './types.js'
 import { VALID_TRANSITIONS } from './types.js'
+import { getTracer } from '../telemetry/tracer.js'
+import { SpanStatusCode } from '@opentelemetry/api'
 
 /**
  * Strip all non-digit characters from a phone string.
@@ -191,56 +193,22 @@ export class MessageQueue {
       throw new Error(`Phone ${params.to} is blacklisted — message rejected`)
     }
     const id = nanoid()
-    const row = this.db.prepare(`
-      INSERT INTO messages (id, to_number, body, idempotency_key, priority, sender_number,
-                            plugin_name, correlation_id, senders_config, context, max_retries,
-                            media_url, media_type, media_caption)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      RETURNING *
-    `).get(
-      id,
-      params.to,
-      params.body,
-      params.idempotencyKey,
-      params.priority ?? 5,
-      params.senderNumber ?? null,
-      params.pluginName ?? null,
-      params.correlationId ?? null,
-      params.sendersConfig ?? null,
-      params.context ?? null,
-      params.maxRetries ?? 3,
-      params.mediaUrl ?? null,
-      params.mediaType ?? null,
-      params.mediaCaption ?? null,
-    ) as Record<string, unknown>
-    return this.rowToMessage(row)
-  }
-
-  enqueueBatch(paramsList: EnqueueParams[]): BatchResult {
-    const insert = this.db.prepare(`
-      INSERT OR IGNORE INTO messages (id, to_number, body, idempotency_key, priority, sender_number,
-                            plugin_name, correlation_id, senders_config, context, max_retries,
-                            media_url, media_type, media_caption)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    const select = this.db.prepare('SELECT * FROM messages WHERE id = ?')
-    const saveContactStmt = this.db.prepare(
-      'INSERT INTO contacts (phone, name) VALUES (?, ?) ON CONFLICT(phone) DO UPDATE SET name = excluded.name',
-    )
-
-    const txn = this.db.transaction((list: EnqueueParams[]) => {
-      const enqueued: Message[] = []
-      const skipped: SkippedItem[] = []
-
-      for (const params of list) {
-        // Skip blacklisted numbers per-item
-        if (this.isBlacklisted(params.to)) {
-          skipped.push({ idempotencyKey: params.idempotencyKey, reason: 'blacklisted', to: params.to })
-          continue
-        }
-
-        const id = params.id ?? nanoid()
-        const result = insert.run(
+    const tracer = getTracer()
+    return tracer.startActiveSpan('queue.enqueue', (span) => {
+      span.setAttributes({
+        'idempotency_key': params.idempotencyKey,
+        'plugin_name': params.pluginName ?? '',
+        'message.to': params.to,
+        'message.priority': params.priority ?? 5,
+      })
+      try {
+        const row = this.db.prepare(`
+          INSERT INTO messages (id, to_number, body, idempotency_key, priority, sender_number,
+                                plugin_name, correlation_id, senders_config, context, max_retries,
+                                media_url, media_type, media_caption)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          RETURNING *
+        `).get(
           id,
           params.to,
           params.body,
@@ -255,26 +223,109 @@ export class MessageQueue {
           params.mediaUrl ?? null,
           params.mediaType ?? null,
           params.mediaCaption ?? null,
+        ) as Record<string, unknown>
+        const message = this.rowToMessage(row)
+        span.setAttribute('message.id', message.id)
+        span.setStatus({ code: SpanStatusCode.OK })
+        return message
+      } catch (err) {
+        span.recordException(err as Error)
+        span.setStatus({ code: SpanStatusCode.ERROR, message: err instanceof Error ? err.message : String(err) })
+        throw err
+      } finally {
+        span.end()
+      }
+    })
+  }
+
+  enqueueBatch(paramsList: EnqueueParams[]): BatchResult {
+    const pluginName = paramsList[0]?.pluginName ?? ''
+    // Span key: first idempotency_key + batch size for traceability
+    const spanIdempotencyKey =
+      paramsList.length === 1
+        ? (paramsList[0]?.idempotencyKey ?? '')
+        : `${paramsList[0]?.idempotencyKey ?? ''}+${paramsList.length - 1}more`
+
+    const tracer = getTracer()
+    return tracer.startActiveSpan('queue.enqueue_batch', (span) => {
+      span.setAttributes({
+        'idempotency_key': spanIdempotencyKey,
+        'plugin_name': pluginName,
+        'batch.size': paramsList.length,
+      })
+      try {
+        const insert = this.db.prepare(`
+          INSERT OR IGNORE INTO messages (id, to_number, body, idempotency_key, priority, sender_number,
+                                plugin_name, correlation_id, senders_config, context, max_retries,
+                                media_url, media_type, media_caption)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        const select = this.db.prepare('SELECT * FROM messages WHERE id = ?')
+        const saveContactStmt = this.db.prepare(
+          'INSERT INTO contacts (phone, name) VALUES (?, ?) ON CONFLICT(phone) DO UPDATE SET name = excluded.name',
         )
 
-        if (result.changes === 0) {
-          // ON CONFLICT DO NOTHING — duplicate idempotency_key
-          skipped.push({ idempotencyKey: params.idempotencyKey, reason: 'duplicate' })
-          continue
-        }
+        const txn = this.db.transaction((list: EnqueueParams[]) => {
+          const enqueued: Message[] = []
+          const skipped: SkippedItem[] = []
 
-        const row = select.get(id) as Record<string, unknown>
-        enqueued.push(this.rowToMessage(row))
+          for (const params of list) {
+            // Skip blacklisted numbers per-item
+            if (this.isBlacklisted(params.to)) {
+              skipped.push({ idempotencyKey: params.idempotencyKey, reason: 'blacklisted', to: params.to })
+              continue
+            }
 
-        // D5: saveContact inside the batch transaction
-        if (params.contactName) {
-          saveContactStmt.run(params.to, params.contactName)
-        }
+            const id = params.id ?? nanoid()
+            const result = insert.run(
+              id,
+              params.to,
+              params.body,
+              params.idempotencyKey,
+              params.priority ?? 5,
+              params.senderNumber ?? null,
+              params.pluginName ?? null,
+              params.correlationId ?? null,
+              params.sendersConfig ?? null,
+              params.context ?? null,
+              params.maxRetries ?? 3,
+              params.mediaUrl ?? null,
+              params.mediaType ?? null,
+              params.mediaCaption ?? null,
+            )
+
+            if (result.changes === 0) {
+              // ON CONFLICT DO NOTHING — duplicate idempotency_key
+              skipped.push({ idempotencyKey: params.idempotencyKey, reason: 'duplicate' })
+              continue
+            }
+
+            const row = select.get(id) as Record<string, unknown>
+            enqueued.push(this.rowToMessage(row))
+
+            // D5: saveContact inside the batch transaction
+            if (params.contactName) {
+              saveContactStmt.run(params.to, params.contactName)
+            }
+          }
+
+          return { enqueued, skipped }
+        })
+        const result = txn(paramsList)
+        span.setAttributes({
+          'batch.enqueued': result.enqueued.length,
+          'batch.skipped': result.skipped.length,
+        })
+        span.setStatus({ code: SpanStatusCode.OK })
+        return result
+      } catch (err) {
+        span.recordException(err as Error)
+        span.setStatus({ code: SpanStatusCode.ERROR, message: err instanceof Error ? err.message : String(err) })
+        throw err
+      } finally {
+        span.end()
       }
-
-      return { enqueued, skipped }
     })
-    return txn(paramsList)
   }
 
   updateWahaMessageId(id: string, wahaMessageId: string): void {
@@ -324,24 +375,47 @@ export class MessageQueue {
   }
 
   dequeue(deviceSerial: string): Message | null {
-    const txn = this.db.transaction(() => {
-      return this.db.prepare(`
-        UPDATE messages
-        SET status = 'locked',
-            locked_by = ?,
-            locked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-        WHERE id = (
-          SELECT id FROM messages
-          WHERE status = 'queued'
-          ORDER BY priority ASC, created_at ASC
-          LIMIT 1
-        )
-        RETURNING *
-      `).get(deviceSerial) as Record<string, unknown> | undefined
+    const tracer = getTracer()
+    return tracer.startActiveSpan('queue.dequeue', (span) => {
+      span.setAttribute('device.serial', deviceSerial)
+      try {
+        const txn = this.db.transaction(() => {
+          return this.db.prepare(`
+            UPDATE messages
+            SET status = 'locked',
+                locked_by = ?,
+                locked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE id = (
+              SELECT id FROM messages
+              WHERE status = 'queued'
+              ORDER BY priority ASC, created_at ASC
+              LIMIT 1
+            )
+            RETURNING *
+          `).get(deviceSerial) as Record<string, unknown> | undefined
+        })
+        const row = txn.immediate()
+        const message = row ? this.rowToMessage(row) : null
+        if (message) {
+          span.setAttributes({
+            'message.id': message.id,
+            'idempotency_key': message.idempotencyKey,
+            'message.to': message.to,
+            'plugin_name': message.pluginName ?? '',
+          })
+        }
+        span.setAttribute('queue.dequeued', message !== null)
+        span.setStatus({ code: SpanStatusCode.OK })
+        return message
+      } catch (err) {
+        span.recordException(err as Error)
+        span.setStatus({ code: SpanStatusCode.ERROR, message: err instanceof Error ? err.message : String(err) })
+        throw err
+      } finally {
+        span.end()
+      }
     })
-    const row = txn.immediate()
-    return row ? this.rowToMessage(row) : null
   }
 
   updateStatus(id: string, from: MessageStatus, to: MessageStatus): Message {

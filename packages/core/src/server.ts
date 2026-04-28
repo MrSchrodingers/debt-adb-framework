@@ -238,6 +238,15 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     timestamp: new Date().toISOString(),
   }))
 
+  // ── Caddy forward_auth probe — used by /admin/jaeger ingress ──────────────
+  // Returns 200 if the bearer token is valid (auth hook already ran), 401
+  // otherwise. Caddy's forward_auth directive calls this URL before proxying
+  // to Jaeger UI on 127.0.0.1:16686.
+  server.get('/api/v1/auth/check-bearer', async (_req, reply) => {
+    // If the onRequest auth hook passed control here, the bearer is valid.
+    return reply.code(200).send()
+  })
+
   // DP-6: Comprehensive health endpoint for external monitoring
   server.get('/healthz', async () => {
     const devices = deviceManager.getDevices()
