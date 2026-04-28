@@ -32,7 +32,7 @@ export class IdempotencyCache {
 
   constructor(
     private readonly db: Database.Database,
-    private readonly config: IdempotencyCacheConfig,
+    private config: IdempotencyCacheConfig,
   ) {
     this.now = config.now ?? (() => Date.now())
   }
@@ -115,6 +115,15 @@ export class IdempotencyCache {
     this.ensurePrepared()
     const nowIso = new Date(this.now()).toISOString()
     return this.stmtCleanup!.run(nowIso).changes
+  }
+
+  /**
+   * Hot-reload: update the default TTL applied to new reservations.
+   * Takes effect immediately for subsequent checkAndReserve calls.
+   * Existing rows are NOT retroactively changed.
+   */
+  setDefaultTtlSec(ttlSec: number): void {
+    this.config.defaultTtlSec = ttlSec
   }
 
   /**

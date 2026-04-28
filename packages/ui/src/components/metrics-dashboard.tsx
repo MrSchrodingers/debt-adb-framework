@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import { authHeaders } from '../config'
 import {
   BarChart,
@@ -50,6 +51,7 @@ interface MetricsDashboardProps {
 }
 
 export function MetricsDashboard({ senderNumber }: MetricsDashboardProps = {}) {
+  const { t } = useTranslation()
   const [activeView, setActiveView] = useState<'overview' | 'grafana'>('overview')
   const [summary, setSummary] = useState<MetricsSummary | null>(null)
   const [hourly, setHourly] = useState<HourlyBucket[]>([])
@@ -81,10 +83,10 @@ export function MetricsDashboard({ senderNumber }: MetricsDashboardProps = {}) {
 
   const pieData = byStatus
     ? [
-        { name: 'Enviadas', value: byStatus.sent, color: STATUS_COLORS.sent },
-        { name: 'Falhadas', value: byStatus.failed, color: STATUS_COLORS.failed },
-        { name: 'Enviando', value: byStatus.sending, color: STATUS_COLORS.sending },
-        { name: 'Na fila', value: byStatus.queued, color: STATUS_COLORS.queued },
+        { name: t('metrics.statusSent'), value: byStatus.sent, color: STATUS_COLORS.sent },
+        { name: t('metrics.statusFailed'), value: byStatus.failed, color: STATUS_COLORS.failed },
+        { name: t('metrics.statusSending'), value: byStatus.sending, color: STATUS_COLORS.sending },
+        { name: t('metrics.statusQueued'), value: byStatus.queued, color: STATUS_COLORS.queued },
       ].filter((d) => d.value > 0)
     : []
 
@@ -106,7 +108,7 @@ export function MetricsDashboard({ senderNumber }: MetricsDashboardProps = {}) {
                 : 'text-zinc-500 hover:text-zinc-300'
             }`}
           >
-            Visao Geral
+            {t('metrics.overview')}
           </button>
           <button
             onClick={() => setActiveView('grafana')}
@@ -116,7 +118,7 @@ export function MetricsDashboard({ senderNumber }: MetricsDashboardProps = {}) {
                 : 'text-zinc-500 hover:text-zinc-300'
             }`}
           >
-            Grafana
+            {t('metrics.grafana')}
           </button>
         </div>
       )}
@@ -135,22 +137,22 @@ export function MetricsDashboard({ senderNumber }: MetricsDashboardProps = {}) {
       {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatCard
-          label="Taxa de Sucesso"
+          label={t('metrics.successRate')}
           value={summary ? `${summary.successRate.toFixed(1)}%` : '-'}
           accent={summary && summary.successRate >= 90 ? 'emerald' : 'amber'}
         />
         <StatCard
-          label="Latencia Media"
+          label={t('metrics.avgLatency')}
           value={summary ? `${formatLatency(summary.avgLatencyMs)}` : '-'}
           accent="zinc"
         />
         <StatCard
-          label="Total Hoje"
+          label={t('metrics.totalToday')}
           value={summary ? String(summary.totalToday) : '-'}
           accent="zinc"
         />
         <StatCard
-          label="Falhadas Hoje"
+          label={t('metrics.failedToday')}
           value={summary ? String(summary.totalFailed) : '-'}
           accent={summary && summary.totalFailed > 0 ? 'red' : 'zinc'}
         />
@@ -159,7 +161,7 @@ export function MetricsDashboard({ senderNumber }: MetricsDashboardProps = {}) {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Bar chart: messages per hour */}
         <div className="lg:col-span-2 rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
-          <h3 className="text-xs font-medium text-zinc-400 mb-3">Mensagens por Hora (24h)</h3>
+          <h3 className="text-xs font-medium text-zinc-400 mb-3">{t('metrics.messagesPerHour')}</h3>
           {hourlyFormatted.length > 0 ? (
             <ResponsiveContainer width="100%" height={220}>
               <BarChart data={hourlyFormatted} barGap={1}>
@@ -184,19 +186,19 @@ export function MetricsDashboard({ senderNumber }: MetricsDashboardProps = {}) {
                   }}
                   labelStyle={{ color: '#a1a1aa' }}
                 />
-                <Bar dataKey="sent" stackId="a" fill={STATUS_COLORS.sent} radius={[0, 0, 0, 0]} name="Enviadas" />
-                <Bar dataKey="failed" stackId="a" fill={STATUS_COLORS.failed} radius={[0, 0, 0, 0]} name="Falhadas" />
-                <Bar dataKey="queued" stackId="a" fill={STATUS_COLORS.queued} radius={[2, 2, 0, 0]} name="Na fila" />
+                <Bar dataKey="sent" stackId="a" fill={STATUS_COLORS.sent} radius={[0, 0, 0, 0]} name={t('metrics.statusSent')} />
+                <Bar dataKey="failed" stackId="a" fill={STATUS_COLORS.failed} radius={[0, 0, 0, 0]} name={t('metrics.statusFailed')} />
+                <Bar dataKey="queued" stackId="a" fill={STATUS_COLORS.queued} radius={[2, 2, 0, 0]} name={t('metrics.statusQueued')} />
               </BarChart>
             </ResponsiveContainer>
           ) : (
-            <p className="text-zinc-500 text-sm text-center py-10">Sem dados nas ultimas 24h</p>
+            <p className="text-zinc-500 text-sm text-center py-10">{t('metrics.noData24h')}</p>
           )}
         </div>
 
         {/* Donut chart: by status */}
         <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
-          <h3 className="text-xs font-medium text-zinc-400 mb-3">Por Status</h3>
+          <h3 className="text-xs font-medium text-zinc-400 mb-3">{t('metrics.byStatus')}</h3>
           {pieData.length > 0 ? (
             <>
               <ResponsiveContainer width="100%" height={180}>
@@ -239,7 +241,7 @@ export function MetricsDashboard({ senderNumber }: MetricsDashboardProps = {}) {
               </div>
             </>
           ) : (
-            <p className="text-zinc-500 text-sm text-center py-10">Sem dados</p>
+            <p className="text-zinc-500 text-sm text-center py-10">{t('metrics.noData')}</p>
           )}
         </div>
       </div>

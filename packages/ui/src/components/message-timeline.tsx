@@ -3,7 +3,7 @@ import { Clock, AlertTriangle, RefreshCw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { CORE_URL, authHeaders } from '../config'
 import { ScreenshotViewer } from './screenshot-viewer'
-import { FilmStrip, buildFramesFromScreenshot } from './film-strip'
+import { FilmStrip, buildFramesFromScreenshot, type FilmStripFrame } from './film-strip'
 
 // ── Types ──
 
@@ -25,6 +25,7 @@ interface TimelineEvent {
   timestamp: string
   type: string
   metadata: Record<string, unknown> | null
+  screenshotUrl?: string | null
 }
 
 interface FailedCallback {
@@ -147,11 +148,22 @@ export function MessageTimeline({ messageId }: MessageTimelineProps) {
 
   const baseTime = message.createdAt
 
-  // Per-event screenshot frames are not yet available — Phase 7.1 timeline endpoint
-  // returns only the final screenshot meta via the ScreenshotViewer's own fetch.
-  // FilmStrip stays wired for future expansion (per-event captures); for now it's
-  // always empty and the ScreenshotViewer fallback renders.
-  const filmFrames = buildFramesFromScreenshot(message.screenshotPath, messageId)
+  // Build film-strip frames from per-event screenshot URLs when available.
+  // The timeline API now populates `event.screenshotUrl` for screenshot_saved
+  // events. Fall back to the message-level screenshotPath when no per-event
+  // captures are present (legacy / pre-Task-10.4 sends).
+  const filmFrames: FilmStripFrame[] = events
+    .filter(ev => ev.screenshotUrl)
+    .map(ev => ({
+      url: `${CORE_URL}${ev.screenshotUrl!}`,
+      label: new Date(ev.timestamp).toLocaleTimeString('pt-BR'),
+    }))
+
+  // Fallback: if no per-event frames, use the message-level screenshot path
+  const fallbackFrames = filmFrames.length === 0
+    ? buildFramesFromScreenshot(message.screenshotPath, messageId)
+    : []
+  const allFrames = filmFrames.length > 0 ? filmFrames : fallbackFrames
 
   return (
     <div className="space-y-6 p-4">
@@ -231,10 +243,10 @@ export function MessageTimeline({ messageId }: MessageTimelineProps) {
 
       {/* Film-strip (Task 10.4) */}
       <div>
-        {filmFrames.length > 0 ? (
+        {allFrames.length > 0 ? (
           <>
             <h4 className="text-xs font-medium text-zinc-400 mb-3">{t('filmStrip.title')}</h4>
-            <FilmStrip frames={filmFrames} messageId={messageId} />
+            <FilmStrip frames={allFrames} messageId={messageId} />
           </>
         ) : (
           <>

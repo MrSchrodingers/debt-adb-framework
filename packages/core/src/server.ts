@@ -21,6 +21,7 @@ import { createChatwootHttpClient, ManagedSessions, InboxAutomation } from './ch
 import { PluginRegistry, PluginEventBus, CallbackDelivery, PluginLoader } from './plugins/index.js'
 import { buildLoggerConfig } from './config/logger.js'
 import { GracefulShutdown } from './config/graceful-shutdown.js'
+import { HotReloadCoordinator } from './config/hot-reload.js'
 import { RateLimitGuard } from './config/rate-limits.js'
 import { parseConfig } from './config/config-schema.js'
 import { AuditLogger } from './config/audit-logger.js'
@@ -1129,6 +1130,59 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   })
   const workerInterval = setInterval(() => orchestrator.tick(), 5_000)
   const metadataCleanupInterval = setInterval(() => orchestrator.cleanupMetadata(), 60_000)
+
+  // ── Hot-reload coordinator (SIGHUP → re-read .env → update live components) ──
+  // NOTE: rate-limit cannot be hot-reloaded because @fastify/rate-limit routes are
+  // registered at boot and Fastify does not support plugin re-registration without
+  // server restart. The 'rate-limit' entry is a documented no-op with a warning.
+  const serverLogger = {
+    info: (msg: string, data?: Record<string, unknown>) => server.log.info(data ?? {}, msg),
+    warn: (msg: string, data?: Record<string, unknown>) => server.log.warn(data ?? {}, msg),
+    error: (msg: string | Record<string, unknown>) => {
+      if (typeof msg === 'string') {
+        server.log.error(msg)
+      } else {
+        server.log.error(msg)
+      }
+    },
+  }
+  const hotReload = new HotReloadCoordinator(serverLogger, emitter)
+  hotReload.register({
+    name: 'rate-limit',
+    reload: () => {
+      // @fastify/rate-limit plugs in at boot — changing limits requires restart.
+      server.log.warn(
+        '[hot-reload] rate-limit: changes to DISPATCH_RATE_LIMIT_* require a server restart to take effect',
+      )
+    },
+  })
+  hotReload.register({
+    name: 'sender-scoring',
+    reload: () => senderScoring.reloadConfig({
+      failurePenalty: parseFloat(process.env.DISPATCH_SCORING_FAILURE_PENALTY ?? '1.0'),
+      idleSaturationSec: parseInt(process.env.DISPATCH_SCORING_IDLE_SATURATION_SEC ?? '3600', 10),
+      rolePriorityWeights: {
+        primary:  parseFloat(process.env.DISPATCH_SCORING_WEIGHT_PRIMARY  ?? '1.0'),
+        overflow: parseFloat(process.env.DISPATCH_SCORING_WEIGHT_OVERFLOW ?? '0.7'),
+        backup:   parseFloat(process.env.DISPATCH_SCORING_WEIGHT_BACKUP   ?? '0.5'),
+        reserve:  parseFloat(process.env.DISPATCH_SCORING_WEIGHT_RESERVE  ?? '0.3'),
+      },
+    }),
+  })
+  hotReload.register({
+    name: 'circuit-breaker',
+    reload: () => circuitBreaker.reloadConfig({
+      failureThreshold: parseInt(process.env.DISPATCH_CB_FAILURE_THRESHOLD ?? '5', 10),
+      cooldownMs: parseInt(process.env.DISPATCH_CB_COOLDOWN_MS ?? '300000', 10),
+    }),
+  })
+  hotReload.register({
+    name: 'idempotency-cache',
+    reload: () => idempotencyCache.setDefaultTtlSec(
+      parseInt(process.env.IDEMPOTENCY_CACHE_TTL_SEC ?? '3600', 10),
+    ),
+  })
+  hotReload.installSignalHandler()
 
   // WAHA session health polling (60s) and history cleanup (hourly)
   if (sessionManager) {

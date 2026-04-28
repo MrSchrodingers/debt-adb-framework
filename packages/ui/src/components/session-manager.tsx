@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { Search, Radio, RefreshCw, CheckSquare, Shield, X } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { CORE_URL, authHeaders } from '../config'
 
 interface SessionWithStatus {
@@ -24,6 +25,7 @@ const statusColors: Record<string, string> = {
 }
 
 export function SessionManager() {
+  const { t } = useTranslation()
   const [sessions, setSessions] = useState<SessionWithStatus[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(false)
@@ -37,7 +39,7 @@ export function SessionManager() {
       const res = await fetch(`${CORE_URL}/api/v1/sessions`, { headers: authHeaders() })
       if (!res.ok) {
         if (res.status === 503) {
-          setError('Session automation not configured. Set WAHA and Chatwoot env vars.')
+          setError(t('sessionManager.errorNotConfigured'))
           return
         }
         throw new Error(`HTTP ${res.status}`)
@@ -46,7 +48,7 @@ export function SessionManager() {
       setSessions(data)
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch sessions')
+      setError(err instanceof Error ? err.message : t('sessionManager.fetchFailed'))
     }
   }, [])
 
@@ -81,7 +83,7 @@ export function SessionManager() {
       setSelected(new Set())
       await fetchSessions()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to set managed')
+      setError(err instanceof Error ? err.message : t('sessionManager.setManagedFailed'))
     } finally {
       setLoading(false)
     }
@@ -96,7 +98,7 @@ export function SessionManager() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       await fetchSessions()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to unmanage')
+      setError(err instanceof Error ? err.message : t('sessionManager.unmanagedFailed'))
     }
   }
 
@@ -105,7 +107,7 @@ export function SessionManager() {
 
   const handleShowQr = async (name: string) => {
     setPairing(name)
-    setPairSteps(['Iniciando fluxo de pareamento...'])
+    setPairSteps([t('sessionManager.startingPairing')])
     setError(null)
 
     try {
@@ -121,19 +123,19 @@ export function SessionManager() {
         setQrData({ sessionName: name, qr: data.qr })
       } else {
         // QR not ready yet — try fetching directly
-        setPairSteps(prev => [...prev, 'Buscando QR code...'])
+        setPairSteps(prev => [...prev, t('sessionManager.fetchingQr')])
         await new Promise((r) => setTimeout(r, 3000))
         const qrRes = await fetch(`${CORE_URL}/api/v1/waha/sessions/${encodeURIComponent(name)}/qr`, { headers: authHeaders() })
         if (qrRes.ok) {
           const qrData = await qrRes.json()
           setQrData({ sessionName: name, qr: qrData.qr })
-          setPairSteps(prev => [...prev, 'QR code obtido!'])
+          setPairSteps(prev => [...prev, t('sessionManager.qrObtained')])
         } else {
-          setPairSteps(prev => [...prev, 'QR nao disponivel — tente novamente em alguns segundos'])
+          setPairSteps(prev => [...prev, t('sessionManager.qrUnavailable')])
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Pairing failed')
+      setError(err instanceof Error ? err.message : t('sessionManager.pairingFailed'))
     } finally {
       setPairing(null)
     }
@@ -157,7 +159,7 @@ export function SessionManager() {
       setInboxName('')
       await fetchSessions()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create inbox')
+      setError(err instanceof Error ? err.message : t('sessionManager.inboxFailed'))
     } finally {
       setCreatingInbox(null)
     }
@@ -198,7 +200,7 @@ export function SessionManager() {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Buscar por nome ou numero..."
+              placeholder={t('sessionManager.searchPlaceholder')}
               className="w-full rounded-lg bg-zinc-800/80 pl-10 pr-3 py-2.5 text-sm text-zinc-100 border border-zinc-700/60 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 placeholder:text-zinc-600 transition-colors"
             />
             {search && (
@@ -220,10 +222,10 @@ export function SessionManager() {
 
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <FilterChip label={`Todas (${sessions.length})`} active={!statusFilter} onClick={() => setStatusFilter(null)} />
-            <FilterChip label={`Working (${workingCount})`} active={statusFilter === 'WORKING'} onClick={() => setStatusFilter(statusFilter === 'WORKING' ? null : 'WORKING')} color="emerald" />
-            <FilterChip label={`Failed (${failedCount})`} active={statusFilter === 'FAILED'} onClick={() => setStatusFilter(statusFilter === 'FAILED' ? null : 'FAILED')} color="red" />
-            <FilterChip label={`Managed (${managedCount})`} active={statusFilter === 'MANAGED'} onClick={() => setStatusFilter(statusFilter === 'MANAGED' ? null : 'MANAGED')} color="blue" />
+            <FilterChip label={`${t('sessionManager.filterAll')} (${sessions.length})`} active={!statusFilter} onClick={() => setStatusFilter(null)} />
+            <FilterChip label={`${t('sessionManager.filterWorking')} (${workingCount})`} active={statusFilter === 'WORKING'} onClick={() => setStatusFilter(statusFilter === 'WORKING' ? null : 'WORKING')} color="emerald" />
+            <FilterChip label={`${t('sessionManager.filterFailed')} (${failedCount})`} active={statusFilter === 'FAILED'} onClick={() => setStatusFilter(statusFilter === 'FAILED' ? null : 'FAILED')} color="red" />
+            <FilterChip label={`${t('sessionManager.filterManaged')} (${managedCount})`} active={statusFilter === 'MANAGED'} onClick={() => setStatusFilter(statusFilter === 'MANAGED' ? null : 'MANAGED')} color="blue" />
           </div>
           <div className="flex gap-2">
             <button
@@ -231,7 +233,7 @@ export function SessionManager() {
               className="flex items-center gap-1.5 rounded-lg bg-zinc-800 border border-zinc-700/40 px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 transition-colors"
             >
               <CheckSquare className="h-3 w-3" />
-              Selecionar nao gerenciadas
+              {t('sessionManager.selectUnmanaged')}
             </button>
             <button
               onClick={handleBulkManage}
@@ -239,15 +241,15 @@ export function SessionManager() {
               className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <Shield className="h-3 w-3" />
-              {loading ? 'Marcando...' : `Marcar managed (${selected.size})`}
+              {loading ? t('sessionManager.markingManaged') : `${t('sessionManager.markManaged')} (${selected.size})`}
             </button>
           </div>
         </div>
 
         <div className="text-xs text-zinc-600">
           {filtered.length === sessions.length
-            ? `${sessions.length} sessoes`
-            : `${filtered.length} de ${sessions.length} sessoes`}
+            ? `${sessions.length} ${t('sessionManager.sessionCount')}`
+            : `${filtered.length} ${t('sessionManager.sessionCountFiltered')} ${sessions.length} ${t('sessionManager.sessionCount')}`}
         </div>
       </div>
 
@@ -264,7 +266,7 @@ export function SessionManager() {
       {pairSteps.length > 0 && !qrData && (
         <div className="rounded-lg border border-amber-800/50 bg-zinc-900 p-4">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-medium text-amber-400">Pareamento em andamento...</span>
+            <span className="text-sm font-medium text-amber-400">{t('sessionManager.pairingInProgress')}</span>
             <button onClick={() => { setPairSteps([]); setPairing(null) }} className="text-zinc-400 hover:text-zinc-200 text-sm"><X className="h-4 w-4" /></button>
           </div>
           <div className="space-y-1">
@@ -281,7 +283,7 @@ export function SessionManager() {
       {qrData && (
         <div className="rounded-lg border border-blue-800 bg-zinc-900 p-4">
           <div className="flex items-center justify-between mb-3">
-            <span className="text-sm font-medium">QR Code — {qrData.sessionName}</span>
+            <span className="text-sm font-medium">{t('sessionManager.qrCode')} — {qrData.sessionName}</span>
             <button
               onClick={() => { setQrData(null); setPairSteps([]) }}
               className="text-zinc-400 hover:text-zinc-200 text-sm"
@@ -302,7 +304,7 @@ export function SessionManager() {
             <img src={qrData.qr} alt="QR Code" className="max-w-64" />
           </div>
           <p className="text-xs text-zinc-500 mt-2 text-center">
-            Aponte o celular para este QR no WhatsApp &gt; Dispositivos conectados
+            {t('sessionManager.qrInstruction')}
           </p>
         </div>
       )}
@@ -350,7 +352,7 @@ export function SessionManager() {
                   )}
                 </div>
                 <div className="text-xs text-zinc-500">
-                  {session.phoneNumber ?? 'no phone'} · {session.wahaStatus}
+                  {session.phoneNumber ?? t('sessionManager.noPhone')} · {session.wahaStatus}
                 </div>
               </div>
 
@@ -362,7 +364,7 @@ export function SessionManager() {
                     disabled={pairing === session.sessionName}
                     className="rounded bg-blue-800 px-2 py-1 text-xs text-blue-100 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-wait"
                   >
-                    {pairing === session.sessionName ? 'Pareando...' : 'Parear'}
+                    {pairing === session.sessionName ? t('sessionManager.pairing') : t('sessionManager.pair')}
                   </button>
                 )}
                 {session.managed && !session.chatwootInboxId && (
@@ -371,7 +373,7 @@ export function SessionManager() {
                     disabled={creatingInbox === session.sessionName}
                     className="rounded bg-violet-800 px-2 py-1 text-xs text-violet-100 hover:bg-violet-700 disabled:opacity-50"
                   >
-                    {creatingInbox === session.sessionName ? '...' : 'Create Inbox'}
+                    {creatingInbox === session.sessionName ? '...' : t('sessionManager.createInbox')}
                   </button>
                 )}
                 {session.managed && (
@@ -379,7 +381,7 @@ export function SessionManager() {
                     onClick={() => handleUnmanage(session.sessionName)}
                     className="rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
                   >
-                    Unmanage
+                    {t('sessionManager.unmanage')}
                   </button>
                 )}
               </div>
@@ -405,8 +407,8 @@ export function SessionManager() {
             <Radio className="h-8 w-8 text-zinc-700 mx-auto mb-2" />
             <p className="text-sm text-zinc-500">
               {sessions.length === 0
-                ? 'Nenhuma sessao WAHA encontrada'
-                : 'Nenhuma sessao corresponde ao filtro'}
+                ? t('sessionManager.noSessions')
+                : t('sessionManager.noMatch')}
             </p>
           </div>
         )}
