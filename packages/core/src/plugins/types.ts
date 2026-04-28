@@ -3,6 +3,7 @@
 
 import type { DispatchEventName } from '../events/index.js'
 import type { SenderMappingRecord, ResolvedSender, SenderConfig } from '../engine/sender-mapping.js'
+import type { IdempotencyCache } from '../queue/idempotency-cache.js'
 
 // ── Plugin Interface (what plugins implement) ──
 
@@ -29,6 +30,10 @@ export interface PluginContext {
   on(event: DispatchEventName, handler: (data: unknown) => Promise<void>): void
   registerRoute(method: HttpMethod, path: string, handler: RouteHandler): void
   logger: PluginLogger
+  /** Time-bounded idempotency deduplication cache (Task 4.3).
+   *  Present when the server boots with a DB — undefined in minimal test fixtures
+   *  that don't pass an IdempotencyCache to PluginLoader. */
+  idempotencyCache?: IdempotencyCache
 }
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
@@ -75,6 +80,8 @@ export interface PluginRecord {
 // ── Enqueue Params (plugin → core) ──
 
 export interface PluginEnqueueParams {
+  /** Caller-supplied message ID. Passed through to EnqueueParams.id. */
+  id?: string
   idempotencyKey: string
   correlationId?: string
   patient: {

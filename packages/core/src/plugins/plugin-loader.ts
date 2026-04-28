@@ -4,6 +4,7 @@ import type { PluginRegistry } from './plugin-registry.js'
 import type { PluginEventBus } from './plugin-event-bus.js'
 import type { SenderMapping } from '../engine/sender-mapping.js'
 import type { SendEngine } from '../engine/send-engine.js'
+import type { IdempotencyCache } from '../queue/idempotency-cache.js'
 import type {
   DispatchPlugin,
   PluginContext,
@@ -45,6 +46,7 @@ export class PluginLoader {
     logger?: PluginLoggerFactory,
     private senderMapping?: SenderMapping,
     private sendEngine?: SendEngine,
+    private idempotencyCache?: IdempotencyCache,
   ) {
     this.loggerFactory = logger ?? {
       child: (bindings) => ({
@@ -130,6 +132,7 @@ export class PluginLoader {
           const hasContext = Object.keys(mergedContext).length > 0
 
           return {
+            id: m.id,
             to: m.patient.phone,
             body: m.message.text,
             idempotencyKey: m.idempotencyKey,
@@ -213,6 +216,8 @@ export class PluginLoader {
       },
 
       logger,
+
+      idempotencyCache: this.idempotencyCache,
     }
   }
 }

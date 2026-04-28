@@ -4,7 +4,7 @@ import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import Database from 'better-sqlite3'
 import { Server as SocketIOServer } from 'socket.io'
-import { MessageQueue } from './queue/index.js'
+import { MessageQueue, IdempotencyCache } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
 import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
@@ -107,6 +107,12 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   const queue = new MessageQueue(db)
   queue.initialize()
+
+  // Task 4.3: Idempotency cache — time-bounded dedupe window for plugin enqueue
+  const idempotencyCache = new IdempotencyCache(db, {
+    defaultTtlSec: Number(process.env.IDEMPOTENCY_CACHE_TTL_SEC) || 3600,
+  })
+  idempotencyCache.initialize()
 
   // Phase 9: Contact Registry + Hygiene
   const contactRegistry = new ContactRegistry(db)
@@ -377,7 +383,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   const callbackDelivery = new CallbackDelivery(db, pluginRegistry, fetch)
   const pinoLogger = { child: (bindings: Record<string, unknown>) => ({ info: server.log.info.bind(server.log), warn: server.log.warn.bind(server.log), error: server.log.error.bind(server.log), debug: server.log.debug.bind(server.log) }) }
-  const pluginLoader = new PluginLoader(pluginRegistry, pluginEventBus, queue, db, pinoLogger, senderMapping, engine)
+  const pluginLoader = new PluginLoader(pluginRegistry, pluginEventBus, queue, db, pinoLogger, senderMapping, engine, idempotencyCache)
 
   // Load plugins from config
   const pluginNames = (process.env.DISPATCH_PLUGINS || '').split(',').map(s => s.trim()).filter(Boolean)
@@ -1008,6 +1014,14 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     }
   }, 60_000)
 
+  // Task 4.3: Periodic cleanup of expired idempotency keys (hourly)
+  const idempotencyCacheCleanupInterval = setInterval(() => {
+    const deleted = idempotencyCache.cleanupExpired()
+    if (deleted > 0) {
+      server.log.info({ deleted }, 'Cleaned expired idempotency keys')
+    }
+  }, 60 * 60 * 1000)
+
   // ── Graceful Shutdown (must register hook BEFORE listen) ──
   const shutdown = new GracefulShutdown(server.log)
 
@@ -1071,6 +1085,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     clearInterval(metadataCleanupInterval)
     clearInterval(metricsInterval)
     clearInterval(screenshotCleanupInterval)
+    clearInterval(idempotencyCacheCleanupInterval)
   })
 
   shutdown.addHandler('stale-locks', async () => {

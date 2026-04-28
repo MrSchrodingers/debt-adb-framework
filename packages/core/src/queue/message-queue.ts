@@ -173,7 +173,7 @@ export class MessageQueue {
           continue
         }
 
-        const id = nanoid()
+        const id = params.id ?? nanoid()
         const result = insert.run(
           id,
           params.to,

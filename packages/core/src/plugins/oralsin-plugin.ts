@@ -1,3 +1,4 @@
+import { nanoid } from 'nanoid'
 import { z } from 'zod'
 import type { DispatchPlugin, PluginContext, PluginEnqueueParams } from './types.js'
 import type { DispatchEventName } from '../events/index.js'
@@ -98,6 +99,7 @@ export class OralsinPlugin implements DispatchPlugin {
     try {
       const params: PluginEnqueueParams[] = []
       const rejected: Array<{ index: number; idempotency_key: string; reason: string }> = []
+      const deduped: Array<{ index: number; idempotency_key: string; message_id: string; status: 'duplicate' }> = []
 
       for (let i = 0; i < items.length; i++) {
         const item = items[i]
@@ -113,7 +115,27 @@ export class OralsinPlugin implements DispatchPlugin {
           continue // Skip this item, process the rest
         }
 
+        // ── Idempotency cache check (Task 4.3) ──
+        // Pre-generate an ID so the cache and the queue use the same value.
+        const msgId = nanoid()
+        if (this.ctx.idempotencyCache) {
+          const { hit, messageId: cachedId } = this.ctx.idempotencyCache.checkAndReserve(
+            item.idempotency_key,
+            msgId,
+          )
+          if (hit) {
+            deduped.push({
+              index: i,
+              idempotency_key: item.idempotency_key,
+              message_id: cachedId,
+              status: 'duplicate',
+            })
+            continue
+          }
+        }
+
         params.push({
+          id: msgId,
           idempotencyKey: item.idempotency_key,
           correlationId: item.correlation_id,
           patient: {
@@ -137,23 +159,25 @@ export class OralsinPlugin implements DispatchPlugin {
         })
       }
 
-      if (params.length === 0) {
+      if (params.length === 0 && deduped.length === 0) {
         return reply.status(422).send({
           error: 'No messages could be enqueued — all sender resolutions failed',
           rejected,
         })
       }
 
-      const messages = this.ctx.enqueue(params)
+      const messages = params.length > 0 ? this.ctx.enqueue(params) : []
 
       return reply.status(201).send({
         enqueued: messages.length,
+        deduped: deduped.length,
         rejected: rejected.length,
         messages: messages.map((m) => ({
           id: m.id,
           idempotency_key: m.idempotencyKey,
           status: m.status,
         })),
+        ...(deduped.length > 0 ? { deduped_details: deduped } : {}),
         ...(rejected.length > 0 ? { rejected_details: rejected } : {}),
       })
     } catch (err) {
