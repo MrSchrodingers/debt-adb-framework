@@ -245,4 +245,64 @@ describe('OralsinPlugin sender resolution', () => {
     const data = response.body as { enqueued: number }
     expect(data.enqueued).toBe(2)
   })
+
+  describe('backpressure (Task 4.4)', () => {
+    const ORIGINAL_LIMIT = process.env.DISPATCH_QUEUE_DEPTH_LIMIT
+
+    afterEach(() => {
+      if (ORIGINAL_LIMIT === undefined) delete process.env.DISPATCH_QUEUE_DEPTH_LIMIT
+      else process.env.DISPATCH_QUEUE_DEPTH_LIMIT = ORIGINAL_LIMIT
+    })
+
+    it('returns 429 + retry_after_seconds=30 when queue.pending exceeds DISPATCH_QUEUE_DEPTH_LIMIT', async () => {
+      process.env.DISPATCH_QUEUE_DEPTH_LIMIT = '2'
+      senderMapping.create({
+        phoneNumber: '+554396837945',
+        deviceSerial: '9b01005930533036',
+        profileId: 0,
+        appPackage: 'com.whatsapp',
+        wahaSession: 'oralsin_1_4',
+      })
+
+      // Seed 3 pending rows directly via queue.enqueueBatch — exceeds limit of 2
+      queue.enqueueBatch([
+        { idempotencyKey: 'bp-1', to: '5543991938235', body: 'm1', pluginName: 'oralsin' },
+        { idempotencyKey: 'bp-2', to: '5543991938236', body: 'm2', pluginName: 'oralsin' },
+        { idempotencyKey: 'bp-3', to: '5543991938237', body: 'm3', pluginName: 'oralsin' },
+      ])
+
+      const response = await callEnqueue(
+        buildEnqueueRequest([
+          { phone: '+554396837945', session: 'oralsin_1_4', pair: 'oralsin-1-4', role: 'primary' },
+        ]),
+      )
+
+      expect(response.code).toBe(429)
+      const body = response.body as { error: string; pending: number; limit: number; retry_after_seconds: number }
+      expect(body.error).toBe('Queue overloaded')
+      expect(body.pending).toBe(3)
+      expect(body.limit).toBe(2)
+      expect(body.retry_after_seconds).toBe(30)
+    })
+
+    it('lets requests through when pending is at or below the limit', async () => {
+      process.env.DISPATCH_QUEUE_DEPTH_LIMIT = '5'
+      senderMapping.create({
+        phoneNumber: '+554396837945',
+        deviceSerial: '9b01005930533036',
+        profileId: 0,
+        appPackage: 'com.whatsapp',
+        wahaSession: 'oralsin_1_4',
+      })
+
+      // Pending = 0, well under the limit
+      const response = await callEnqueue(
+        buildEnqueueRequest([
+          { phone: '+554396837945', session: 'oralsin_1_4', pair: 'oralsin-1-4', role: 'primary' },
+        ]),
+      )
+
+      expect(response.code).toBe(201)
+    })
+  })
 })

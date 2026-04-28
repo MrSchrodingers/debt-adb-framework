@@ -84,7 +84,15 @@ export class OralsinPlugin implements DispatchPlugin {
 
   // ── Route Handlers ──
 
-  private async handleEnqueue(request: { body: unknown; headers: Record<string, string> }, reply: { status: (code: number) => { send: (data: unknown) => unknown } }): Promise<unknown> {
+  private async handleEnqueue(
+    request: { body: unknown; headers: Record<string, string> },
+    reply: {
+      status: (code: number) => { send: (data: unknown) => unknown; header?: (k: string, v: string) => unknown }
+      header?: (k: string, v: string) => typeof reply
+      code?: (code: number) => typeof reply
+      send?: (data: unknown) => unknown
+    },
+  ): Promise<unknown> {
     if (!this.ctx) {
       return reply.status(503).send({ error: 'Plugin not initialized' })
     }
@@ -92,6 +100,31 @@ export class OralsinPlugin implements DispatchPlugin {
     const parsed = enqueueRequestSchema.safeParse(request.body)
     if (!parsed.success) {
       return reply.status(400).send({ error: 'Validation failed', details: parsed.error.issues })
+    }
+
+    // ── Backpressure (Task 4.4) ──
+    // Reject incoming batches when the queue is overloaded so upstream callers can back off.
+    // The retry-after window matches Oralsin's default Retry-After honouring (30s).
+    const queueDepthLimit = parseInt(process.env.DISPATCH_QUEUE_DEPTH_LIMIT ?? '1000', 10)
+    const pendingNow = this.ctx.getQueueStats().pending
+    if (pendingNow > queueDepthLimit) {
+      const replyAny = reply as { code?: (n: number) => unknown; status: (n: number) => { header?: (k: string, v: string) => { send: (d: unknown) => unknown }; send: (d: unknown) => unknown } }
+      const errBody = {
+        error: 'Queue overloaded',
+        pending: pendingNow,
+        limit: queueDepthLimit,
+        retry_after_seconds: 30,
+      }
+      // Fastify-style: reply.code(429).header(...).send(...). Fall back to status() for the local mock signature.
+      if (typeof replyAny.code === 'function') {
+        const r = replyAny.code(429) as { header: (k: string, v: string) => { send: (d: unknown) => unknown } }
+        return r.header('Retry-After', '30').send(errBody)
+      }
+      const r = replyAny.status(429)
+      if (typeof r.header === 'function') {
+        return r.header('Retry-After', '30').send(errBody)
+      }
+      return r.send(errBody)
     }
 
     const items = Array.isArray(parsed.data) ? parsed.data : [parsed.data]
