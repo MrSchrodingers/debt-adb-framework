@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
-import { CheckCircle, AlertTriangle as AlertTriangleIcon } from 'lucide-react'
+import { CheckCircle, AlertTriangle as AlertTriangleIcon, Monitor } from 'lucide-react'
 import { CORE_URL, authHeaders } from '../config'
 import type { DeviceRecord, Alert } from '../types'
+import { LiveScreenModal } from './live-screen-modal'
 
 const statusColors: Record<string, string> = {
   online: 'bg-emerald-500',
@@ -35,6 +36,8 @@ export function DeviceGrid({ devices, alerts, selectedSerial, onSelect }: Device
   const [bulkResults, setBulkResults] = useState<BulkActionResult[] | null>(null)
   const [confirmReboot, setConfirmReboot] = useState(false)
   const [validations, setValidations] = useState<Record<string, ValidationResult>>({})
+  // Task 7.3: live screen mirror modal
+  const [mirrorSerial, setMirrorSerial] = useState<string | null>(null)
 
   useEffect(() => {
     const onlineDevices = devices.filter(d => d.status === 'online')
@@ -196,10 +199,32 @@ export function DeviceGrid({ devices, alerts, selectedSerial, onSelect }: Device
                   </span>
                 )}
               </div>
+              {/* Mirror button (Task 7.3) */}
+              {device.status === 'online' && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setMirrorSerial(device.serial)
+                  }}
+                  className="mt-2 flex w-full items-center justify-center gap-1 rounded bg-zinc-800/60 border border-zinc-700/40 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200 transition-colors"
+                  title="Abrir mirror da tela"
+                >
+                  <Monitor className="h-3 w-3" />
+                  Mirror
+                </button>
+              )}
             </button>
           )
         })}
       </div>
+
+      {/* Live Screen Mirror modal (Task 7.3) */}
+      {mirrorSerial && (
+        <LiveScreenModal
+          serial={mirrorSerial}
+          onClose={() => setMirrorSerial(null)}
+        />
+      )}
 
       {/* Bulk Action Bar */}
       {hasChecked && (
