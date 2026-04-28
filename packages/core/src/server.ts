@@ -2,6 +2,7 @@ import { readdir, unlink, stat } from 'node:fs/promises'
 import { timingSafeEqual, createHmac } from 'node:crypto'
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
+import fastifyRateLimit from '@fastify/rate-limit'
 import Database from 'better-sqlite3'
 import { Server as SocketIOServer } from 'socket.io'
 import { MessageQueue, IdempotencyCache } from './queue/index.js'
@@ -54,6 +55,20 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const corsOrigins = buildCorsOrigins(process.env.DISPATCH_ALLOWED_ORIGINS)
   await server.register(cors, { origin: corsOrigins })
 
+  // Task 11.1: Fastify-level rate limiting (global: false — opt-in per route).
+  // Tailscale Funnel masks source IPs; extract real IP from X-Forwarded-For.
+  await server.register(fastifyRateLimit, {
+    global: false,
+    max: 60,
+    timeWindow: '1 minute',
+    keyGenerator: (req) => {
+      const xff = (req.headers['x-forwarded-for'] as string | undefined)
+        ?.split(',')[0]
+        ?.trim()
+      return xff ?? req.ip
+    },
+  })
+
   // Capture raw body alongside JSON parsing so plugin route HMAC verification
   // can hash the exact bytes the client signed (instead of round-tripping JSON
   // and risking key-order/whitespace divergence between client and server).
@@ -92,16 +107,20 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const authPassword = process.env.DISPATCH_AUTH_PASSWORD
   if (authUser && authPassword && dispatchJwtSecret) {
     const refreshTokenStore = new RefreshTokenStore(db)
+    // Task 11.1: 5 login attempts per IP per minute (brute-force protection).
     registerAuthLogin(server, {
       username: authUser,
       password: authPassword,
       jwtSecret: dispatchJwtSecret,
       refreshTokenStore,
+      rateLimitConfig: { max: 5, timeWindow: '1 minute' },
     })
+    // Task 11.1: 60 refresh attempts per IP per minute.
     registerAuthRefresh(server, {
       username: authUser,
       jwtSecret: dispatchJwtSecret,
       store: refreshTokenStore,
+      rateLimitConfig: { max: 60, timeWindow: '1 minute' },
     })
   }
 
@@ -495,7 +514,25 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       continue
     }
 
-    server[method](fullPath, async (req, reply) => {
+    // Task 11.1: per-route rate limit config.
+    // /enqueue routes are keyed by API key (service-to-service, 300/min).
+    // All other plugin routes fall back to the global default (60/min per IP).
+    const isEnqueue = route.path === '/enqueue'
+    const routeRateLimit = isEnqueue
+      ? {
+          max: 300,
+          timeWindow: '1 minute' as const,
+          keyGenerator: (req: import('fastify').FastifyRequest): string => {
+            return (req.headers as Record<string, string>)['x-api-key'] ?? req.ip
+          },
+        }
+      : { max: 60, timeWindow: '1 minute' as const }
+
+    server.route({
+      method: method.toUpperCase() as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+      url: fullPath,
+      config: { rateLimit: routeRateLimit },
+      handler: async (req, reply) => {
       // Auth: Bearer JWT first (logged-in UI session), then X-API-Key.
       // Without the Bearer-first ordering, a UI navigating between plugin
       // tabs would 401 whenever the build-time VITE_API_KEY drifts from
@@ -551,6 +588,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       }
 
       return route.handler(req, reply)
+      },
     })
   }
 
@@ -777,47 +815,65 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     return reply.send(sanitizePlugin(plugin))
   })
 
-  server.patch('/api/v1/admin/plugins/:name', async (req, reply) => {
-    const { name } = req.params as { name: string }
-    const body = req.body as { enabled?: boolean; webhookUrl?: string; events?: string[] }
-    const beforeState = pluginRegistry.getPlugin(name)
-    if (body.enabled === false) pluginRegistry.disablePlugin(name)
-    if (body.enabled === true) pluginRegistry.enablePlugin(name)
-    if (body.webhookUrl || body.events) pluginRegistry.updatePlugin(name, body)
-    const afterState = pluginRegistry.getPlugin(name)
-    auditLogger.log({
-      action: 'update',
-      resourceType: 'plugin',
-      resourceId: name,
-      beforeState: beforeState ? { status: beforeState.status, webhookUrl: beforeState.webhook_url, events: beforeState.events } : null,
-      afterState: afterState ? { status: afterState.status, webhookUrl: afterState.webhook_url, events: afterState.events } : null,
-    })
-    return reply.send(afterState)
+  // Task 11.1: 60 mutations/min per IP on admin write routes.
+  const ADMIN_WRITE_RATE_LIMIT = { max: 60, timeWindow: '1 minute' } as const
+
+  server.route({
+    method: 'PATCH',
+    url: '/api/v1/admin/plugins/:name',
+    config: { rateLimit: ADMIN_WRITE_RATE_LIMIT },
+    handler: async (req, reply) => {
+      const { name } = req.params as { name: string }
+      const body = req.body as { enabled?: boolean; webhookUrl?: string; events?: string[] }
+      const beforeState = pluginRegistry.getPlugin(name)
+      if (body.enabled === false) pluginRegistry.disablePlugin(name)
+      if (body.enabled === true) pluginRegistry.enablePlugin(name)
+      if (body.webhookUrl || body.events) pluginRegistry.updatePlugin(name, body)
+      const afterState = pluginRegistry.getPlugin(name)
+      auditLogger.log({
+        action: 'update',
+        resourceType: 'plugin',
+        resourceId: name,
+        beforeState: beforeState ? { status: beforeState.status, webhookUrl: beforeState.webhook_url, events: beforeState.events } : null,
+        afterState: afterState ? { status: afterState.status, webhookUrl: afterState.webhook_url, events: afterState.events } : null,
+      })
+      return reply.send(afterState)
+    },
   })
 
-  server.delete('/api/v1/admin/plugins/:name', async (req, reply) => {
-    const { name } = req.params as { name: string }
-    const beforeState = pluginRegistry.getPlugin(name)
-    pluginRegistry.deletePlugin(name)
-    auditLogger.log({
-      action: 'delete',
-      resourceType: 'plugin',
-      resourceId: name,
-      beforeState: beforeState ? { status: beforeState.status, webhookUrl: beforeState.webhook_url, events: beforeState.events } : null,
-    })
-    return reply.status(204).send()
+  server.route({
+    method: 'DELETE',
+    url: '/api/v1/admin/plugins/:name',
+    config: { rateLimit: ADMIN_WRITE_RATE_LIMIT },
+    handler: async (req, reply) => {
+      const { name } = req.params as { name: string }
+      const beforeState = pluginRegistry.getPlugin(name)
+      pluginRegistry.deletePlugin(name)
+      auditLogger.log({
+        action: 'delete',
+        resourceType: 'plugin',
+        resourceId: name,
+        beforeState: beforeState ? { status: beforeState.status, webhookUrl: beforeState.webhook_url, events: beforeState.events } : null,
+      })
+      return reply.status(204).send()
+    },
   })
 
-  server.post('/api/v1/admin/plugins/:name/rotate-key', async (req, reply) => {
-    const { name } = req.params as { name: string }
-    const newKey = pluginRegistry.rotateApiKey(name)
-    auditLogger.log({
-      action: 'rotate_key',
-      resourceType: 'plugin',
-      resourceId: name,
-      // Intentionally not logging the key value for security
-    })
-    return reply.send({ api_key: newKey })
+  server.route({
+    method: 'POST',
+    url: '/api/v1/admin/plugins/:name/rotate-key',
+    config: { rateLimit: ADMIN_WRITE_RATE_LIMIT },
+    handler: async (req, reply) => {
+      const { name } = req.params as { name: string }
+      const newKey = pluginRegistry.rotateApiKey(name)
+      auditLogger.log({
+        action: 'rotate_key',
+        resourceType: 'plugin',
+        resourceId: name,
+        // Intentionally not logging the key value for security
+      })
+      return reply.send({ api_key: newKey })
+    },
   })
 
   // Admin routes for dead-letter callback management
@@ -825,35 +881,40 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     return reply.send(callbackDelivery.listAbandonedCallbacks())
   })
 
-  server.post('/api/v1/admin/callbacks/:id/retry', async (req, reply) => {
-    const { id } = req.params as { id: string }
-    const record = callbackDelivery.getCallback(id)
-    if (!record || !record.abandoned_at) return reply.status(404).send({ error: 'Dead-letter record not found' })
+  server.route({
+    method: 'POST',
+    url: '/api/v1/admin/callbacks/:id/retry',
+    config: { rateLimit: ADMIN_WRITE_RATE_LIMIT },
+    handler: async (req, reply) => {
+      const { id } = req.params as { id: string }
+      const record = callbackDelivery.getCallback(id)
+      if (!record || !record.abandoned_at) return reply.status(404).send({ error: 'Dead-letter record not found' })
 
-    const beforeState = {
-      attempts: record.attempts,
-      abandoned_at: record.abandoned_at,
-      abandoned_reason: record.abandoned_reason,
-    }
+      const beforeState = {
+        attempts: record.attempts,
+        abandoned_at: record.abandoned_at,
+        abandoned_reason: record.abandoned_reason,
+      }
 
-    callbackDelivery.clearAbandoned(id, 0)
-    await callbackDelivery.retryFailedCallback(id)
+      callbackDelivery.clearAbandoned(id, 0)
+      await callbackDelivery.retryFailedCallback(id)
 
-    const afterRecord = callbackDelivery.getCallback(id)
-    const afterState = afterRecord
-      ? { attempts: afterRecord.attempts, abandoned_at: afterRecord.abandoned_at, abandoned_reason: afterRecord.abandoned_reason }
-      : { deleted: true }
-    const result = afterRecord ? 'still_failing' : 'deleted'
+      const afterRecord = callbackDelivery.getCallback(id)
+      const afterState = afterRecord
+        ? { attempts: afterRecord.attempts, abandoned_at: afterRecord.abandoned_at, abandoned_reason: afterRecord.abandoned_reason }
+        : { deleted: true }
+      const result = afterRecord ? 'still_failing' : 'deleted'
 
-    auditLogger.log({
-      action: 'callback_dead_letter_retry',
-      resourceType: 'failed_callback',
-      resourceId: id,
-      beforeState,
-      afterState,
-    })
+      auditLogger.log({
+        action: 'callback_dead_letter_retry',
+        resourceType: 'failed_callback',
+        resourceId: id,
+        beforeState,
+        afterState,
+      })
 
-    return reply.send({ id, result })
+      return reply.send({ id, result })
+    },
   })
 
   // Auto-configure new devices on connect: disable screen lock + keep awake

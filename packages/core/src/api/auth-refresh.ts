@@ -1,7 +1,8 @@
 import { z } from 'zod'
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { signJwt } from './jwt.js'
 import type { RefreshTokenStore } from './refresh-token.js'
+import type { RateLimitOptions } from '@fastify/rate-limit'
 
 const RefreshSchema = z.object({
   refresh_token: z.string().min(1).max(512),
@@ -20,6 +21,12 @@ export interface AuthRefreshConfig {
   /** Default 24h. */
   refreshTtlSeconds?: number
   store: RefreshTokenStore
+  /**
+   * Task 11.1: optional route-level rate limit config.
+   * When omitted, no rate limit is applied on this route (useful in tests
+   * where @fastify/rate-limit is not registered).
+   */
+  rateLimitConfig?: RateLimitOptions
 }
 
 /**
@@ -36,7 +43,7 @@ export function registerAuthRefresh(server: FastifyInstance, cfg: AuthRefreshCon
   const accessTtl = cfg.accessTtlSeconds ?? 15 * 60
   const refreshTtl = cfg.refreshTtlSeconds ?? 24 * 60 * 60
 
-  server.post('/api/v1/auth/refresh', async (request, reply) => {
+  const handler = async (request: FastifyRequest, reply: FastifyReply) => {
     const parsed = RefreshSchema.safeParse(request.body)
     if (!parsed.success) {
       return reply.status(400).send({ error: 'invalid_payload' })
@@ -58,5 +65,12 @@ export function registerAuthRefresh(server: FastifyInstance, cfg: AuthRefreshCon
       refresh_expires_at: newToken.expiresAt,
       sub: result.userId,
     })
+  }
+
+  server.route({
+    method: 'POST',
+    url: '/api/v1/auth/refresh',
+    config: cfg.rateLimitConfig ? { rateLimit: cfg.rateLimitConfig } : {},
+    handler,
   })
 }
