@@ -26,10 +26,10 @@ echo "============================================================"
 
 # ── Step 1: apt deps ──────────────────────────────────────────────
 echo ""
-echo "[1/7] Installing apt deps (apktool, jq, python3-pip)..."
+echo "[1/7] Installing apt deps (apktool, jq, python3-pip, scrcpy)..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq apktool jq python3-pip python3-full python3-venv
+apt-get install -y -qq apktool jq python3-pip python3-full python3-venv scrcpy
 
 # ── Step 2: frida-tools (per-user pip) + frida-server download ────
 echo ""

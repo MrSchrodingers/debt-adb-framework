@@ -9,7 +9,20 @@
     "contacts": "Contacts",
     "plugins": "Plugins",
     "admin": "Admin",
+    "mirror": "Mirror",
     "logout": "Sign out"
+  },
+  "mirror": {
+    "title": "Live device mirror",
+    "noDevices": "No devices connected.",
+    "offline": "Offline",
+    "loading": "Loading...",
+    "pauseAll": "Pause all",
+    "resumeAll": "Resume all",
+    "pauseTile": "Pause tile",
+    "resumeTile": "Resume tile",
+    "expand": "Expand",
+    "refresh": "Refresh"
   },
   "admin": {
     "title": "Administration",

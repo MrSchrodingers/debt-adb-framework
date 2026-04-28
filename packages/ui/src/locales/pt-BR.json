@@ -9,7 +9,20 @@
     "contacts": "Contatos",
     "plugins": "Plugins",
     "admin": "Admin",
+    "mirror": "Espelho",
     "logout": "Sair"
+  },
+  "mirror": {
+    "title": "Espelho de devices (live)",
+    "noDevices": "Nenhum device conectado.",
+    "offline": "Offline",
+    "loading": "Carregando...",
+    "pauseAll": "Pausar tudo",
+    "resumeAll": "Retomar tudo",
+    "pauseTile": "Pausar tile",
+    "resumeTile": "Retomar tile",
+    "expand": "Expandir",
+    "refresh": "Atualizar"
   },
   "admin": {
     "title": "Administração",

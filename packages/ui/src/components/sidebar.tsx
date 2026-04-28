@@ -1,10 +1,10 @@
-import { Smartphone, Send, Users, Radio, BarChart3, FileText, X, AlertTriangle, Puzzle, BookUser, LogOut, ShieldOff } from 'lucide-react'
+import { Smartphone, Send, Users, Radio, BarChart3, FileText, X, AlertTriangle, Puzzle, BookUser, LogOut, ShieldOff, Monitor } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../auth/auth-context'
 import { BrandMark } from './brand-mark'
 import { PreferencesMenu } from './preferences-menu'
 
-type TabId = 'devices' | 'queue' | 'senders' | 'sessions' | 'metricas' | 'auditoria' | 'plugins' | 'contatos' | 'admin'
+type TabId = 'devices' | 'queue' | 'senders' | 'sessions' | 'metricas' | 'auditoria' | 'plugins' | 'contatos' | 'admin' | 'mirror'
 
 interface SidebarProps {
   activeTab: TabId
@@ -18,6 +18,7 @@ interface SidebarProps {
 
 const NAV_ITEMS: { id: TabId; labelKey: string; icon: typeof Smartphone }[] = [
   { id: 'devices',   labelKey: 'nav.devices',  icon: Smartphone },
+  { id: 'mirror',    labelKey: 'nav.mirror',   icon: Monitor },
   { id: 'queue',     labelKey: 'nav.queue',    icon: Send },
   { id: 'senders',   labelKey: 'nav.senders',  icon: Users },
   { id: 'sessions',  labelKey: 'nav.sessions', icon: Radio },

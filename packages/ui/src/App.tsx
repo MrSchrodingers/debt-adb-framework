@@ -20,13 +20,14 @@ import { PluginTabs } from './components/plugin-tabs'
 import { SenderDashboard } from './components/sender-dashboard'
 import { ContactsAudit } from './components/contacts-audit'
 import { AdminPage } from './components/admin-page'
+import { DevicesGridMirror } from './components/devices-grid-mirror'
 import { AnomalyBanner } from './components/anomaly-banner'
 import { CommandPalette } from './components/command-palette'
 import { KeyboardShortcutsHelp } from './components/keyboard-shortcuts-help'
 import { useAuth } from './auth/auth-context'
 import type { DeviceRecord, HealthSnapshot, WhatsAppAccount, Alert } from './types'
 
-type Tab = 'devices' | 'queue' | 'senders' | 'sessions' | 'metricas' | 'auditoria' | 'plugins' | 'contatos' | 'admin'
+type Tab = 'devices' | 'queue' | 'senders' | 'sessions' | 'metricas' | 'auditoria' | 'plugins' | 'contatos' | 'admin' | 'mirror'
 
 export function App() {
   const { logout } = useAuth()
@@ -318,7 +319,9 @@ export function App() {
 
         {/* Content */}
         <main className="flex-1 overflow-y-auto p-4 lg:p-6">
-          {activeTab === 'admin' ? (
+          {activeTab === 'mirror' ? (
+            <DevicesGridMirror />
+          ) : activeTab === 'admin' ? (
             <AdminPage />
           ) : activeTab === 'plugins' ? (
             <PluginTabs />
