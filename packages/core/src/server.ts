@@ -565,25 +565,39 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         }
       }
 
-      // HMAC verify on body-bearing methods when the plugin opts in. The
-      // signature header is `X-Dispatch-Signature: sha256=<hex_hmac>` and the
-      // HMAC is computed over the raw request body (same bytes the client
+      // Task 11.2: HMAC verify on body-bearing methods.
+      // The signature header is `X-Dispatch-Signature: sha256=<hex_hmac>` and
+      // the HMAC is computed over the raw request body (same bytes the client
       // sent). Empty body produces an empty-string HMAC, mirroring how most
       // SDKs behave and avoiding edge cases on GET-style POSTs.
-      if (pluginHmacRequired) {
-        if (!pluginHmacSecret) {
-          server.log.error({ plugin: route.pluginName }, 'HMAC required but secret missing')
-          return reply.status(500).send({ error: 'Server misconfiguration: HMAC secret missing' })
-        }
-        const m = req.method.toUpperCase()
-        if (m === 'POST' || m === 'PUT' || m === 'PATCH') {
-          const provided = (req.headers as Record<string, string>)['x-dispatch-signature'] ?? ''
+      //
+      // PLUGIN_<NAME>_HMAC_REQUIRED=true  → missing/invalid signature → 401
+      // PLUGIN_<NAME>_HMAC_REQUIRED=false → missing signature → warning logged
+      //   (default false for backward compat until Oralsin client signs requests)
+      //
+      // To enable: set PLUGIN_ORALSIN_HMAC_REQUIRED=true in .env after the
+      // Oralsin Python client has been updated to sign outbound requests.
+      const reqMethod = req.method.toUpperCase()
+      if (reqMethod === 'POST' || reqMethod === 'PUT' || reqMethod === 'PATCH') {
+        const provided = (req.headers as Record<string, string>)['x-dispatch-signature'] ?? ''
+        if (pluginHmacRequired) {
+          if (!pluginHmacSecret) {
+            server.log.error({ plugin: route.pluginName }, 'HMAC required but secret missing')
+            return reply.status(500).send({ error: 'Server misconfiguration: HMAC secret missing' })
+          }
           const rawBody = (req as unknown as { rawBody?: string }).rawBody ?? ''
           const expected = 'sha256=' + createHmac('sha256', pluginHmacSecret).update(rawBody).digest('hex')
           if (provided.length !== expected.length ||
               !timingSafeEqual(Buffer.from(provided), Buffer.from(expected))) {
             return reply.status(401).send({ error: 'Invalid HMAC signature' })
           }
+        } else if (!provided) {
+          // Warn when flag is false and signature is absent: helps operators
+          // know when to flip PLUGIN_<NAME>_HMAC_REQUIRED=true in production.
+          server.log.warn(
+            { plugin: route.pluginName, path: fullPath },
+            'Request has no X-Dispatch-Signature. Set PLUGIN_<NAME>_HMAC_REQUIRED=true once client is signing.',
+          )
         }
       }
 
