@@ -12,3 +12,7 @@ export { SessionManager, WebhookHandler, MessageHistory, AckHistory } from './wa
 export type { WahaSessionInfo, WahaWebhookPayload, MessageHistoryRecord, WahaApiClient, AckHistoryRecord } from './waha/index.js'
 export { calibrateAckRate } from './research/ack-rate-calibrator.js'
 export type { AckEvent, CalibrationInput, CalibrationOutput, SenderCalibration } from './research/ack-rate-calibrator.js'
+export { AckRateThresholds } from './research/ack-rate-thresholds.js'
+export type { AckRateThresholdRecord, ApplyThresholdParams } from './research/ack-rate-thresholds.js'
+export { AckPersistFailures } from './waha/ack-persist-failures.js'
+export type { AckPersistFailureRecord } from './waha/ack-persist-failures.js'

@@ -112,6 +112,20 @@ export const wahaDedupmissTotal = new Counter({
   registers: [metricsRegistry],
 })
 
+// Phase 12 — WAHA ack-level events for ban-prediction calibration (ADR 0001)
+export const wahaAckTotal = new Counter({
+  name: 'dispatch_waha_ack_total',
+  help: 'WAHA ack events received per ack level',
+  labelNames: ['ack_level_name'] as const,
+  registers: [metricsRegistry],
+})
+
+export const wahaAckPersistFailedTotal = new Counter({
+  name: 'dispatch_waha_ack_persist_failed_total',
+  help: 'WAHA ack events that failed to persist',
+  registers: [metricsRegistry],
+})
+
 // ── Histograms (distribution) ──
 
 export const sendDurationSeconds = new Histogram({

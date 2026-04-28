@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
-import { AlertTriangle, RefreshCw, Trash2, Search, Database, ShieldOff, PauseCircle, PlayCircle, Plus } from 'lucide-react'
+import { AlertTriangle, RefreshCw, Trash2, Search, Database, ShieldOff, PauseCircle, PlayCircle, Plus, Gauge } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { CORE_URL, authHeaders } from '../config'
+import { AckRatePage } from './ack-rate-page'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -430,11 +431,22 @@ function PausePanel() {
 
 // ── Main page ──────────────────────────────────────────────────────────────
 
-type AdminTab = 'dead-letter' | 'banned' | 'pause'
+type AdminTab = 'dead-letter' | 'banned' | 'pause' | 'ack-rate'
 
 export function AdminPage() {
   const { t } = useTranslation()
   const [tab, setTab] = useState<AdminTab>('dead-letter')
+
+  const tabLabel = (id: AdminTab): string => {
+    if (id === 'pause') return t('admin.pauseTab')
+    if (id === 'dead-letter') return t('admin.deadLetterTab')
+    if (id === 'banned') return t('admin.bannedTab')
+    return t('admin.ackRateTab')
+  }
+  const tabIcon = (id: AdminTab) => {
+    if (id === 'ack-rate') return <Gauge className="h-3.5 w-3.5" />
+    return null
+  }
 
   return (
     <div className="space-y-4 p-4">
@@ -443,18 +455,19 @@ export function AdminPage() {
         <h2 className="text-base font-semibold text-zinc-100">{t('admin.title')}</h2>
       </div>
 
-      <div className="flex gap-2 border-b border-zinc-800">
-        {(['pause', 'dead-letter', 'banned'] as AdminTab[]).map(id => (
+      <div className="flex gap-2 border-b border-zinc-800 flex-wrap">
+        {(['pause', 'dead-letter', 'banned', 'ack-rate'] as AdminTab[]).map(id => (
           <button
             key={id}
             onClick={() => setTab(id)}
-            className={`px-3 py-2 text-xs font-medium border-b-2 transition ${
+            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition ${
               tab === id
                 ? 'border-emerald-400 text-zinc-100'
                 : 'border-transparent text-zinc-500 hover:text-zinc-300'
             }`}
           >
-            {id === 'pause' ? t('admin.pauseTab') : id === 'dead-letter' ? t('admin.deadLetterTab') : t('admin.bannedTab')}
+            {tabIcon(id)}
+            {tabLabel(id)}
           </button>
         ))}
       </div>
@@ -462,6 +475,7 @@ export function AdminPage() {
       {tab === 'pause' && <PausePanel />}
       {tab === 'dead-letter' && <DeadLetterPanel />}
       {tab === 'banned' && <BannedNumbersPanel />}
+      {tab === 'ack-rate' && <AckRatePage />}
     </div>
   )
 }

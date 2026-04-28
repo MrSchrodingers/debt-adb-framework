@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { BanPredictionDaemon } from './ban-prediction-daemon.js'
+import { BanPredictionDaemon, type SerialResolver, type ThresholdProvider } from './ban-prediction-daemon.js'
 import type { DispatchEmitter } from '../events/dispatch-emitter.js'
 import type { DeviceCircuitBreaker } from '../engine/device-circuit-breaker.js'
 
@@ -165,6 +165,132 @@ describe('BanPredictionDaemon', () => {
 
       expect(cb.recordFailure).not.toHaveBeenCalled()
       expect(emitter.emit).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('per-sender ack-rate threshold override', () => {
+    function makeResolver(map: Record<string, string | null>): SerialResolver {
+      return {
+        resolveSenderForSerial: vi.fn((s: string) => map[s] ?? null),
+      }
+    }
+    function makeProvider(
+      map: Record<string, { threshold: number; windowMs: number } | null>,
+    ): ThresholdProvider {
+      return {
+        getActiveThreshold: vi.fn((p: string) => map[p] ?? null),
+      }
+    }
+
+    it('falls back to env-default suspect threshold when no override exists', () => {
+      const emitter = makeEmitter()
+      const cb = makeCircuitBreaker()
+      const resolver = makeResolver({ 'device-A': '5511999' })
+      const provider = makeProvider({ '5511999': null })
+      const daemon = new BanPredictionDaemon(
+        emitter,
+        cb,
+        { port: 9871, suspectThreshold: 3, windowMs: 60_000 },
+        resolver,
+        provider,
+      )
+
+      sendLine(daemon, suspectLine('device-A'))
+      sendLine(daemon, suspectLine('device-A'))
+      expect(cb.recordFailure).not.toHaveBeenCalled()
+
+      sendLine(daemon, suspectLine('device-A'))
+      expect(cb.recordFailure).toHaveBeenCalledOnce()
+    })
+
+    it('falls back to env-default when device has no sender mapping', () => {
+      const emitter = makeEmitter()
+      const cb = makeCircuitBreaker()
+      const resolver = makeResolver({ 'device-A': null })
+      const provider = makeProvider({})
+      const daemon = new BanPredictionDaemon(
+        emitter,
+        cb,
+        { port: 9871, suspectThreshold: 3, windowMs: 60_000 },
+        resolver,
+        provider,
+      )
+
+      sendLine(daemon, suspectLine('device-A'))
+      sendLine(daemon, suspectLine('device-A'))
+      expect(cb.recordFailure).not.toHaveBeenCalled()
+      sendLine(daemon, suspectLine('device-A'))
+      expect(cb.recordFailure).toHaveBeenCalledOnce()
+    })
+
+    it('uses override threshold to trip aggressively when ratio is high', () => {
+      const emitter = makeEmitter()
+      const cb = makeCircuitBreaker()
+      const resolver = makeResolver({ 'device-A': '5511999' })
+      // Ratio 0.9 → ceil(3 * (1 - 0.9)) = 1
+      const provider = makeProvider({ '5511999': { threshold: 0.9, windowMs: 30_000 } })
+      const daemon = new BanPredictionDaemon(
+        emitter,
+        cb,
+        { port: 9871, suspectThreshold: 3, windowMs: 60_000 },
+        resolver,
+        provider,
+      )
+
+      sendLine(daemon, suspectLine('device-A'))
+      expect(cb.recordFailure).toHaveBeenCalledOnce()
+      // Override windowMs is propagated in the emitted event
+      expect(emitter.emit).toHaveBeenCalledWith(
+        'ban_prediction:triggered',
+        expect.objectContaining({ windowMs: 30_000 }),
+      )
+    })
+
+    it('honours override windowMs for the sliding window check', () => {
+      const emitter = makeEmitter()
+      const cb = makeCircuitBreaker()
+      const resolver = makeResolver({ 'device-A': '5511999' })
+      const provider = makeProvider({ '5511999': { threshold: 0.0, windowMs: 5_000 } })
+      const daemon = new BanPredictionDaemon(
+        emitter,
+        cb,
+        { port: 9871, suspectThreshold: 3, windowMs: 60_000 },
+        resolver,
+        provider,
+      )
+
+      const realNow = Date.now
+      let fakeNow = 1_000_000
+      try {
+        vi.spyOn(Date, 'now').mockImplementation(() => fakeNow)
+        sendLine(daemon, suspectLine('device-A'))
+        sendLine(daemon, suspectLine('device-A'))
+        // Advance past override window — older signals expire
+        fakeNow += 5_001
+        sendLine(daemon, suspectLine('device-A'))
+        expect(cb.recordFailure).not.toHaveBeenCalled()
+      } finally {
+        vi.spyOn(Date, 'now').mockImplementation(realNow)
+        vi.restoreAllMocks()
+      }
+    })
+
+    it('floors the scaled count at 1 even when ratio is exactly 1.0', () => {
+      const emitter = makeEmitter()
+      const cb = makeCircuitBreaker()
+      const resolver = makeResolver({ 'device-A': '5511999' })
+      // Ratio 1.0 would naively scale to 0 — must floor at 1
+      const provider = makeProvider({ '5511999': { threshold: 1.0, windowMs: 60_000 } })
+      const daemon = new BanPredictionDaemon(
+        emitter,
+        cb,
+        { port: 9871, suspectThreshold: 3, windowMs: 60_000 },
+        resolver,
+        provider,
+      )
+
+      sendLine(daemon, suspectLine('device-A'))
+      expect(cb.recordFailure).toHaveBeenCalledOnce()
     })
   })
 

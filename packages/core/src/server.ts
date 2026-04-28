@@ -10,7 +10,7 @@ import { AdbBridge } from './adb/index.js'
 import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, SenderScoring, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender } from './engine/index.js'
 import { DispatchPauseState, type PauseScope } from './engine/dispatch-pause-state.js'
 import { DispatchEmitter } from './events/index.js'
-import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes, registerMessageTimelineRoutes, registerAdminMessageRoutes, registerInsightsHeatmapRoutes } from './api/index.js'
+import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes, registerMessageTimelineRoutes, registerAdminMessageRoutes, registerInsightsHeatmapRoutes, registerAckRateRoutes } from './api/index.js'
 import { registerAnomalyRoutes, registerChanged24hRoutes } from './insights/index.js'
 import { verifyJwt } from './api/jwt.js'
 import { ContactRegistry } from './contacts/index.js'
@@ -27,7 +27,7 @@ import { RateLimitGuard } from './config/rate-limits.js'
 import { parseConfig } from './config/config-schema.js'
 import { AuditLogger } from './config/audit-logger.js'
 import { ScreenshotPolicy } from './config/screenshot-policy.js'
-import { metricsRegistry, messagesSentTotal, messagesFailedTotal, messagesQueuedTotal, sendDurationSeconds, interMessageDelaySeconds, queueDepth, devicesOnline, senderDailyCount, quarantineEventsTotal, senderQuarantined, callbacksTotal, pluginErrorsTotal, queueDepthByPlugin } from './config/metrics.js'
+import { metricsRegistry, messagesSentTotal, messagesFailedTotal, messagesQueuedTotal, sendDurationSeconds, interMessageDelaySeconds, queueDepth, devicesOnline, senderDailyCount, quarantineEventsTotal, senderQuarantined, callbacksTotal, pluginErrorsTotal, queueDepthByPlugin, wahaAckTotal, wahaAckPersistFailedTotal } from './config/metrics.js'
 import {
   sendCriticalAlert,
   alertCircuitOpened,
@@ -42,7 +42,9 @@ import { AdbProbeStrategy, WahaCheckStrategy, CacheOnlyStrategy } from './check-
 import { ContactValidator } from './validator/contact-validator.js'
 import type { DispatchEventName } from './events/index.js'
 import type { DispatchPlugin, PluginRecord } from './plugins/types.js'
-import { BanPredictionDaemon } from './research/ban-prediction-daemon.js'
+import { BanPredictionDaemon, type SerialResolver, type ThresholdProvider } from './research/ban-prediction-daemon.js'
+import { AckRateThresholds } from './research/ack-rate-thresholds.js'
+import { AckPersistFailures } from './waha/ack-persist-failures.js'
 
 export interface DispatchCore {
   server: ReturnType<typeof Fastify>
@@ -202,6 +204,14 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     senderQuarantined.set({ sender: data.sender }, 0)
   })
 
+  // Phase 12 — ack-level Prometheus counter (ADR 0001 ack-rate calibration)
+  emitter.on('waha:message_ack', (data) => {
+    wahaAckTotal.inc({ ack_level_name: data.ackLevelName })
+  })
+  emitter.on('waha:ack_persist_failed', () => {
+    wahaAckPersistFailedTotal.inc()
+  })
+
   const senderWarmup = new SenderWarmup(db)
   const rateLimitGuard = RateLimitGuard.fromEnv(process.env as Record<string, string | undefined>)
   const senderHealth = new SenderHealth(db, {
@@ -226,6 +236,10 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // Phase 12 — ack-rate calibration persistence (replaces Frida path; ADR 0001)
   const ackHistory = new AckHistory(db, messageHistory)
   ackHistory.initialize()
+  const ackRateThresholds = new AckRateThresholds(db)
+  ackRateThresholds.initialize()
+  const ackPersistFailures = new AckPersistFailures(db)
+  ackPersistFailures.initialize()
 
   const wahaApiUrl = process.env.WAHA_API_URL
   const wahaApiKey = process.env.WAHA_API_KEY
@@ -346,6 +360,11 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   registerInsightsHeatmapRoutes(server, db)
   registerAnomalyRoutes(server, db)
   registerChanged24hRoutes(server, db)
+  registerAckRateRoutes(server, {
+    db,
+    thresholds: ackRateThresholds,
+    persistFailures: ackPersistFailures,
+  })
 
   // Manual phone number mapping moved to api/devices.ts
 
@@ -1219,6 +1238,42 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     }
   })
 
+  // Phase 12 — Ack persistence failure alerts (ADR 0001).
+  // Persist every event for the operator UI; throttle Telegram/Slack alerts to
+  // at most one per error-message per 60s so that a webhook storm does not
+  // flood the channel.
+  const ackFailureLastAlertTs = new Map<string, number>()
+  const ACK_FAILURE_ALERT_THROTTLE_MS = 60_000
+  emitter.on('waha:ack_persist_failed', (data) => {
+    try {
+      ackPersistFailures.insert({
+        wahaMessageId: data.wahaMessageId,
+        ackLevel: data.ackLevel,
+        error: data.error,
+      })
+    } catch (err) {
+      server.log.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        'Failed to persist ack_persist_failures row',
+      )
+    }
+    const now = Date.now()
+    const last = ackFailureLastAlertTs.get(data.error) ?? 0
+    if (now - last < ACK_FAILURE_ALERT_THROTTLE_MS) return
+    ackFailureLastAlertTs.set(data.error, now)
+    void sendCriticalAlert({
+      title: 'Ack persistence failure',
+      severity: 'critical',
+      summary: 'WAHA webhook delivered an ack but the row could not be persisted to message_ack_history.',
+      fields: {
+        wahaMessageId: data.wahaMessageId,
+        ackLevel: data.ackLevel,
+        error: data.error,
+      },
+      source: 'dispatch-core / ack-history',
+    })
+  })
+
   // Periodic failure-rate check (every 5 min). Fires when failedLastHour > threshold.
   const ALERT_FAILURE_THRESHOLD = Number(process.env.DISPATCH_ALERT_FAILURE_THRESHOLD) || 100
   const criticalAlertInterval = setInterval(() => {
@@ -1253,13 +1308,33 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   pauseState.initialize()
 
   // ── Ban Prediction Daemon (Task 12.2 — experimental, default off) ──
+  // Per-sender ack-rate thresholds beat the env-default when an operator has
+  // applied one via the UI (ADR 0001 — env mutation is forbidden).
+  const bpdSerialResolver: SerialResolver = {
+    resolveSenderForSerial: (serial: string) => {
+      const list = senderMapping.getByDeviceSerial(serial)
+      return list.length > 0 ? list[0].phone_number : null
+    },
+  }
+  const bpdThresholdProvider: ThresholdProvider = {
+    getActiveThreshold: (senderPhone: string) => {
+      const row = ackRateThresholds.getActive(senderPhone)
+      return row ? { threshold: row.threshold, windowMs: row.windowMs } : null
+    },
+  }
   let banPredictionDaemon: BanPredictionDaemon | null = null
   if (process.env.DISPATCH_BAN_PREDICTION_ENABLED === 'true') {
-    banPredictionDaemon = new BanPredictionDaemon(emitter, circuitBreaker, {
-      port: Number(process.env.DISPATCH_BAN_PREDICTION_PORT) || 9871,
-      suspectThreshold: Number(process.env.DISPATCH_BAN_PREDICTION_SUSPECT_THRESHOLD) || 3,
-      windowMs: Number(process.env.DISPATCH_BAN_PREDICTION_WINDOW_MS) || 60_000,
-    })
+    banPredictionDaemon = new BanPredictionDaemon(
+      emitter,
+      circuitBreaker,
+      {
+        port: Number(process.env.DISPATCH_BAN_PREDICTION_PORT) || 9871,
+        suspectThreshold: Number(process.env.DISPATCH_BAN_PREDICTION_SUSPECT_THRESHOLD) || 3,
+        windowMs: Number(process.env.DISPATCH_BAN_PREDICTION_WINDOW_MS) || 60_000,
+      },
+      bpdSerialResolver,
+      bpdThresholdProvider,
+    )
     banPredictionDaemon.start()
     server.log.info('Ban prediction daemon started (EXPERIMENTAL)')
   }
