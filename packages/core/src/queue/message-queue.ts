@@ -3,6 +3,16 @@ import { nanoid } from 'nanoid'
 import type { EnqueueParams, Message, MessageStatus, PaginatedFilters, PaginatedResult, BatchResult, SkippedItem } from './types.js'
 import { VALID_TRANSITIONS } from './types.js'
 
+/**
+ * Strip all non-digit characters from a phone string.
+ * Used to normalise phone numbers at the recordBan / isBlacklisted boundary so
+ * that "+5543991938235", "55 43 99193-8235", and "5543991938235" all resolve to
+ * the same blacklist key regardless of how the caller formatted the number.
+ */
+function normalizeDigits(phone: string): string {
+  return phone.replace(/\D/g, '')
+}
+
 export class MessageQueue {
   constructor(private db: Database.Database) {}
 
@@ -134,11 +144,11 @@ export class MessageQueue {
    * Record a banned number. If already present, increments `hits` and updates
    * `last_hit_at`. If new, inserts with hits=1.
    *
-   * Phone is stored as-is (no normalization) to stay consistent with the
-   * `isBlacklisted` lookup which also does no normalization. Callers must
-   * ensure the value they pass here matches the format used at enqueue time.
+   * Phone is normalised to digits-only before storage so that "+5543991938235",
+   * "55 43 99193-8235", and "5543991938235" all map to the same blacklist key.
+   * `isBlacklisted` applies the same normalisation at lookup time.
    *
-   * @param phone   The recipient phone number.
+   * @param phone   The recipient phone number (any format — normalised internally).
    * @param source  'engine_failures' | 'precheck_invalid' | 'ocr_ban_detected'
    * @param meta    Optional forensic context.
    */
@@ -147,6 +157,7 @@ export class MessageQueue {
     source: string,
     meta?: { detectedMessage?: string; detectedPattern?: string; sourceSession?: string },
   ): void {
+    const normalised = normalizeDigits(phone)
     const now = new Date().toISOString()
     this.db.prepare(`
       INSERT INTO blacklist (phone_number, reason, detected_message, detected_pattern, source_session, created_at, hits, last_hit_at)
@@ -159,7 +170,7 @@ export class MessageQueue {
         detected_pattern = COALESCE(excluded.detected_pattern, detected_pattern),
         source_session   = COALESCE(excluded.source_session, source_session)
     `).run(
-      phone,
+      normalised,
       source,
       meta?.detectedMessage ?? null,
       meta?.detectedPattern ?? null,
@@ -170,7 +181,8 @@ export class MessageQueue {
   }
 
   isBlacklisted(phone: string): boolean {
-    const row = this.db.prepare('SELECT 1 FROM blacklist WHERE phone_number = ?').get(phone)
+    const normalised = normalizeDigits(phone)
+    const row = this.db.prepare('SELECT 1 FROM blacklist WHERE phone_number = ?').get(normalised)
     return !!row
   }
 

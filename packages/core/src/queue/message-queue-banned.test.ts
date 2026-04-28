@@ -191,3 +191,51 @@ describe('isBlacklisted() — reflects recordBan()', () => {
     expect(result.skipped[0].reason).toBe('blacklisted')
   })
 })
+
+// ── I2: Phone normalisation at recordBan / isBlacklisted boundary ─────────────
+//
+// Ensures that the ban is stored (and looked up) in digits-only form so that
+// "+55 43 99193-8235", "5543991938235", and "+5543991938235" all map to the
+// same blacklist entry.
+
+describe('recordBan / isBlacklisted — phone normalisation (I2)', () => {
+  let db: Database.Database
+  let queue: MessageQueue
+
+  beforeEach(() => {
+    db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    queue = makeQueue(db)
+  })
+  afterEach(() => db.close())
+
+  it('normalises E.164 with + prefix on recordBan and lookup', () => {
+    queue.recordBan('+5543991938235', 'engine_failures')
+    // Stored as digits-only
+    expect(getRow(db, '5543991938235')).toBeDefined()
+    // isBlacklisted finds it regardless of input format
+    expect(queue.isBlacklisted('+5543991938235')).toBe(true)
+    expect(queue.isBlacklisted('5543991938235')).toBe(true)
+  })
+
+  it('normalises phone with spaces and dashes on recordBan', () => {
+    queue.recordBan('55 43 99193-8235', 'precheck_invalid')
+    expect(queue.isBlacklisted('5543991938235')).toBe(true)
+    expect(queue.isBlacklisted('+5543991938235')).toBe(true)
+  })
+
+  it('deduplicates — recording with + format and then digits-only only creates one row', () => {
+    queue.recordBan('+5543991938500', 'engine_failures')
+    queue.recordBan('5543991938500', 'engine_failures')
+    const row = getRow(db, '5543991938500')
+    expect(row).toBeDefined()
+    expect(row!.hits).toBe(2) // same key → upsert incremented hits
+  })
+
+  it('enqueue() rejects when recorded with + prefix', () => {
+    queue.recordBan('+5543991938600', 'engine_failures')
+    expect(() =>
+      queue.enqueue({ to: '5543991938600', body: 'Hi', idempotencyKey: 'norm-enq-1' }),
+    ).toThrow(/blacklisted/)
+  })
+})

@@ -576,31 +576,61 @@ describe('WorkerOrchestrator — auto-ban (Task 5.4)', () => {
 
   afterEach(() => db.close())
 
-  it('records ban when message reaches permanently_failed after exhausting retries', async () => {
+  // C1 — positive path: NoWhatsAppError on ADB triggers immediate ban (single attempt)
+  it('bans recipient immediately when ADB throws NoWhatsAppError (recipient-specific)', async () => {
     seedDeviceOnline(deps)
     seedSenderMapping(deps)
-    // Set attempts to maxRetries-1 so next failure triggers permanently_failed
     const msg = deps.queue.enqueue({
       to: '5543991938235',
-      body: 'Ban test',
-      idempotencyKey: `ban-trigger-${Date.now()}`,
+      body: 'NoWA ban test',
+      idempotencyKey: `ban-nowa-${Date.now()}`,
       senderNumber: SENDER_NUMBER,
-      maxRetries: 1,
+      maxRetries: 3,
     })
-    // Attempts already at 0, maxRetries=1 → totalAttempts(1) >= maxRetries(1) → permanent fail
 
     vi.spyOn(deps.engine, 'send').mockImplementation(async (message) => {
       deps.queue.updateStatus(message.id, 'locked', 'sending')
-      throw new Error('ADB failed')
+      const err = new Error('Recipient 5543991938235 is not on WhatsApp — number cannot receive messages')
+      err.name = 'NoWhatsAppError'
+      throw err
     })
-    vi.spyOn(deps.wahaFallback, 'send').mockRejectedValue(new Error('WAHA down'))
+    // WAHA fallback must NOT be called for recipient-specific errors
+    const wahaFallbackSpy = vi.spyOn(deps.wahaFallback, 'send')
 
     await orchestrator.tick()
 
     const updated = deps.queue.getById(msg.id)
     expect(updated!.status).toBe('permanently_failed')
-    // Ban must be recorded
+    // Recipient IS banned
     expect(deps.queue.isBlacklisted('5543991938235')).toBe(true)
+    // WAHA fallback must not have been called (recipient problem, not infra)
+    expect(wahaFallbackSpy).not.toHaveBeenCalled()
+  })
+
+  // C1 — negative path: generic infra error (timeout) reaching maxRetries must NOT ban
+  it('does NOT ban recipient when permanently_failed due to infrastructure errors (timeout)', async () => {
+    seedDeviceOnline(deps)
+    seedSenderMapping(deps)
+    const msg = deps.queue.enqueue({
+      to: '5543991938400',
+      body: 'Infra fail test',
+      idempotencyKey: `infra-fail-${Date.now()}`,
+      senderNumber: SENDER_NUMBER,
+      maxRetries: 1, // one attempt → permanent fail immediately
+    })
+
+    vi.spyOn(deps.engine, 'send').mockImplementation(async (message) => {
+      deps.queue.updateStatus(message.id, 'locked', 'sending')
+      throw new Error('Timeout: 30000ms exceeded')
+    })
+    vi.spyOn(deps.wahaFallback, 'send').mockRejectedValue(new Error('WAHA API error: 503 Service Unavailable'))
+
+    await orchestrator.tick()
+
+    const updated = deps.queue.getById(msg.id)
+    expect(updated!.status).toBe('permanently_failed')
+    // Recipient must NOT be banned — this was an infra failure, not a recipient problem
+    expect(deps.queue.isBlacklisted('5543991938400')).toBe(false)
   })
 
   it('does NOT ban when message is requeued for retry (below maxRetries threshold)', async () => {

@@ -20,6 +20,28 @@ import type { ContactRegistry } from '../contacts/index.js'
 import { normalizePhone } from '../validator/br-phone-resolver.js'
 import { numberInvalidEmittedTotal } from '../config/metrics.js'
 
+/**
+ * Returns true when an error is caused by the *recipient* being unreachable on
+ * WhatsApp — not by a device / infrastructure problem.
+ *
+ * Recipient-specific signals:
+ *  - error.name === 'NoWhatsAppError'  → thrown by send-engine after detecting
+ *    the "not on WhatsApp" popup (detectNoWhatsAppPopup)
+ *  - message includes "not on WhatsApp" → same popup detected via a different
+ *    code path or string match
+ *  - message includes "Search result not found" → contact doesn't exist in WA
+ *    search results (openViaSearch path)
+ *
+ * Everything else (timeout, WAHA infra down, device crash, config error) is
+ * NOT recipient-specific and must NOT trigger an auto-ban.
+ */
+function isRecipientSpecificError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  if (err.name === 'NoWhatsAppError') return true
+  const msg = err.message.toLowerCase()
+  return msg.includes('not on whatsapp') || msg.includes('search result not found')
+}
+
 export interface WorkerOrchestratorDeps {
   db: Database.Database
   queue: MessageQueue
@@ -108,6 +130,24 @@ export class WorkerOrchestrator {
       // WAHA fallback outcome does NOT affect device health; device health is about ADB.
       const adbErrReason = adbErr instanceof Error ? adbErr.message : String(adbErr)
       circuitBreaker?.recordFailure(deviceSerial, adbErrReason)
+
+      // Recipient-specific ADB error (e.g. number not on WhatsApp): ban immediately,
+      // no WAHA fallback attempt — the recipient problem won't be solved by a different channel.
+      if (isRecipientSpecificError(adbErr)) {
+        queue.markPermanentlyFailed(message.id, message.attempts + 1)
+        queue.recordBan(message.to, 'engine_failures', {
+          detectedMessage: adbErr instanceof Error ? adbErr.message : String(adbErr),
+          sourceSession: deviceSerial,
+        })
+        emitter.emit('message:failed', {
+          id: message.id,
+          error: adbErr instanceof Error ? adbErr.message : String(adbErr),
+          attempts: message.attempts + 1,
+          senderNumber: message.senderNumber ?? undefined,
+        })
+        return false
+      }
+
       logger.warn({ messageId: message.id, err: adbErr }, 'Worker: ADB send failed, attempting WAHA fallback')
 
       // Message is still in 'sending' (send-engine no longer sets 'failed')
@@ -123,7 +163,15 @@ export class WorkerOrchestrator {
         const totalAttempts = message.attempts + 1
         if (totalAttempts >= message.maxRetries) {
           queue.markPermanentlyFailed(message.id, totalAttempts)
-          queue.recordBan(message.to, 'engine_failures', { sourceSession: deviceSerial })
+          // Only ban the recipient if the failure is recipient-specific.
+          // Infrastructure failures (timeout, WAHA down, device crash) must NOT ban
+          // the recipient — they indicate a device/infra problem, not a bad number.
+          if (isRecipientSpecificError(wahaErr)) {
+            queue.recordBan(message.to, 'engine_failures', {
+              detectedMessage: wahaErr instanceof Error ? wahaErr.message : String(wahaErr),
+              sourceSession: deviceSerial,
+            })
+          }
           emitter.emit('message:failed', {
             id: message.id,
             error: `ADB and WAHA fallback both failed after ${message.maxRetries} attempts: ${wahaErr instanceof Error ? wahaErr.message : String(wahaErr)}`,
