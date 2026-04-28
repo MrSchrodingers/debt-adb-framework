@@ -213,11 +213,20 @@ function MetaItem({
   )
 }
 
-type ShotState = 'probing' | 'available' | 'missing' | 'via-fallback' | 'never-captured'
+type ShotState = 'probing' | 'available' | 'missing' | 'via-fallback'
+
+type ShotMissingMeta = {
+  code: string
+  reason: string | null
+  deleted_at: string | null
+  message_sent_at: string | null
+  expected_path?: string | null
+}
 
 function ScreenshotSlot({ msg, onZoom }: { msg: OralsinMessage; onZoom: (url: string) => void }) {
   const [state, setState] = useState<ShotState>('probing')
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  const [missingMeta, setMissingMeta] = useState<ShotMissingMeta | null>(null)
   const url = `${CORE_URL}/api/v1/messages/${msg.id}/screenshot`
 
   useEffect(() => {
@@ -237,6 +246,19 @@ function ScreenshotSlot({ msg, onZoom }: { msg: OralsinMessage; onZoom: (url: st
       .then(async (r) => {
         if (cancelled) return
         if (!r.ok) {
+          // Parse structured 404 body from Task 7.5
+          try {
+            const body = await r.json() as Partial<ShotMissingMeta>
+            setMissingMeta({
+              code: body.code ?? 'never_persisted',
+              reason: body.reason ?? null,
+              deleted_at: body.deleted_at ?? null,
+              message_sent_at: body.message_sent_at ?? null,
+              expected_path: body.expected_path ?? null,
+            })
+          } catch {
+            setMissingMeta({ code: 'never_persisted', reason: null, deleted_at: null, message_sent_at: null })
+          }
           setState('missing')
           return
         }
@@ -246,7 +268,12 @@ function ScreenshotSlot({ msg, onZoom }: { msg: OralsinMessage; onZoom: (url: st
         setBlobUrl(createdObjectUrl)
         setState('available')
       })
-      .catch(() => { if (!cancelled) setState('missing') })
+      .catch(() => {
+        if (!cancelled) {
+          setMissingMeta({ code: 'never_persisted', reason: null, deleted_at: null, message_sent_at: null })
+          setState('missing')
+        }
+      })
 
     return () => {
       cancelled = true
@@ -276,12 +303,46 @@ function ScreenshotSlot({ msg, onZoom }: { msg: OralsinMessage; onZoom: (url: st
   }
 
   if (state === 'missing') {
+    const code = missingMeta?.code ?? 'never_persisted'
+    const labelByCode: Record<string, string> = {
+      never_persisted:      'Screenshot não capturada',
+      skipped_by_policy:    'Captura ignorada pela política',
+      persistence_failed:   'Falha ao salvar screenshot',
+      file_missing_on_disk: 'Arquivo ausente no disco',
+      deleted_by_retention: 'Excluída pela retenção',
+    }
+    const descByCode: Record<string, string> = {
+      never_persisted:      'O envio falhou antes da captura, ou a mensagem antecede a feature de screenshot.',
+      skipped_by_policy:    'A política de amostragem (SCREENSHOT_MODE/SAMPLE_RATE) ignorou esta mensagem.',
+      persistence_failed:   'O screenshot foi capturado mas o arquivo falhou ao salvar (ENOSPC, permissão, etc.).',
+      file_missing_on_disk: 'O caminho está no banco mas o arquivo foi removido manualmente ou pela retenção.',
+      deleted_by_retention: `Removida automaticamente pela política de retenção (SCREENSHOT_RETENTION_DAYS).`,
+    }
     return (
       <div className="flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 max-w-md">
         <ImageOff className="h-4 w-4 shrink-0 mt-0.5 text-amber-400" />
-        <div className="text-xs">
-          <div className="font-medium text-amber-300">Screenshot indisponível</div>
-          <div className="mt-0.5 text-amber-300/70">Arquivo removido pela política de retenção ou nunca persistiu. Novas mensagens seguem a retenção atual (SCREENSHOT_RETENTION_DAYS).</div>
+        <div className="text-xs space-y-1">
+          <div className="font-medium text-amber-300">{labelByCode[code] ?? 'Screenshot indisponível'}</div>
+          <div className="text-amber-300/70">{descByCode[code] ?? 'Estado desconhecido.'}</div>
+          {missingMeta?.deleted_at && (
+            <div className="text-amber-300/50">
+              Removida em {new Date(missingMeta.deleted_at).toLocaleString('pt-BR')}
+            </div>
+          )}
+          {missingMeta?.message_sent_at && (
+            <div className="text-amber-300/50">
+              Enviada em {new Date(missingMeta.message_sent_at).toLocaleString('pt-BR')}
+            </div>
+          )}
+          {(missingMeta?.reason || missingMeta?.expected_path) && (
+            <details className="text-[10px]">
+              <summary className="cursor-pointer text-amber-300/40 hover:text-amber-300/70">Detalhes técnicos</summary>
+              {missingMeta.reason && <code className="block mt-1 text-amber-300/60 break-all">{missingMeta.reason}</code>}
+              {missingMeta.expected_path && (
+                <code className="block mt-1 text-amber-300/40 break-all">path: {missingMeta.expected_path}</code>
+              )}
+            </details>
+          )}
         </div>
       </div>
     )

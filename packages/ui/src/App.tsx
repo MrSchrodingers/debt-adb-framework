@@ -19,13 +19,14 @@ import { DeviceProfileSelector, type DeviceProfileSelection } from './components
 import { PluginTabs } from './components/plugin-tabs'
 import { SenderDashboard } from './components/sender-dashboard'
 import { ContactsAudit } from './components/contacts-audit'
+import { AdminPage } from './components/admin-page'
 import { AnomalyBanner } from './components/anomaly-banner'
 import { CommandPalette } from './components/command-palette'
 import { KeyboardShortcutsHelp } from './components/keyboard-shortcuts-help'
 import { useAuth } from './auth/auth-context'
 import type { DeviceRecord, HealthSnapshot, WhatsAppAccount, Alert } from './types'
 
-type Tab = 'devices' | 'queue' | 'senders' | 'sessions' | 'metricas' | 'auditoria' | 'plugins' | 'contatos'
+type Tab = 'devices' | 'queue' | 'senders' | 'sessions' | 'metricas' | 'auditoria' | 'plugins' | 'contatos' | 'admin'
 
 export function App() {
   const { logout } = useAuth()
@@ -317,7 +318,9 @@ export function App() {
 
         {/* Content */}
         <main className="flex-1 overflow-y-auto p-4 lg:p-6">
-          {activeTab === 'plugins' ? (
+          {activeTab === 'admin' ? (
+            <AdminPage />
+          ) : activeTab === 'plugins' ? (
             <PluginTabs />
           ) : activeTab === 'contatos' ? (
             <ContactsAudit />

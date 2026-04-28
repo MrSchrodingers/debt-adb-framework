@@ -947,6 +947,39 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     },
   })
 
+  // Admin routes for banned numbers (Task 5.4 — UI surface)
+  server.get('/api/v1/admin/banned-numbers', async (_req, reply) => {
+    const rows = db.prepare(`
+      SELECT phone_number, reason, hits, detected_message, detected_pattern,
+             source_session, created_at, last_hit_at
+      FROM blacklist
+      ORDER BY COALESCE(last_hit_at, created_at) DESC
+      LIMIT 1000
+    `).all()
+    return reply.send(rows)
+  })
+
+  server.route({
+    method: 'DELETE',
+    url: '/api/v1/admin/banned-numbers/:phone',
+    config: { rateLimit: ADMIN_WRITE_RATE_LIMIT },
+    handler: async (req, reply) => {
+      const { phone } = req.params as { phone: string }
+      const normalized = phone.replace(/\D/g, '')
+      const before = db.prepare('SELECT * FROM blacklist WHERE phone_number = ?').get(normalized)
+      if (!before) return reply.status(404).send({ error: 'Phone not in blacklist' })
+      db.prepare('DELETE FROM blacklist WHERE phone_number = ?').run(normalized)
+      auditLogger.log({
+        action: 'unban_number',
+        resourceType: 'blacklist',
+        resourceId: normalized,
+        beforeState: before as Record<string, unknown>,
+        afterState: { removed: true },
+      })
+      return reply.status(204).send()
+    },
+  })
+
   // Auto-configure new devices on connect: disable screen lock + keep awake
   emitter.on('device:connected', (data) => {
     const { serial } = data
