@@ -954,7 +954,12 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     utcOffsetHours: Number(process.env.SEND_WINDOW_OFFSET_HOURS) || -3,
   })
 
-  const circuitBreaker = new DeviceCircuitBreaker(db, emitter)
+  const cbThreshold = parseInt(process.env.DISPATCH_CB_FAILURE_THRESHOLD ?? '5', 10)
+  const cbCooldownMs = parseInt(process.env.DISPATCH_CB_COOLDOWN_MS ?? '300000', 10)
+  const circuitBreaker = new DeviceCircuitBreaker(db, emitter, {
+    failureThreshold: cbThreshold,
+    cooldownMs: cbCooldownMs,
+  })
   circuitBreaker.initialize()
 
   const orchestrator = new WorkerOrchestrator({

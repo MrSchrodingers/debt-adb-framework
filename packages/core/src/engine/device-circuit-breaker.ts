@@ -158,18 +158,17 @@ export class DeviceCircuitBreaker {
     if (row.state === 'open') {
       const nextAttempt = row.next_attempt_at ? new Date(row.next_attempt_at).getTime() : 0
       if (this.cfg.now() >= nextAttempt) {
-        // Transition open -> half_open inside a transaction for concurrent safety
-        this.db.transaction(() => {
-          this.stmtUpdate.run({
-            device_serial: deviceSerial,
-            state: 'half_open',
-            consecutive_failures: row.consecutive_failures,
-            last_failure_at: row.last_failure_at,
-            opened_at: row.opened_at,
-            next_attempt_at: row.next_attempt_at,
-            reason: row.reason,
-          })
-        })()
+        // Single-statement UPDATE — atomic per better-sqlite3 semantics;
+        // concurrent safety provided by Node.js single-threaded event loop.
+        this.stmtUpdate.run({
+          device_serial: deviceSerial,
+          state: 'half_open',
+          consecutive_failures: row.consecutive_failures,
+          last_failure_at: row.last_failure_at,
+          opened_at: row.opened_at,
+          next_attempt_at: row.next_attempt_at,
+          reason: row.reason,
+        })
         this.emitter?.emit('device:circuit:half_open', { serial: deviceSerial })
         return true
       }
@@ -178,14 +177,6 @@ export class DeviceCircuitBreaker {
 
     // half_open — probe is in flight, allow
     return true
-  }
-
-  /**
-   * Backward-compatible alias for canUse() — used by WorkerOrchestrator.
-   * @deprecated Use canUse() for new code.
-   */
-  canExecute(deviceSerial: string): boolean {
-    return this.canUse(deviceSerial)
   }
 
   /**

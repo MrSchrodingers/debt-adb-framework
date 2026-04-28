@@ -66,7 +66,7 @@ export class WorkerOrchestrator {
   }
 
   async processMessage(message: Message, deviceSerial: string, isFirstInBatch = true, appPackage = 'com.whatsapp'): Promise<boolean> {
-    const { queue, engine, emitter, wahaFallback, messageHistory, receiptTracker, logger, contactRegistry } = this.deps
+    const { queue, engine, emitter, wahaFallback, messageHistory, receiptTracker, logger, contactRegistry, circuitBreaker } = this.deps
     let sendSuccess = false
     let usedFallback = false
 
@@ -100,7 +100,13 @@ export class WorkerOrchestrator {
     try {
       await engine.send(message, deviceSerial, isFirstInBatch, appPackage)
       sendSuccess = true
+      // Circuit breaker: ADB send succeeded — record success at the device level
+      circuitBreaker?.recordSuccess(deviceSerial)
     } catch (adbErr) {
+      // Circuit breaker: ADB send failed — record failure at the device level.
+      // WAHA fallback outcome does NOT affect device health; device health is about ADB.
+      const adbErrReason = adbErr instanceof Error ? adbErr.message : String(adbErr)
+      circuitBreaker?.recordFailure(deviceSerial, adbErrReason)
       logger.warn({ messageId: message.id, err: adbErr }, 'Worker: ADB send failed, attempting WAHA fallback')
 
       // Message is still in 'sending' (send-engine no longer sets 'failed')
@@ -221,7 +227,7 @@ export class WorkerOrchestrator {
     this.devicesRunning.add(deviceSerial)
 
     // Circuit breaker: skip if device circuit is open
-    if (this.deps.circuitBreaker && !this.deps.circuitBreaker.canExecute(deviceSerial)) {
+    if (this.deps.circuitBreaker && !this.deps.circuitBreaker.canUse(deviceSerial)) {
       this.deps.logger.warn({ device: deviceSerial, state: this.deps.circuitBreaker.getState(deviceSerial) },
         'Worker: device circuit breaker open, skipping tick')
       this.devicesRunning.delete(deviceSerial)
@@ -354,14 +360,11 @@ export class WorkerOrchestrator {
         }
       }
 
-      // Circuit breaker: record success after batch completes without throwing
-      if (this.deps.circuitBreaker) {
-        this.deps.circuitBreaker.recordSuccess(deviceSerial)
-      }
     } catch (err) {
       logger.error({ err, device: deviceSerial }, 'Worker: batch processing failed')
-
-      // Circuit breaker: record failure on unhandled batch error
+      // Circuit breaker: per-send tracking (inside processMessage) handles ADB-level failures.
+      // This catch is a safety net for unexpected batch-level errors (DB corruption, mutex
+      // failures, programming bugs) that bypass processMessage entirely.
       if (this.deps.circuitBreaker) {
         const reason = err instanceof Error ? err.message : String(err)
         this.deps.circuitBreaker.recordFailure(deviceSerial, reason)

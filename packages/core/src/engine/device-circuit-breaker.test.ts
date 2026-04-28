@@ -107,6 +107,30 @@ describe('DeviceCircuitBreaker (SQLite-persistent)', () => {
     expect((halfOpenEvents[0] as { serial: string }).serial).toBe('device-1')
   })
 
+  // 4b. Cooldown boundary: exactly at boundary (now >= next_attempt_at) allows transition
+  it('transitions open -> half_open exactly at cooldown boundary (now === next_attempt_at)', () => {
+    const halfOpenEvents: unknown[] = []
+    emitter.on('device:circuit:half_open', (data) => halfOpenEvents.push(data))
+
+    let mockNow = 1_000_000
+    const cooldownMs = 300_000
+    const breaker = makeBreaker(db, emitter, { failureThreshold: 5, cooldownMs, now: () => mockNow })
+
+    for (let i = 0; i < 5; i++) breaker.recordFailure('device-1', 'err')
+
+    // Still blocked before boundary
+    expect(breaker.canUse('device-1')).toBe(false)
+
+    // Advance clock to EXACTLY the cooldown boundary (now === next_attempt_at)
+    mockNow += cooldownMs
+
+    // Spec: cooldown elapses when now >= next_attempt_at — boundary must allow transition
+    expect(breaker.canUse('device-1')).toBe(true)
+    expect(breaker.getState('device-1')?.state).toBe('half_open')
+    expect(halfOpenEvents).toHaveLength(1)
+    expect((halfOpenEvents[0] as { serial: string }).serial).toBe('device-1')
+  })
+
   // 5. Half-open success: transitions to closed, resets consecutive_failures, emits device:circuit:closed
   it('half-open success: closes circuit, resets failures, emits device:circuit:closed', () => {
     const closedEvents: unknown[] = []
@@ -222,15 +246,19 @@ describe('DeviceCircuitBreaker (SQLite-persistent)', () => {
     }).not.toThrow()
   })
 
-  // 12. canExecute() is a backward-compatible alias for canUse()
-  it('canExecute() is a backward-compatible alias for canUse()', () => {
-    const breaker = makeBreaker(db, emitter, { failureThreshold: 5 })
+  // 12. canUse() gate — fresh device allowed, opens at threshold, blocked until cooldown
+  it('canUse() allows fresh device, blocks after threshold, allows again after cooldown', () => {
+    let mockNow = 1_000_000
+    const breaker = makeBreaker(db, emitter, { failureThreshold: 5, cooldownMs: 300_000, now: () => mockNow })
 
-    expect(breaker.canExecute('device-1')).toBe(true)
+    expect(breaker.canUse('device-1')).toBe(true)
 
     for (let i = 0; i < 5; i++) breaker.recordFailure('device-1', 'err')
 
-    expect(breaker.canExecute('device-1')).toBe(false)
+    expect(breaker.canUse('device-1')).toBe(false)
+
+    mockNow += 300_001
+    expect(breaker.canUse('device-1')).toBe(true)
   })
 
   // 13. No-db mode: canUse always true, no errors thrown

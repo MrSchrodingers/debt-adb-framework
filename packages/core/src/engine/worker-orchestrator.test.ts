@@ -13,6 +13,7 @@ import { DeviceManager } from '../monitor/index.js'
 import { MessageHistory } from '../waha/index.js'
 import { RateLimitGuard } from '../config/rate-limits.js'
 import { WorkerOrchestrator } from './worker-orchestrator.js'
+import { DeviceCircuitBreaker } from './device-circuit-breaker.js'
 import type { WorkerOrchestratorDeps } from './worker-orchestrator.js'
 import type { AdbBridge } from '../adb/index.js'
 import type { HealthSnapshot } from '../monitor/types.js'
@@ -441,5 +442,100 @@ describe('WorkerOrchestrator', () => {
 
     // warn still called only once total (the second tick hits cappedSendersCooldown and returns early)
     expect(warnFn).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Circuit breaker wiring integration tests
+// ---------------------------------------------------------------------------
+// These tests verify that per-send ADB failures are wired through to the
+// DeviceCircuitBreaker instance via the real class (not a mock), catching the
+// bug where recordFailure was never called because processMessage swallows all
+// errors and the batch-end recordSuccess was called unconditionally.
+// ---------------------------------------------------------------------------
+
+describe('WorkerOrchestrator — circuit breaker wiring', () => {
+  let db: InstanceType<typeof Database>
+  let deps: WorkerOrchestratorDeps
+  let orchestrator: WorkerOrchestrator
+  let breaker: DeviceCircuitBreaker
+
+  beforeEach(() => {
+    db = createTestDb()
+
+    // Initialize circuit-breaker table on the same in-memory DB
+    breaker = new DeviceCircuitBreaker(db, new DispatchEmitter(), {
+      failureThreshold: 5,
+      cooldownMs: 300_000,
+    })
+    breaker.initialize()
+
+    // High quarantine threshold so sender quarantine doesn't prevent circuit breaker from
+    // accumulating failures — we want to test the circuit breaker, not the sender quarantine.
+    const senderHealthNoQuarantine = new SenderHealth(db, { quarantineAfterFailures: 100 })
+    deps = createDeps(db, { circuitBreaker: breaker, senderHealth: senderHealthNoQuarantine })
+    // Zero inter-message delays so batch tests don't time out waiting for rate-limit sleep
+    vi.spyOn(deps.rateLimitGuard, 'getInterMessageDelay').mockReturnValue(0)
+    orchestrator = new WorkerOrchestrator(deps)
+  })
+
+  afterEach(() => {
+    db.close()
+  })
+
+  // 11. ADB failures increment the circuit-breaker counter per-send;
+  //     after failureThreshold failures the breaker opens.
+  it('opens circuit breaker after failureThreshold consecutive ADB failures (wiring test)', async () => {
+    seedDeviceOnline(deps)
+    seedSenderMapping(deps)
+
+    // ADB send always fails; WAHA fallback also fails so messages requeue
+    vi.spyOn(deps.engine, 'send').mockImplementation(async (message) => {
+      deps.queue.updateStatus(message.id, 'locked', 'sending')
+      throw new Error('ADB connection refused')
+    })
+    vi.spyOn(deps.wahaFallback, 'send').mockRejectedValue(new Error('WAHA down'))
+
+    // Drive 5 ticks, each enqueuing a fresh message
+    for (let i = 0; i < 5; i++) {
+      enqueueTestMessage(deps, `-cb${i}`)
+      await orchestrator.tick()
+    }
+
+    const state = breaker.getState(DEVICE_SERIAL)
+    expect(state).not.toBeNull()
+    expect(state!.state).toBe('open')
+    // consecutiveFailures is >= threshold because batches may grow and record more
+    // failures within the same tick after the circuit opens (for-loop does not bail mid-batch)
+    expect(state!.consecutiveFailures).toBeGreaterThanOrEqual(5)
+    expect(breaker.canUse(DEVICE_SERIAL)).toBe(false)
+  })
+
+  // 12. After circuit opens, tickDevice short-circuits (canUse = false) and
+  //     does NOT attempt to dequeue / process any more messages.
+  it('short-circuits tickDevice when circuit is open (canUse = false)', async () => {
+    seedDeviceOnline(deps)
+    seedSenderMapping(deps)
+
+    const sendSpy = vi.spyOn(deps.engine, 'send').mockImplementation(async (message) => {
+      deps.queue.updateStatus(message.id, 'locked', 'sending')
+      throw new Error('ADB connection refused')
+    })
+    vi.spyOn(deps.wahaFallback, 'send').mockRejectedValue(new Error('WAHA down'))
+
+    // Exhaust threshold
+    for (let i = 0; i < 5; i++) {
+      enqueueTestMessage(deps, `-open${i}`)
+      await orchestrator.tick()
+    }
+
+    expect(breaker.canUse(DEVICE_SERIAL)).toBe(false)
+
+    // 6th tick: circuit is open — no further sends should happen
+    const sendCallsBefore = sendSpy.mock.calls.length
+    enqueueTestMessage(deps, '-after-open')
+    await orchestrator.tick()
+
+    expect(sendSpy.mock.calls.length).toBe(sendCallsBefore) // no new send attempts
   })
 })
