@@ -1,11 +1,57 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { VitePWA } from 'vite-plugin-pwa'
 
 const CORE = 'http://localhost:7890'
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    VitePWA({
+      registerType: 'autoUpdate',
+      // Generates sw.js via workbox-build; keep the manifest separate.
+      manifest: false, // We provide our own manifest.webmanifest in public/
+      workbox: {
+        // Network-first for API and socket calls; cache-first for static assets.
+        runtimeCaching: [
+          {
+            // All API requests — network-first with fallback
+            urlPattern: /\/api\//,
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'dispatch-api-cache',
+              networkTimeoutSeconds: 5,
+              expiration: {
+                maxEntries: 50,
+                maxAgeSeconds: 60 * 5, // 5 minutes
+              },
+            },
+          },
+          {
+            // Static font resources — stale-while-revalidate
+            urlPattern: /fonts\.(googleapis|gstatic)\.com/,
+            handler: 'StaleWhileRevalidate',
+            options: {
+              cacheName: 'dispatch-fonts-cache',
+              expiration: {
+                maxEntries: 20,
+                maxAgeSeconds: 60 * 60 * 24 * 30, // 30 days
+              },
+            },
+          },
+        ],
+        // Skip caching socket.io and API routes in the precache manifest
+        navigateFallback: 'index.html',
+        globPatterns: ['**/*.{js,css,html,ico,png,webp,svg,woff2}'],
+      },
+      devOptions: {
+        // Enable SW in dev for local testing
+        enabled: false,
+      },
+    }),
+  ],
   server: {
     port: 5174,
     host: true,
