@@ -20,11 +20,15 @@ import { PluginTabs } from './components/plugin-tabs'
 import { SenderDashboard } from './components/sender-dashboard'
 import { ContactsAudit } from './components/contacts-audit'
 import { AnomalyBanner } from './components/anomaly-banner'
+import { CommandPalette } from './components/command-palette'
+import { KeyboardShortcutsHelp } from './components/keyboard-shortcuts-help'
+import { useAuth } from './auth/auth-context'
 import type { DeviceRecord, HealthSnapshot, WhatsAppAccount, Alert } from './types'
 
 type Tab = 'devices' | 'queue' | 'senders' | 'sessions' | 'metricas' | 'auditoria' | 'plugins' | 'contatos'
 
 export function App() {
+  const { logout } = useAuth()
   const [devices, setDevices] = useState<DeviceRecord[]>([])
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [connected, setConnected] = useState(false)
@@ -45,6 +49,8 @@ export function App() {
     total: number; paused: number; quarantined: number
   }>({ total: 0, paused: 0, quarantined: 0 })
   const [queueDepth, setQueueDepth] = useState(0)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [shortcutsOpen, setShortcutsOpen] = useState(false)
 
   const addToast = useCallback((type: Toast['type'], message: string) => {
     const toast: Toast = {
@@ -201,6 +207,50 @@ export function App() {
     }
   }, [])
 
+  // ── Cmd+K palette listener ──────────────────────────────────────────────
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault()
+        setPaletteOpen((v) => !v)
+      }
+      if (e.key === '?' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        const tag = (e.target as HTMLElement).tagName
+        if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') {
+          e.preventDefault()
+          setShortcutsOpen((v) => !v)
+        }
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
+
+  // ── Keyboard navigation shortcuts (g d, g m, g a) ──────────────────────
+  const seqRef = useRef<string>('')
+  const seqTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement).tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      seqRef.current += e.key
+      if (seqTimerRef.current) clearTimeout(seqTimerRef.current)
+      seqTimerRef.current = setTimeout(() => { seqRef.current = '' }, 600)
+      if (seqRef.current === 'gd') { setActiveTab('devices'); seqRef.current = '' }
+      if (seqRef.current === 'gm') { setActiveTab('queue'); seqRef.current = '' }
+      if (seqRef.current === 'ga') { setActiveTab('auditoria'); seqRef.current = '' }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
+
+  const exportCurrentView = useCallback(() => {
+    // Fires a custom event that the active view can catch to trigger its own CSV export.
+    // Views that support export listen for this event (progressive enhancement).
+    window.dispatchEvent(new CustomEvent('dispatch:export-csv'))
+  }, [])
+
   const hasOnlineDevice = devices.some((d) => d.status === 'online')
   const selectedDevice = devices.find((d) => d.serial === selectedSerial) ?? null
   const onlineCount = devices.filter((d) => d.status === 'online').length
@@ -348,6 +398,26 @@ export function App() {
       </div>
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        ctx={{
+          navigateTo: (tab) => setActiveTab(tab as Tab),
+          addToast,
+          logout,
+          exportCurrentView,
+          onSelectDevice: (serial) => {
+            setSelectedSerial(serial)
+            setActiveTab('devices')
+          },
+        }}
+      />
+
+      <KeyboardShortcutsHelp
+        open={shortcutsOpen}
+        onClose={() => setShortcutsOpen(false)}
+      />
     </div>
   )
 }

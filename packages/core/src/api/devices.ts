@@ -610,6 +610,23 @@ export function registerDeviceRoutes(
 
     return reply.send({ serial, profiles })
   })
+
+  // ── Search endpoint for command palette autocomplete ──────────────────────
+  // GET /api/v1/devices/search?q=<substring>
+  // Returns up to 20 devices whose serial contains the query string.
+  // NOTE: this route MUST be registered before /:serial to avoid shadowing.
+  // In practice Fastify matches static segments before parametric ones, so
+  // "search" is treated as a literal segment and never matched by /:serial.
+  server.get('/api/v1/devices/search', async (request) => {
+    const { q } = request.query as { q?: string }
+    const needle = (q ?? '').toLowerCase().trim()
+    const devices = await adb.discover()
+    const results = devices
+      .filter((d) => !needle || d.serial.toLowerCase().includes(needle))
+      .slice(0, 20)
+      .map((d) => ({ serial: d.serial, status: d.type === 'device' ? 'online' : d.type }))
+    return results
+  })
 }
 
 async function getWaProfileInfo(

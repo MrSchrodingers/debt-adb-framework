@@ -91,4 +91,35 @@ export function registerMessageRoutes(
     // Legacy: return flat array for backward compatibility
     return queue.list(query.status as MessageStatus | undefined)
   })
+
+  // ── Search endpoint for command palette autocomplete ──────────────────────
+  // GET /api/v1/messages/search?q=<substring>
+  // Returns last 20 messages whose id starts with query OR to_number contains query.
+  // NOTE: registered before /:id — Fastify matches static path segments first.
+  server.get('/api/v1/messages/search', async (request) => {
+    const { q } = request.query as { q?: string }
+    const needle = (q ?? '').trim()
+    const result = queue.listPaginated({
+      phone: needle || undefined,
+      limit: 20,
+      offset: 0,
+    })
+    // Also include messages whose id starts with the query
+    const byId = needle
+      ? result.data.filter((m) => m.id.startsWith(needle))
+      : []
+    // Merge deduplicating by id
+    const seen = new Set<string>()
+    const merged = [...byId, ...result.data].filter((m) => {
+      if (seen.has(m.id)) return false
+      seen.add(m.id)
+      return true
+    }).slice(0, 20)
+    return merged.map((m) => ({
+      id: m.id,
+      to: m.to,
+      status: m.status,
+      createdAt: m.createdAt,
+    }))
+  })
 }
