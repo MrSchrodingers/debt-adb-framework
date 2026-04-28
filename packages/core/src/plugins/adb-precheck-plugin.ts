@@ -12,7 +12,14 @@ import {
 } from '../check-strategies/index.js'
 import type { DispatchPlugin, PluginContext } from './types.js'
 import type { DispatchEventName } from '../events/index.js'
-import { PipeboardPg, PrecheckJobStore, PrecheckScanner } from './adb-precheck/index.js'
+import type { DispatchEmitter } from '../events/dispatch-emitter.js'
+import {
+  PipeboardPg,
+  PrecheckJobStore,
+  PrecheckScanner,
+  PipedriveClient,
+  PipedrivePublisher,
+} from './adb-precheck/index.js'
 
 const scanParamsSchema = z
   .object({
@@ -63,6 +70,10 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   private hmacSecret: string | undefined
   private readonly onInvalidPhoneCb: ((phone: string) => void) | undefined
 
+  private pipedriveClient: PipedriveClient | null = null
+  private pipedrivePublisher: PipedrivePublisher | null = null
+  private readonly pipedriveCacheTtlDays: number | undefined
+
   constructor(
     opts: {
       webhookUrl: string
@@ -82,6 +93,20 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
        * recording (useful in isolated test environments).
        */
       onInvalidPhone?: (phone: string) => void
+      /**
+       * Pipedrive integration — when set, scanner emits per-phone fail,
+       * deal-archive, and pasta-summary intents to Pipedrive (Activities +
+       * Notes). Feature-flag implicit: omit to disable.
+       */
+      pipedrive?: {
+        apiToken: string
+        baseUrl?: string
+        ratePerSec?: number
+        burst?: number
+        cacheTtlDays?: number
+      }
+      /** Dispatch emitter — required for Pipedrive failure event surfacing. */
+      emitter?: DispatchEmitter
     },
     private db: Database.Database,
     private registry: ContactRegistry,
@@ -94,6 +119,20 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     this.onInvalidPhoneCb = opts.onInvalidPhone
     this.pg = new PipeboardPg(opts.pgConnectionString, opts.pgMaxConnections ?? 4)
     this.store = new PrecheckJobStore(db)
+    this.pipedriveCacheTtlDays = opts.pipedrive?.cacheTtlDays
+
+    // Pipedrive client + publisher are wired only when a token is provided.
+    // Stays null when the env var is missing — scanner becomes a no-op for
+    // Pipedrive calls (intents are simply not produced).
+    if (opts.pipedrive?.apiToken) {
+      this.pipedriveClient = new PipedriveClient({
+        apiToken: opts.pipedrive.apiToken,
+        baseUrl: opts.pipedrive.baseUrl,
+        ratePerSec: opts.pipedrive.ratePerSec,
+        burst: opts.pipedrive.burst,
+        emitter: opts.emitter,
+      })
+    }
 
     // Strategies are owned by the plugin, independent from the worker's
     // pre-check path. Probes go through the same ContactRegistry so findings
@@ -117,6 +156,10 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   async init(ctx: PluginContext): Promise<void> {
     this.ctx = ctx
     this.store.initialize()
+    if (this.pipedriveClient) {
+      this.pipedrivePublisher = new PipedrivePublisher(this.pipedriveClient, ctx.logger)
+      ctx.logger.info('Pipedrive integration enabled')
+    }
     this.scanner = new PrecheckScanner({
       pg: this.pg,
       store: this.store,
@@ -127,6 +170,8 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       wahaSession: this.defaultWahaSession,
       onJobFinished: (jobId) => this.deliverJobCompletedCallback(jobId),
       onInvalidPhone: this.onInvalidPhoneCb,
+      pipedrive: this.pipedrivePublisher ?? undefined,
+      pipedriveCacheTtlDays: this.pipedriveCacheTtlDays,
     })
 
     ctx.registerRoute('GET',  '/health',     this.handleHealth.bind(this))
@@ -143,6 +188,14 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   }
 
   async destroy(): Promise<void> {
+    if (this.pipedrivePublisher) {
+      try { await this.pipedrivePublisher.flush() }
+      catch (e) {
+        this.ctx?.logger.warn('Pipedrive publisher flush failed during destroy', {
+          error: e instanceof Error ? e.message : String(e),
+        })
+      }
+    }
     await this.pg.close()
     this.ctx?.logger.info('ADB pre-check plugin destroyed')
     this.ctx = null

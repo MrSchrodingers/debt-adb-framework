@@ -99,3 +99,95 @@ export interface PrecheckScanParams {
   /** If true, update prov_consultas.telefone_localizado / localizado. */
   writeback_localizado?: boolean
 }
+
+// ── Pipedrive integration intents ─────────────────────────────────────────
+//
+// Scanner emits these as fire-and-forget intents; the PipedrivePublisher
+// dedups by (scenario, deal_id, phone, job_id) and dispatches via
+// PipedriveClient with a token-bucket rate limiter.
+
+/** Per-phone validation result fed to the formatter (Scenario A & B rows). */
+export interface PipedrivePhoneEntry {
+  phone: string
+  column: string
+  outcome: PhoneOutcome
+  /** Where the validation came from (cache, adb, waha). */
+  strategy: string
+  confidence: number | null
+}
+
+/** Scenario A: a single phone failed WhatsApp validation. */
+export interface PipedrivePhoneFailIntent {
+  scenario: 'phone_fail'
+  deal_id: number
+  pasta: string
+  phone: string
+  column: string
+  /** Where the validation came from (cache, adb, waha). */
+  strategy: string
+  confidence: number | null
+  job_id: string
+  /** ISO8601 timestamp when validation completed. */
+  occurred_at: string
+  /** Cache TTL hint surfaced in the markdown footer (days). */
+  cache_ttl_days?: number
+}
+
+/** Scenario B: every phone of the deal failed → archived to snapshot. */
+export interface PipedriveDealAllFailIntent {
+  scenario: 'deal_all_fail'
+  deal_id: number
+  pasta: string
+  phones: PipedrivePhoneEntry[]
+  motivo: string
+  job_id: string
+  occurred_at: string
+}
+
+/** Scenario C: pasta-level summary posted as a Note on the first deal. */
+export interface PipedrivePastaSummaryIntent {
+  scenario: 'pasta_summary'
+  pasta: string
+  /** Pipedrive deal_id of the lowest deal_id row of this pasta within the job. */
+  first_deal_id: number
+  job_id: string
+  job_started: string | null
+  job_ended: string | null
+  total_deals: number
+  ok_deals: number
+  archived_deals: number
+  total_phones_checked: number
+  ok_phones: number
+  /** Counts grouped by validation strategy. */
+  strategy_counts: {
+    adb: number
+    waha: number
+    cache: number
+  }
+}
+
+/** Outgoing Pipedrive Activity payload (`POST /v1/activities`). */
+export interface PipedriveActivityIntent {
+  kind: 'activity'
+  /** Used for dedup at publisher level. */
+  dedup_key: string
+  payload: {
+    subject: string
+    type: string
+    done: 0 | 1
+    deal_id: number
+    note: string
+  }
+}
+
+/** Outgoing Pipedrive Note payload (`POST /v1/notes`). */
+export interface PipedriveNoteIntent {
+  kind: 'note'
+  dedup_key: string
+  payload: {
+    deal_id: number
+    content: string
+  }
+}
+
+export type PipedriveOutgoingIntent = PipedriveActivityIntent | PipedriveNoteIntent

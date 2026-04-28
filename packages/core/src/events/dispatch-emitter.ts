@@ -54,6 +54,20 @@ export interface DispatchEventMap {
   'ban_prediction:triggered': { serial: string; suspectCount: number; windowMs: number }
   'dispatch:paused': { action: 'pause'; scope: string; key: string; reason: string; by: string; at: string }
   'dispatch:resumed': { action: 'resume'; scope: string; key: string; reason: string; by: string; at: string }
+  'pipedrive:request_failed': {
+    /** kind: 'activity' | 'note' */
+    kind: string
+    /** HTTP method + path, e.g. POST /v1/activities */
+    endpoint: string
+    /** HTTP status when reachable; null on transport error */
+    status: number | null
+    /** Short error message (sanitized) */
+    error: string
+    /** Number of attempts already exhausted (≥1) */
+    attempts: number
+    /** Pipedrive deal_id for which the request was made (when known) */
+    deal_id: number | null
+  }
 }
 
 export type DispatchEventName = keyof DispatchEventMap

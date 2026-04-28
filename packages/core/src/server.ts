@@ -481,6 +481,15 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       const wahaApiUrl = process.env.WAHA_API_URL
       const wahaApiKey = process.env.WAHA_API_KEY
       const wahaClient = wahaApiUrl && wahaApiKey ? createWahaHttpClient(wahaApiUrl, wahaApiKey) : undefined
+      // Pipedrive integration — feature-flag implicit: skipped when token absent.
+      const pipedriveToken = process.env.PIPEDRIVE_API_TOKEN
+      const pipedriveOpts = pipedriveToken ? {
+        apiToken: pipedriveToken,
+        baseUrl: process.env.PIPEDRIVE_BASE_URL,
+        ratePerSec: process.env.PIPEDRIVE_RATE_PER_SEC ? Number(process.env.PIPEDRIVE_RATE_PER_SEC) : undefined,
+        burst: process.env.PIPEDRIVE_BURST ? Number(process.env.PIPEDRIVE_BURST) : undefined,
+        cacheTtlDays: process.env.PIPEDRIVE_CACHE_TTL_DAYS ? Number(process.env.PIPEDRIVE_CACHE_TTL_DAYS) : undefined,
+      } : undefined
       return new AdbPrecheckPlugin(
         {
           webhookUrl: process.env.PLUGIN_ADB_PRECHECK_WEBHOOK_URL || '',
@@ -492,6 +501,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
           wahaClient,
           // Task 5.4: record precheck-invalid phones in the central blacklist
           onInvalidPhone: (phone) => queue.recordBan(phone, 'precheck_invalid'),
+          pipedrive: pipedriveOpts,
+          emitter,
         },
         db,
         contactRegistry,
@@ -1271,6 +1282,32 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         error: data.error,
       },
       source: 'dispatch-core / ack-history',
+    })
+  })
+
+  // Pipedrive request failures — throttle alerts to one per error string per 60s.
+  // Pipedrive client itself never throws; the failure event surfaces only after
+  // exhausted retries, so each event represents a real loss of an Activity/Note.
+  const pipedriveAlertLastTs = new Map<string, number>()
+  const PIPEDRIVE_ALERT_THROTTLE_MS = 60_000
+  emitter.on('pipedrive:request_failed', (data) => {
+    const now = Date.now()
+    const last = pipedriveAlertLastTs.get(data.error) ?? 0
+    if (now - last < PIPEDRIVE_ALERT_THROTTLE_MS) return
+    pipedriveAlertLastTs.set(data.error, now)
+    void sendCriticalAlert({
+      title: 'Pipedrive request failed',
+      severity: 'warning',
+      summary: `${data.kind} dispatch to ${data.endpoint} exhausted ${data.attempts} attempt(s).`,
+      fields: {
+        kind: data.kind,
+        endpoint: data.endpoint,
+        status: data.status ?? 'transport_error',
+        attempts: data.attempts,
+        deal_id: data.deal_id ?? 'n/a',
+        error: data.error.slice(0, 200),
+      },
+      source: 'dispatch-core / adb-precheck / pipedrive',
     })
   })
 

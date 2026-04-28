@@ -244,3 +244,135 @@ describe('PrecheckScanner — onInvalidPhone ban callback (Task 5.4)', () => {
     await expect(scanner.runJob('job-ban-3', {})).resolves.not.toThrow()
   })
 })
+
+describe('PrecheckScanner — Pipedrive integration', () => {
+  function fakePub() {
+    return {
+      enqueuePhoneFail: vi.fn(),
+      enqueueDealAllFail: vi.fn(),
+      enqueuePastaSummary: vi.fn(),
+      flush: vi.fn(async () => {}),
+      pendingCount: vi.fn(() => 0),
+      dedupSize: vi.fn(() => 0),
+    }
+  }
+
+  it('fires phone_fail for each invalid phone', async () => {
+    const pub = fakePub()
+    const row = buildRow({ telefone_1: '5543991938235', telefone_2: '5511988880000' })
+    const { scanner } = buildScanner([row], (phone) => ({
+      exists_on_wa: 0,
+      from_cache: false,
+      phone_normalized: phone,
+      source: 'adb',
+      confidence: 0.9,
+      attempts: [],
+    }))
+    const scannerPipe = new PrecheckScanner({
+      ...((scanner as unknown as { deps: ScannerDeps }).deps),
+      pipedrive: pub as unknown as Parameters<typeof PrecheckScanner.prototype.constructor>[0]['pipedrive'],
+    })
+    await scannerPipe.runJob('job-pipe-1', {})
+
+    expect(pub.enqueuePhoneFail).toHaveBeenCalledTimes(2)
+    const first = pub.enqueuePhoneFail.mock.calls[0]![0] as { deal_id: number; phone: string; column: string; job_id: string }
+    expect(first.deal_id).toBe(42)
+    expect(first.phone).toBe('5543991938235')
+    expect(first.job_id).toBe('job-pipe-1')
+  })
+
+  it('fires deal_all_fail only when archive succeeds', async () => {
+    const pub = fakePub()
+    const row = buildRow()
+    const { scanner, pg } = buildScanner([row], (phone) => ({
+      exists_on_wa: 0,
+      from_cache: false,
+      phone_normalized: phone,
+      source: 'adb',
+      confidence: 0.9,
+      attempts: [],
+    }))
+    pg.archiveDealIfEmpty.mockResolvedValueOnce(true) // first call returns archived
+
+    const scannerPipe = new PrecheckScanner({
+      ...((scanner as unknown as { deps: ScannerDeps }).deps),
+      pipedrive: pub as unknown as Parameters<typeof PrecheckScanner.prototype.constructor>[0]['pipedrive'],
+    })
+    await scannerPipe.runJob('job-pipe-2', { writeback_invalid: true })
+
+    expect(pub.enqueueDealAllFail).toHaveBeenCalledTimes(1)
+    const arg = pub.enqueueDealAllFail.mock.calls[0]![0] as { deal_id: number; phones: unknown[] }
+    expect(arg.deal_id).toBe(42)
+    expect(arg.phones).toHaveLength(1)
+  })
+
+  it('does NOT fire deal_all_fail when archive returns false (already archived)', async () => {
+    const pub = fakePub()
+    const row = buildRow()
+    const { scanner, pg } = buildScanner([row], (phone) => ({
+      exists_on_wa: 0,
+      from_cache: false,
+      phone_normalized: phone,
+      source: 'adb',
+      confidence: 0.9,
+      attempts: [],
+    }))
+    pg.archiveDealIfEmpty.mockResolvedValueOnce(false)
+
+    const scannerPipe = new PrecheckScanner({
+      ...((scanner as unknown as { deps: ScannerDeps }).deps),
+      pipedrive: pub as unknown as Parameters<typeof PrecheckScanner.prototype.constructor>[0]['pipedrive'],
+    })
+    await scannerPipe.runJob('job-pipe-3', { writeback_invalid: true })
+
+    expect(pub.enqueueDealAllFail).not.toHaveBeenCalled()
+  })
+
+  it('emits one pasta_summary per distinct pasta on completion', async () => {
+    const pub = fakePub()
+    const rows = [
+      buildRow({ pasta: 'A', deal_id: 100, telefone_1: '5543991938235' }),
+      buildRow({ pasta: 'A', deal_id: 50, telefone_1: '5543991938236' }),
+      buildRow({ pasta: 'B', deal_id: 200, telefone_1: '5543991938237' }),
+    ]
+    const { scanner } = buildScanner(rows, (phone) => ({
+      exists_on_wa: 1,
+      from_cache: false,
+      phone_normalized: phone,
+      source: 'adb',
+      confidence: 0.9,
+      attempts: [],
+    }))
+    const scannerPipe = new PrecheckScanner({
+      ...((scanner as unknown as { deps: ScannerDeps }).deps),
+      pipedrive: pub as unknown as Parameters<typeof PrecheckScanner.prototype.constructor>[0]['pipedrive'],
+    })
+    await scannerPipe.runJob('job-pipe-4', {})
+
+    expect(pub.enqueuePastaSummary).toHaveBeenCalledTimes(2)
+    const summariesByPasta = new Map<string, { first_deal_id: number; total_deals: number; ok_deals: number }>()
+    for (const c of pub.enqueuePastaSummary.mock.calls) {
+      const arg = c[0] as { pasta: string; first_deal_id: number; total_deals: number; ok_deals: number }
+      summariesByPasta.set(arg.pasta, arg)
+    }
+    expect(summariesByPasta.get('A')!.first_deal_id).toBe(50) // MIN(deal_id)
+    expect(summariesByPasta.get('A')!.total_deals).toBe(2)
+    expect(summariesByPasta.get('A')!.ok_deals).toBe(2)
+    expect(summariesByPasta.get('B')!.first_deal_id).toBe(200)
+    expect(summariesByPasta.get('B')!.total_deals).toBe(1)
+  })
+
+  it('does nothing pipedrive-related when publisher omitted', async () => {
+    const row = buildRow({ telefone_1: '5543991938235' })
+    const { scanner } = buildScanner([row], (phone) => ({
+      exists_on_wa: 0,
+      from_cache: false,
+      phone_normalized: phone,
+      source: 'adb',
+      confidence: 0.9,
+      attempts: [],
+    }))
+    // Omits pipedrive — must not throw, scanner should still complete.
+    await expect(scanner.runJob('job-pipe-5', { writeback_invalid: true })).resolves.not.toThrow()
+  })
+})

@@ -3,7 +3,13 @@ import type { PluginLogger } from '../types.js'
 import type { PipeboardPg } from './postgres-client.js'
 import type { PrecheckJobStore } from './job-store.js'
 import { extractPhones } from './phone-extractor.js'
-import type { DealResult, PhoneResult, PrecheckScanParams } from './types.js'
+import type { PipedrivePublisher } from './pipedrive-publisher.js'
+import type {
+  DealResult,
+  PhoneResult,
+  PipedrivePhoneEntry,
+  PrecheckScanParams,
+} from './types.js'
 
 const INVALID_MOTIVO = 'whatsapp_nao_existe'
 
@@ -26,6 +32,32 @@ export interface ScannerDeps {
    * need ban recording.
    */
   onInvalidPhone?: (normalizedPhone: string) => void
+  /**
+   * Pipedrive publisher — when present, scanner fires fire-and-forget intents
+   * for the three scenarios (per-phone fail, deal-all-fail, pasta summary).
+   * Optional: omit (or pass undefined) when PIPEDRIVE_API_TOKEN is not set.
+   */
+  pipedrive?: PipedrivePublisher
+  /** TTL hint for the cache footer in Pipedrive notes (days). */
+  pipedriveCacheTtlDays?: number
+}
+
+interface PastaAggregate {
+  pasta: string
+  first_deal_id: number | null
+  total_deals: number
+  ok_deals: number
+  archived_deals: number
+  total_phones_checked: number
+  ok_phones: number
+  strategy_counts: { adb: number; waha: number; cache: number }
+}
+
+function classifyStrategy(source: string): 'adb' | 'waha' | 'cache' {
+  const s = source.toLowerCase()
+  if (s.includes('adb')) return 'adb'
+  if (s.includes('waha')) return 'waha'
+  return 'cache'
 }
 
 /**
@@ -46,8 +78,10 @@ export class PrecheckScanner {
   constructor(private deps: ScannerDeps) {}
 
   async runJob(jobId: string, params: PrecheckScanParams): Promise<void> {
-    const { pg, store, logger, shouldCancel, onJobFinished } = this.deps
+    const { pg, store, logger, shouldCancel, onJobFinished, pipedrive } = this.deps
     let finalStatus: 'completed' | 'cancelled' | 'failed' = 'completed'
+    const pastaAgg: Map<string, PastaAggregate> = new Map()
+    const startedAt = new Date().toISOString()
     try {
       const total = await pg.countPool(params)
       store.markStarted(jobId, total)
@@ -93,6 +127,19 @@ export class PrecheckScanner {
                 invalidCount++
                 // Task 5.4: record invalid phones in the central blacklist
                 this.deps.onInvalidPhone?.(r.phone_normalized)
+                // Pipedrive Scenario A: fire-and-forget per-phone fail intent.
+                pipedrive?.enqueuePhoneFail({
+                  scenario: 'phone_fail',
+                  deal_id: row.deal_id,
+                  pasta: row.pasta,
+                  phone: r.phone_normalized,
+                  column: p.column,
+                  strategy: r.source,
+                  confidence: r.confidence,
+                  job_id: jobId,
+                  occurred_at: new Date().toISOString(),
+                  cache_ttl_days: this.deps.pipedriveCacheTtlDays,
+                })
               } else {
                 errorCount++
               }
@@ -187,6 +234,26 @@ export class PrecheckScanner {
                 )
                 if (archived) {
                   logger.info('deal archived (no valid phones)', { jobId, key })
+                  // Pipedrive Scenario B: deal-level all-fail intent (only on
+                  // SUCCESSFUL archive, so we don't double-fire on retry).
+                  if (pipedrive) {
+                    const phoneEntries: PipedrivePhoneEntry[] = phoneResults.map((pr) => ({
+                      phone: pr.normalized,
+                      column: pr.column,
+                      outcome: pr.outcome,
+                      strategy: pr.source,
+                      confidence: pr.confidence,
+                    }))
+                    pipedrive.enqueueDealAllFail({
+                      scenario: 'deal_all_fail',
+                      deal_id: row.deal_id,
+                      pasta: row.pasta,
+                      phones: phoneEntries,
+                      motivo: 'todos_telefones_invalidos',
+                      job_id: jobId,
+                      occurred_at: new Date().toISOString(),
+                    })
+                  }
                 }
               } catch (e) {
                 logger.warn('archiveDealIfEmpty failed', {
@@ -199,6 +266,36 @@ export class PrecheckScanner {
           }
           if (params.writeback_localizado && primaryValid) {
             await pg.writeLocalizado(key, primaryValid, 'dispatch_adb_precheck')
+          }
+
+          // Pasta-level aggregation for Scenario C (pasta summary Note).
+          // Records first deal_id (lowest), counts, and strategy distribution.
+          if (pipedrive) {
+            let agg = pastaAgg.get(row.pasta)
+            if (!agg) {
+              agg = {
+                pasta: row.pasta,
+                first_deal_id: null,
+                total_deals: 0,
+                ok_deals: 0,
+                archived_deals: 0,
+                total_phones_checked: 0,
+                ok_phones: 0,
+                strategy_counts: { adb: 0, waha: 0, cache: 0 },
+              }
+              pastaAgg.set(row.pasta, agg)
+            }
+            if (agg.first_deal_id === null || row.deal_id < agg.first_deal_id) {
+              agg.first_deal_id = row.deal_id
+            }
+            agg.total_deals += 1
+            agg.total_phones_checked += phoneResults.length
+            agg.ok_phones += validCount
+            if (validCount > 0) agg.ok_deals += 1
+            else if (phoneResults.length > 0) agg.archived_deals += 1
+            for (const pr of phoneResults) {
+              agg.strategy_counts[classifyStrategy(pr.source)] += 1
+            }
           }
 
           store.bumpProgress(jobId, {
@@ -214,6 +311,30 @@ export class PrecheckScanner {
 
       store.finishJob(jobId, 'completed')
       logger.info('precheck scan completed', { jobId })
+
+      // Pipedrive Scenario C: emit one Note per pasta touched, on the lowest
+      // deal_id of the pasta. Skips empty pastas (defensive — shouldn't happen
+      // since we only insert into pastaAgg from inside the iteration).
+      if (pipedrive) {
+        const finishedAt = new Date().toISOString()
+        for (const agg of pastaAgg.values()) {
+          if (agg.total_deals === 0 || agg.first_deal_id === null) continue
+          pipedrive.enqueuePastaSummary({
+            scenario: 'pasta_summary',
+            pasta: agg.pasta,
+            first_deal_id: agg.first_deal_id,
+            job_id: jobId,
+            job_started: startedAt,
+            job_ended: finishedAt,
+            total_deals: agg.total_deals,
+            ok_deals: agg.ok_deals,
+            archived_deals: agg.archived_deals,
+            total_phones_checked: agg.total_phones_checked,
+            ok_phones: agg.ok_phones,
+            strategy_counts: agg.strategy_counts,
+          })
+        }
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       store.finishJob(jobId, 'failed', msg)
