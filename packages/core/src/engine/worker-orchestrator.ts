@@ -62,6 +62,7 @@ export interface WorkerOrchestratorDeps {
   senderWarmup?: SenderWarmup
   circuitBreaker?: DeviceCircuitBreaker
   contactRegistry?: ContactRegistry
+  pauseState?: import('./dispatch-pause-state.js').DispatchPauseState
 }
 
 export class WorkerOrchestrator {
@@ -88,9 +89,33 @@ export class WorkerOrchestrator {
   }
 
   async processMessage(message: Message, deviceSerial: string, isFirstInBatch = true, appPackage = 'com.whatsapp'): Promise<boolean> {
-    const { queue, engine, emitter, wahaFallback, messageHistory, receiptTracker, logger, contactRegistry, circuitBreaker } = this.deps
+    const { queue, engine, emitter, wahaFallback, messageHistory, receiptTracker, logger, contactRegistry, circuitBreaker, pauseState } = this.deps
     let sendSuccess = false
     let usedFallback = false
+
+    // Manual pause check — most-specific scope wins (message > chain > device > sender > plugin > global)
+    if (pauseState) {
+      const senderPhone = message.senderNumber ?? undefined
+      const pluginName = message.pluginName ?? undefined
+      const decision = pauseState.isPaused({
+        messageId: message.idempotencyKey,
+        chainKey: message.correlationId ?? undefined,
+        deviceSerial,
+        senderPhone,
+        pluginName,
+      })
+      if (decision.paused) {
+        // Requeue: pause is transient, message comes back to 'queued' for next tick
+        try { queue.updateStatus(message.id, 'locked', 'queued') } catch { /* ignore */ }
+        logger.warn({
+          messageId: message.id,
+          scope: decision.match?.scope,
+          key: decision.match?.key,
+          reason: decision.match?.reason,
+        }, 'Worker: message paused, requeued')
+        return false
+      }
+    }
 
     // Phase 9 / D6: L1 cache lookup — always-on pre-check.
     // If the contact is a known-invalid WA number, short-circuit without wasting an ADB attempt.
@@ -282,6 +307,19 @@ export class WorkerOrchestrator {
         'Worker: device circuit breaker open, skipping tick')
       this.devicesRunning.delete(deviceSerial)
       return
+    }
+
+    // Manual pause: GLOBAL or DEVICE-scoped check before any work
+    if (this.deps.pauseState) {
+      const decision = this.deps.pauseState.isPaused({ deviceSerial })
+      if (decision.paused) {
+        this.deps.logger.warn(
+          { device: deviceSerial, scope: decision.match?.scope, key: decision.match?.key, reason: decision.match?.reason },
+          'Worker: dispatch paused for this scope, skipping tick',
+        )
+        this.devicesRunning.delete(deviceSerial)
+        return
+      }
     }
 
     const { queue, senderMapping, senderHealth, rateLimitGuard, accountMutex, logger } = this.deps

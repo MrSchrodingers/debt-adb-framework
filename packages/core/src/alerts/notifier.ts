@@ -231,6 +231,35 @@ export function alertBanPredictionTriggered(serial: string, suspectCount: number
   }
 }
 
+export function alertDispatchPaused(scope: string, key: string, reason: string, by: string): StructuredAlert {
+  return {
+    title: '🛑 Dispatch pausado',
+    severity: 'critical',
+    summary: `Pause manual ativado em ${scope}=${key}. Mensagens nesse escopo NÃO sairão até resume.`,
+    fields: {
+      'Escopo': scope,
+      'Chave': key,
+      'Motivo': reason,
+      'Por': by,
+    },
+    source: 'dispatch-core / pause-state',
+  }
+}
+
+export function alertDispatchResumed(scope: string, key: string, by: string): StructuredAlert {
+  return {
+    title: '▶️ Dispatch retomado',
+    severity: 'success',
+    summary: `Pause em ${scope}=${key} foi removido. Mensagens voltam a fluir.`,
+    fields: {
+      'Escopo': scope,
+      'Chave': key,
+      'Por': by,
+    },
+    source: 'dispatch-core / pause-state',
+  }
+}
+
 export function alertConfigReloaded(components: number, failed: number): StructuredAlert {
   return {
     title: 'Configuração recarregada',

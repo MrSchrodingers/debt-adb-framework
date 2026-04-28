@@ -30,7 +30,21 @@
     "abandonedAt": "Abandoned at",
     "firstSeen": "First seen",
     "lastHit": "Last hit",
-    "detectedMessage": "Detected message"
+    "detectedMessage": "Detected message",
+    "pauseTab": "Manual pause",
+    "pauseTitle": "Active pauses",
+    "pauseEmpty": "No active pauses.",
+    "pauseGlobalActive": "GLOBAL PAUSED",
+    "pauseNew": "New pause",
+    "pauseScope": "Scope",
+    "pauseKey": "Key",
+    "pauseReason": "Reason",
+    "pauseSubmit": "Pause",
+    "pausing": "Pausing...",
+    "pauseBy": "By",
+    "resume": "Resume",
+    "pauseReasonRequired": "Reason is required",
+    "pauseKeyRequired": "Key is required for non-global scopes"
   },
   "header": {
     "title": "Dispatch",
@@ -157,7 +171,8 @@
     "of": "of",
     "limitationNote": "Only the final screenshot is available per message. Per-event captures will be added in a future release.",
     "expand": "Expand",
-    "close": "Close"
+    "close": "Close",
+    "singleFrame": "Single frame"
   },
   "sendForm": {
     "title": "Send Message",

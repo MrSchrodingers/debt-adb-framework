@@ -30,7 +30,21 @@
     "abandonedAt": "Abandonado em",
     "firstSeen": "Primeira ocorrência",
     "lastHit": "Último hit",
-    "detectedMessage": "Mensagem detectada"
+    "detectedMessage": "Mensagem detectada",
+    "pauseTab": "Pause manual",
+    "pauseTitle": "Pauses ativos",
+    "pauseEmpty": "Nenhuma pausa ativa.",
+    "pauseGlobalActive": "GLOBAL PAUSADO",
+    "pauseNew": "Novo pause",
+    "pauseScope": "Escopo",
+    "pauseKey": "Chave",
+    "pauseReason": "Motivo",
+    "pauseSubmit": "Pausar",
+    "pausing": "Pausando...",
+    "pauseBy": "Por",
+    "resume": "Retomar",
+    "pauseReasonRequired": "Motivo é obrigatório",
+    "pauseKeyRequired": "Chave é obrigatória para escopos não-globais"
   },
   "header": {
     "title": "Dispatch",
@@ -157,7 +171,8 @@
     "of": "de",
     "limitationNote": "Apenas o screenshot final esta disponivel por mensagem. Capturas por evento serao adicionadas futuramente.",
     "expand": "Expandir",
-    "close": "Fechar"
+    "close": "Fechar",
+    "singleFrame": "Frame unico"
   },
   "sendForm": {
     "title": "Enviar Mensagem",

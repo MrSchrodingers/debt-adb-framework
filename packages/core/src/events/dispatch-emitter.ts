@@ -51,6 +51,8 @@ export interface DispatchEventMap {
   'config:reloaded': { components: number; failed: number }
   'config:reload_failed': { components: number; failed: number; errors: Array<{ name: string; error: string }> }
   'ban_prediction:triggered': { serial: string; suspectCount: number; windowMs: number }
+  'dispatch:paused': { action: 'pause'; scope: string; key: string; reason: string; by: string; at: string }
+  'dispatch:resumed': { action: 'resume'; scope: string; key: string; reason: string; by: string; at: string }
 }
 
 export type DispatchEventName = keyof DispatchEventMap

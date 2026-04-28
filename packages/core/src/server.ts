@@ -8,6 +8,7 @@ import { Server as SocketIOServer } from 'socket.io'
 import { MessageQueue, IdempotencyCache } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
 import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, SenderScoring, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender } from './engine/index.js'
+import { DispatchPauseState, type PauseScope } from './engine/dispatch-pause-state.js'
 import { DispatchEmitter } from './events/index.js'
 import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes, registerMessageTimelineRoutes, registerAdminMessageRoutes, registerInsightsHeatmapRoutes } from './api/index.js'
 import { registerAnomalyRoutes, registerChanged24hRoutes } from './insights/index.js'
@@ -32,6 +33,8 @@ import {
   alertCircuitOpened,
   alertNumberInvalid,
   alertHighFailureRate,
+  alertDispatchPaused,
+  alertDispatchResumed,
 } from './alerts/notifier.js'
 import { OralsinPlugin } from './plugins/oralsin-plugin.js'
 import { AdbPrecheckPlugin } from './plugins/adb-precheck-plugin.js'
@@ -947,6 +950,91 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     },
   })
 
+  // ── Admin routes for manual pause (circuit breaker on dispatch chains) ──
+  // GET /api/v1/admin/pause          — list active pauses
+  // GET /api/v1/admin/pause/history  — last 100 pause/resume events
+  // POST /api/v1/admin/pause         — pause a scope/key
+  // POST /api/v1/admin/pause/resume  — resume a scope/key
+  server.get('/api/v1/admin/pause', async (_req, reply) => {
+    return reply.send(pauseState.listActive())
+  })
+
+  server.get('/api/v1/admin/pause/history', async (req, reply) => {
+    const q = req.query as { limit?: string }
+    const limit = Math.max(1, Math.min(parseInt(q.limit ?? '100', 10) || 100, 500))
+    return reply.send(pauseState.listHistory(limit))
+  })
+
+  server.route({
+    method: 'POST',
+    url: '/api/v1/admin/pause',
+    config: { rateLimit: ADMIN_WRITE_RATE_LIMIT },
+    handler: async (req, reply) => {
+      const body = req.body as { scope?: string; key?: string; reason?: string; by?: string }
+      const scope = body.scope as PauseScope | undefined
+      const validScopes: PauseScope[] = ['global', 'plugin', 'sender', 'device', 'chain', 'message']
+      if (!scope || !validScopes.includes(scope)) {
+        return reply.status(400).send({ error: `Invalid scope. Must be one of: ${validScopes.join(', ')}` })
+      }
+      const key = scope === 'global' ? '*' : (body.key ?? '')
+      if (!key) return reply.status(400).send({ error: 'key is required for non-global scopes' })
+      const reason = body.reason ?? 'manual pause via admin API'
+      const by = body.by ?? 'admin'
+      const row = pauseState.pause(scope, key, reason, by)
+      auditLogger.log({
+        action: 'dispatch_pause',
+        resourceType: 'dispatch_pause',
+        resourceId: `${scope}:${key}`,
+        beforeState: null,
+        afterState: row as unknown as Record<string, unknown>,
+      })
+
+      // Notify the plugin (if scope=plugin OR specific plugin can be derived from chain).
+      // Best-effort callback — failures don't roll back the pause.
+      if (scope === 'plugin') {
+        try {
+          await callbackDelivery.sendInterimFailureCallback(key, `__pause_${Date.now()}`, {
+            messageId: `__pause_${Date.now()}`,
+            type: 'pause' as never,
+            reason: `dispatch paused by ${by}: ${reason}`,
+            attempts: 0,
+            maxAttempts: 0,
+            nextRetryAt: null,
+          } as never)
+        } catch { /* best-effort */ }
+      }
+
+      return reply.status(201).send(row)
+    },
+  })
+
+  server.route({
+    method: 'POST',
+    url: '/api/v1/admin/pause/resume',
+    config: { rateLimit: ADMIN_WRITE_RATE_LIMIT },
+    handler: async (req, reply) => {
+      const body = req.body as { scope?: string; key?: string; by?: string }
+      const scope = body.scope as PauseScope | undefined
+      const validScopes: PauseScope[] = ['global', 'plugin', 'sender', 'device', 'chain', 'message']
+      if (!scope || !validScopes.includes(scope)) {
+        return reply.status(400).send({ error: `Invalid scope. Must be one of: ${validScopes.join(', ')}` })
+      }
+      const key = scope === 'global' ? '*' : (body.key ?? '')
+      if (!key) return reply.status(400).send({ error: 'key is required for non-global scopes' })
+      const by = body.by ?? 'admin'
+      const ok = pauseState.resume(scope, key, by)
+      auditLogger.log({
+        action: 'dispatch_resume',
+        resourceType: 'dispatch_pause',
+        resourceId: `${scope}:${key}`,
+        beforeState: { resumed: false },
+        afterState: { resumed: ok, by },
+      })
+      if (!ok) return reply.status(404).send({ error: 'No active pause matched scope/key' })
+      return reply.send({ resumed: true, scope, key, by })
+    },
+  })
+
   // Admin routes for banned numbers (Task 5.4 — UI surface)
   server.get('/api/v1/admin/banned-numbers', async (_req, reply) => {
     const rows = db.prepare(`
@@ -1110,6 +1198,14 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     ))
   })
 
+  // Manual pause / resume — fire structured alerts
+  emitter.on('dispatch:paused', (data) => {
+    void sendCriticalAlert(alertDispatchPaused(data.scope, data.key, data.reason, data.by))
+  })
+  emitter.on('dispatch:resumed', (data) => {
+    void sendCriticalAlert(alertDispatchResumed(data.scope, data.key, data.by))
+  })
+
   // number:invalid events that originate from a ban detection surface
   emitter.on('number:invalid', (data) => {
     if (data.source === 'send_failure' || data.source === 'adb_probe') {
@@ -1148,6 +1244,10 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   })
   circuitBreaker.initialize()
 
+  // ── Manual circuit breaker (pause state) — global/plugin/sender/device/chain/message ──
+  const pauseState = new DispatchPauseState(db, emitter)
+  pauseState.initialize()
+
   // ── Ban Prediction Daemon (Task 12.2 — experimental, default off) ──
   let banPredictionDaemon: BanPredictionDaemon | null = null
   if (process.env.DISPATCH_BAN_PREDICTION_ENABLED === 'true') {
@@ -1170,6 +1270,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     senderWarmup,
     circuitBreaker,
     contactRegistry,
+    pauseState,
   })
   const workerInterval = setInterval(() => orchestrator.tick(), 5_000)
   const metadataCleanupInterval = setInterval(() => orchestrator.cleanupMetadata(), 60_000)
