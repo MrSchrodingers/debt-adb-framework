@@ -12,6 +12,8 @@ import {
   Tooltip,
 } from 'recharts'
 import { CORE_URL } from '../config'
+import { SendsHeatmap, ErrorHeatmap } from './heatmap'
+import { Changed24hCard } from './changed-24h-card'
 
 interface MetricsSummary {
   successRate: number
@@ -241,6 +243,11 @@ export function MetricsDashboard({ senderNumber }: MetricsDashboardProps = {}) {
           )}
         </div>
       </div>
+
+      {/* Phase 9: Heatmaps + Changed-24h */}
+      <SendsHeatmap />
+      <ErrorHeatmap />
+      <Changed24hCard />
         </>
       )}
     </div>
