@@ -16,6 +16,42 @@ import type {
 
 const FALLBACK_PHONE = '(número desconhecido)'
 
+/**
+ * Build a Pipedrive deal URL from the configured PIPEDRIVE_COMPANY_DOMAIN.
+ * Returns null when the domain is not configured (or empty), so callers can
+ * gracefully omit the link from their Markdown layout.
+ *
+ * Domain format: subdomain prefix only — e.g. `debt-5188cf` →
+ * `https://debt-5188cf.pipedrive.com/deal/{id}`. We sanitize the input to a
+ * conservative subdomain regex so a misconfigured env var cannot produce
+ * arbitrary URLs.
+ */
+const COMPANY_DOMAIN_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i
+export function buildDealUrl(dealId: number, companyDomain: string | null | undefined): string | null {
+  if (!companyDomain) return null
+  const trimmed = companyDomain.trim()
+  if (!trimmed || !COMPANY_DOMAIN_RE.test(trimmed)) return null
+  if (!Number.isInteger(dealId) || dealId <= 0) return null
+  return `https://${trimmed}.pipedrive.com/deal/${dealId}`
+}
+
+/**
+ * Build a deep-link URL to an activity within a Pipedrive deal page. Pipedrive
+ * does not expose stable URLs for activity ids on the activity list endpoint,
+ * but the canonical pattern is the deal page anchored to the activity:
+ *   https://{domain}.pipedrive.com/deal/{deal_id}#activity-{activity_id}
+ * Returns null when domain or activityId is missing/invalid.
+ */
+export function buildActivityUrl(
+  dealId: number,
+  activityId: number | null | undefined,
+  companyDomain: string | null | undefined,
+): string | null {
+  const dealUrl = buildDealUrl(dealId, companyDomain)
+  if (!dealUrl || !activityId || !Number.isInteger(activityId) || activityId <= 0) return null
+  return `${dealUrl}#activity-${activityId}`
+}
+
 /** "55 43 99193-8235" → "(43) 99193-8235". Returns input as-is on parse failure. */
 export function formatBrPhonePretty(phone: string | null | undefined): string {
   if (!phone) return FALLBACK_PHONE
@@ -45,9 +81,15 @@ export function strategyLabel(source: string): string {
 
 export function buildPhoneFailActivity(
   intent: PipedrivePhoneFailIntent,
+  companyDomain?: string | null,
 ): PipedriveActivityIntent {
   const pretty = formatBrPhonePretty(intent.phone)
-  const lines: string[] = [
+  const dealUrl = buildDealUrl(intent.deal_id, companyDomain)
+  const lines: string[] = []
+  if (dealUrl) {
+    lines.push(`**Deal**: [#${intent.deal_id}](${dealUrl})`, '')
+  }
+  lines.push(
     `**Verificação adb-precheck — ${intent.occurred_at}**`,
     '',
     '| Campo | Valor |',
@@ -57,7 +99,7 @@ export function buildPhoneFailActivity(
     `| Resultado | ❌ NÃO localizado no WhatsApp |`,
     `| Validado via | ${strategyLabel(intent.strategy)} |`,
     `| Job ID | \`${intent.job_id}\` |`,
-  ]
+  )
   if (intent.cache_ttl_days) {
     lines.push('', `_Validation cache TTL: ${intent.cache_ttl_days} dias_`)
   }
@@ -80,7 +122,9 @@ export function buildPhoneFailActivity(
 
 export function buildDealAllFailActivity(
   intent: PipedriveDealAllFailIntent,
+  companyDomain?: string | null,
 ): PipedriveActivityIntent {
+  const dealUrl = buildDealUrl(intent.deal_id, companyDomain)
   const rows = intent.phones
     .map(
       (p) =>
@@ -93,7 +137,11 @@ export function buildDealAllFailActivity(
         } |`,
     )
     .join('\n')
-  const note = [
+  const noteLines: string[] = []
+  if (dealUrl) {
+    noteLines.push(`**Deal**: [#${intent.deal_id}](${dealUrl})`, '')
+  }
+  noteLines.push(
     '## ATENÇÃO — Deal arquivado em `prov_consultas_snapshot`',
     '',
     `**Verificação completa — ${intent.occurred_at}**`,
@@ -109,7 +157,8 @@ export function buildDealAllFailActivity(
     '- Contato manual via canais alternativos (e-mail, SMS, telefone fixo)',
     '- Skip tracing externo',
     '- Verificar dados cadastrais com a contraparte',
-  ].join('\n')
+  )
+  const note = noteLines.join('\n')
 
   return {
     kind: 'activity',
@@ -133,11 +182,17 @@ function pct(numerator: number, denominator: number): string {
 
 export function buildPastaSummaryNote(
   intent: PipedrivePastaSummaryIntent,
+  companyDomain?: string | null,
 ): PipedriveNoteIntent {
   const okPct = pct(intent.ok_deals, intent.total_deals)
   const archivedPct = pct(intent.archived_deals, intent.total_deals)
   const okPhonesPct = pct(intent.ok_phones, intent.total_phones_checked)
-  const content = [
+  const dealUrl = buildDealUrl(intent.first_deal_id, companyDomain)
+  const lines: string[] = []
+  if (dealUrl) {
+    lines.push(`**Primeiro deal da pasta**: [#${intent.first_deal_id}](${dealUrl})`, '')
+  }
+  lines.push(
     `# 📋 Resumo de varredura — Pasta \`${intent.pasta}\``,
     '',
     `**Período**: ${intent.job_started ?? 'n/a'} → ${intent.job_ended ?? 'n/a'}`,
@@ -162,7 +217,8 @@ export function buildPastaSummaryNote(
     `| Cache hit (recente) | ${intent.strategy_counts.cache} |`,
     '',
     '_Gerado automaticamente por **dispatch-core** — `adb-precheck` plugin._',
-  ].join('\n')
+  )
+  const content = lines.join('\n')
 
   return {
     kind: 'note',

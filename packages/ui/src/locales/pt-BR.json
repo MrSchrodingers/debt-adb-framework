@@ -58,7 +58,8 @@
     "resume": "Retomar",
     "pauseReasonRequired": "Motivo é obrigatório",
     "pauseKeyRequired": "Chave é obrigatória para escopos não-globais",
-    "ackRateTab": "Calibração ack-rate"
+    "ackRateTab": "Calibração ack-rate",
+    "pipedriveTab": "Pipedrive"
   },
   "header": {
     "title": "Dispatch",

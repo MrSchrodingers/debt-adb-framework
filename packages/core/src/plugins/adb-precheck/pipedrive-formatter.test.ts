@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
+  buildActivityUrl,
   buildDealAllFailActivity,
+  buildDealUrl,
   buildPastaSummaryNote,
   buildPhoneFailActivity,
   formatBrPhonePretty,
@@ -194,5 +196,89 @@ describe('buildPastaSummaryNote', () => {
     })
     expect(n.payload.content).not.toContain('NaN')
     expect(n.payload.content).toContain('0 (0.0%)')
+  })
+})
+
+describe('buildDealUrl / buildActivityUrl', () => {
+  it('builds a deal URL with the configured subdomain', () => {
+    expect(buildDealUrl(143611, 'debt-5188cf')).toBe('https://debt-5188cf.pipedrive.com/deal/143611')
+  })
+
+  it('returns null when domain is empty/undefined/null', () => {
+    expect(buildDealUrl(143611, null)).toBeNull()
+    expect(buildDealUrl(143611, undefined)).toBeNull()
+    expect(buildDealUrl(143611, '')).toBeNull()
+    expect(buildDealUrl(143611, '   ')).toBeNull()
+  })
+
+  it('rejects domains with invalid characters (defense vs misconfig)', () => {
+    expect(buildDealUrl(1, 'evil.com/deal/1?x=y')).toBeNull()
+    expect(buildDealUrl(1, '../../etc/passwd')).toBeNull()
+    expect(buildDealUrl(1, 'has space')).toBeNull()
+  })
+
+  it('rejects non-positive deal ids', () => {
+    expect(buildDealUrl(0, 'debt-5188cf')).toBeNull()
+    expect(buildDealUrl(-1, 'debt-5188cf')).toBeNull()
+    expect(buildDealUrl(1.5, 'debt-5188cf')).toBeNull()
+  })
+
+  it('builds activity URL anchored to deal page', () => {
+    expect(buildActivityUrl(143611, 999, 'debt-5188cf'))
+      .toBe('https://debt-5188cf.pipedrive.com/deal/143611#activity-999')
+  })
+
+  it('returns null for missing activity or domain', () => {
+    expect(buildActivityUrl(143611, null, 'debt-5188cf')).toBeNull()
+    expect(buildActivityUrl(143611, 999, null)).toBeNull()
+  })
+})
+
+describe('formatter — dealUrl interpolation in Markdown', () => {
+  const phoneIntent: PipedrivePhoneFailIntent = {
+    scenario: 'phone_fail',
+    deal_id: 143611,
+    pasta: 'P-001',
+    phone: '5543991938235',
+    column: 'telefone_1',
+    strategy: 'adb',
+    confidence: 0.9,
+    job_id: 'job-1',
+    occurred_at: '2026-04-28T18:00:00Z',
+  }
+
+  it('phone fail includes deal link at top when domain is set', () => {
+    const a = buildPhoneFailActivity(phoneIntent, 'debt-5188cf')
+    expect(a.payload.note.startsWith('**Deal**: [#143611](https://debt-5188cf.pipedrive.com/deal/143611)')).toBe(true)
+  })
+
+  it('phone fail omits deal link when domain is unset', () => {
+    const a = buildPhoneFailActivity(phoneIntent)
+    expect(a.payload.note).not.toContain('pipedrive.com/deal')
+  })
+
+  it('deal-all-fail includes deal link prominently', () => {
+    const a = buildDealAllFailActivity({
+      scenario: 'deal_all_fail',
+      deal_id: 143611,
+      pasta: 'P-001',
+      phones: [{ column: 'telefone_1', phone: '5543991938235', outcome: 'invalid', strategy: 'adb', confidence: 0.9 }],
+      motivo: 'todos_telefones_invalidos',
+      job_id: 'job-1',
+      occurred_at: '2026-04-28T18:00:00Z',
+    }, 'debt-5188cf')
+    expect(a.payload.note).toContain('[#143611](https://debt-5188cf.pipedrive.com/deal/143611)')
+  })
+
+  it('pasta summary includes link to first deal', () => {
+    const n = buildPastaSummaryNote({
+      scenario: 'pasta_summary',
+      pasta: 'P-001', first_deal_id: 143611, job_id: 'job-1',
+      job_started: null, job_ended: null,
+      total_deals: 1, ok_deals: 1, archived_deals: 0,
+      total_phones_checked: 1, ok_phones: 1,
+      strategy_counts: { adb: 1, waha: 0, cache: 0 },
+    }, 'debt-5188cf')
+    expect(n.payload.content).toContain('[#143611](https://debt-5188cf.pipedrive.com/deal/143611)')
   })
 })

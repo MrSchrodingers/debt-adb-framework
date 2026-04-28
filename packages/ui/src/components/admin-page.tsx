@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
-import { AlertTriangle, RefreshCw, Trash2, Search, Database, ShieldOff, PauseCircle, PlayCircle, Plus, Gauge } from 'lucide-react'
+import { AlertTriangle, RefreshCw, Trash2, Search, Database, ShieldOff, PauseCircle, PlayCircle, Plus, Gauge, Link2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { CORE_URL, authHeaders } from '../config'
 import { AckRatePage } from './ack-rate-page'
+import { PipedrivePage } from './pipedrive-page'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -431,7 +432,7 @@ function PausePanel() {
 
 // ── Main page ──────────────────────────────────────────────────────────────
 
-type AdminTab = 'dead-letter' | 'banned' | 'pause' | 'ack-rate'
+type AdminTab = 'dead-letter' | 'banned' | 'pause' | 'ack-rate' | 'pipedrive'
 
 export function AdminPage() {
   const { t } = useTranslation()
@@ -441,10 +442,12 @@ export function AdminPage() {
     if (id === 'pause') return t('admin.pauseTab')
     if (id === 'dead-letter') return t('admin.deadLetterTab')
     if (id === 'banned') return t('admin.bannedTab')
+    if (id === 'pipedrive') return t('admin.pipedriveTab', { defaultValue: 'Pipedrive' })
     return t('admin.ackRateTab')
   }
   const tabIcon = (id: AdminTab) => {
     if (id === 'ack-rate') return <Gauge className="h-3.5 w-3.5" />
+    if (id === 'pipedrive') return <Link2 className="h-3.5 w-3.5" />
     return null
   }
 
@@ -456,7 +459,7 @@ export function AdminPage() {
       </div>
 
       <div className="flex gap-2 border-b border-zinc-800 flex-wrap">
-        {(['pause', 'dead-letter', 'banned', 'ack-rate'] as AdminTab[]).map(id => (
+        {(['pause', 'dead-letter', 'banned', 'ack-rate', 'pipedrive'] as AdminTab[]).map(id => (
           <button
             key={id}
             onClick={() => setTab(id)}
@@ -476,6 +479,7 @@ export function AdminPage() {
       {tab === 'dead-letter' && <DeadLetterPanel />}
       {tab === 'banned' && <BannedNumbersPanel />}
       {tab === 'ack-rate' && <AckRatePage />}
+      {tab === 'pipedrive' && <PipedrivePage />}
     </div>
   )
 }

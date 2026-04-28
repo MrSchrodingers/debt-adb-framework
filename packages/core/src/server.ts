@@ -10,7 +10,7 @@ import { AdbBridge } from './adb/index.js'
 import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, SenderScoring, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender } from './engine/index.js'
 import { DispatchPauseState, type PauseScope } from './engine/dispatch-pause-state.js'
 import { DispatchEmitter } from './events/index.js'
-import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes, registerMessageTimelineRoutes, registerAdminMessageRoutes, registerInsightsHeatmapRoutes, registerAckRateRoutes } from './api/index.js'
+import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes, registerMessageTimelineRoutes, registerAdminMessageRoutes, registerInsightsHeatmapRoutes, registerAckRateRoutes, registerPipedriveRoutes } from './api/index.js'
 import { registerAnomalyRoutes, registerChanged24hRoutes } from './insights/index.js'
 import { verifyJwt } from './api/jwt.js'
 import { ContactRegistry } from './contacts/index.js'
@@ -470,6 +470,10 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   // Load plugins from config
   const pluginNames = (process.env.DISPATCH_PLUGINS || '').split(',').map(s => s.trim()).filter(Boolean)
+  // Captured for cross-cutting wiring (Pipedrive API routes need access to
+  // the plugin's internal stores/clients). The explicit type annotation is
+  // required so TS does not narrow it to `never` after the factory closure.
+  const adbPrecheckRef: { current: AdbPrecheckPlugin | null } = { current: null }
   const pluginMap: Record<string, () => DispatchPlugin> = {
     oralsin: () => new OralsinPlugin(process.env.PLUGIN_ORALSIN_WEBHOOK_URL || 'http://localhost:8000/api/webhooks/dispatch/'),
     'adb-precheck': () => {
@@ -489,8 +493,9 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         ratePerSec: process.env.PIPEDRIVE_RATE_PER_SEC ? Number(process.env.PIPEDRIVE_RATE_PER_SEC) : undefined,
         burst: process.env.PIPEDRIVE_BURST ? Number(process.env.PIPEDRIVE_BURST) : undefined,
         cacheTtlDays: process.env.PIPEDRIVE_CACHE_TTL_DAYS ? Number(process.env.PIPEDRIVE_CACHE_TTL_DAYS) : undefined,
+        companyDomain: process.env.PIPEDRIVE_COMPANY_DOMAIN,
       } : undefined
-      return new AdbPrecheckPlugin(
+      const inst = new AdbPrecheckPlugin(
         {
           webhookUrl: process.env.PLUGIN_ADB_PRECHECK_WEBHOOK_URL || '',
           pgConnectionString: pgUrl,
@@ -508,6 +513,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         contactRegistry,
         adb,
       )
+      adbPrecheckRef.current = inst
+      return inst
     },
   }
 
@@ -656,6 +663,34 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
       return route.handler(req, reply)
       },
+    })
+  }
+
+  // ── Pipedrive operator API (persistence + analytics + UI surface) ──────
+  // Mounted under /api/v1/pipedrive/* (NOT /api/v1/plugins/*). The endpoints
+  // expose the activity store, render previews, and trigger manual posts.
+  // Always registered: when the integration is disabled (no token), routes
+  // return 503 so the UI can render an explanatory empty state instead of
+  // 404-ing.
+  if (adbPrecheckRef.current) {
+    const inst = adbPrecheckRef.current
+    registerPipedriveRoutes(server, {
+      store: inst.getPipedriveActivityStore(),
+      client: inst.getPipedriveClient(),
+      publisher: inst.getPipedrivePublisher(),
+      companyDomain: inst.getPipedriveCompanyDomain(),
+      cacheTtlDays: inst.getPipedriveCacheTtlDays(),
+      baseUrl: process.env.PIPEDRIVE_BASE_URL,
+    })
+  } else {
+    // Plugin not loaded at all — still expose /health for the UI tab to
+    // render its empty-state.
+    registerPipedriveRoutes(server, {
+      store: null,
+      client: null,
+      publisher: null,
+      companyDomain: process.env.PIPEDRIVE_COMPANY_DOMAIN ?? null,
+      baseUrl: process.env.PIPEDRIVE_BASE_URL,
     })
   }
 

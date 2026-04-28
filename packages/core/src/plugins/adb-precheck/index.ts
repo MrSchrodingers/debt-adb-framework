@@ -5,9 +5,22 @@ export { extractPhones, normalizeBrPhone } from './phone-extractor.js'
 export { PipedriveClient, TokenBucket } from './pipedrive-client.js'
 export { PipedrivePublisher } from './pipedrive-publisher.js'
 export {
+  PipedriveActivityStore,
+} from './pipedrive-activity-store.js'
+export type {
+  PipedriveActivityRow,
+  PipedriveActivityInsert,
+  PipedriveListFilters,
+  PipedriveStatsRow,
+  PipedriveScenario,
+  PipedriveStatus,
+} from './pipedrive-activity-store.js'
+export {
   buildPhoneFailActivity,
   buildDealAllFailActivity,
   buildPastaSummaryNote,
+  buildDealUrl,
+  buildActivityUrl,
   formatBrPhonePretty,
   strategyLabel,
 } from './pipedrive-formatter.js'

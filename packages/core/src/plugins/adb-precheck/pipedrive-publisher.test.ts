@@ -1,11 +1,17 @@
 import { describe, it, expect, vi } from 'vitest'
+import { createRequire } from 'node:module'
 import { PipedrivePublisher } from './pipedrive-publisher.js'
 import type { PipedriveClient } from './pipedrive-client.js'
+import { PipedriveActivityStore } from './pipedrive-activity-store.js'
 import type {
   PipedriveDealAllFailIntent,
   PipedrivePastaSummaryIntent,
   PipedrivePhoneFailIntent,
 } from './types.js'
+
+const require = createRequire(import.meta.url)
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const Database = require('better-sqlite3') as typeof import('better-sqlite3').default
 
 function fakeLogger() {
   return {
@@ -156,5 +162,74 @@ describe('PipedrivePublisher — async behavior', () => {
     await pub.flush()
     expect(dispatch).toHaveBeenCalledTimes(2)
     expect(logger.error).toHaveBeenCalled()
+  })
+})
+
+describe('PipedrivePublisher — persistence (with store)', () => {
+  it('writes a retrying row before dispatch and updates to success', async () => {
+    const db = new Database(':memory:')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    const { client } = fakeClient(async () => ({ ok: true, attempts: 1, status: 201 }))
+    const pub = new PipedrivePublisher(client, fakeLogger(), store)
+    pub.enqueuePhoneFail(phoneFail)
+    await pub.flush()
+    const list = store.list({ scenario: 'phone_fail' })
+    expect(list.total).toBe(1)
+    const row = list.items[0]
+    expect(row.pipedrive_response_status).toBe('success')
+    expect(row.http_status).toBe(201)
+    expect(row.attempts).toBe(1)
+    expect(row.completed_at).not.toBeNull()
+    expect(row.pipedrive_endpoint).toBe('/activities')
+    db.close()
+  })
+
+  it('writes failed row when client returns ok:false', async () => {
+    const db = new Database(':memory:')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    const { client } = fakeClient(async () => ({ ok: false, attempts: 3, status: 500, error: 'http_500: boom' }))
+    const pub = new PipedrivePublisher(client, fakeLogger(), store)
+    pub.enqueuePhoneFail(phoneFail)
+    await pub.flush()
+    const row = store.list({ scenario: 'phone_fail' }).items[0]
+    expect(row.pipedrive_response_status).toBe('failed')
+    expect(row.http_status).toBe(500)
+    expect(row.attempts).toBe(3)
+    expect(row.error_msg).toBe('http_500: boom')
+    db.close()
+  })
+
+  it('persists deal_all_fail to /activities and pasta_summary to /notes', async () => {
+    const db = new Database(':memory:')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    const { client } = fakeClient()
+    const pub = new PipedrivePublisher(client, fakeLogger(), store)
+    pub.enqueueDealAllFail(dealFail)
+    pub.enqueuePastaSummary(pastaSummary)
+    await pub.flush()
+    const dealRow = store.list({ scenario: 'deal_all_fail' }).items[0]
+    const pastaRow = store.list({ scenario: 'pasta_summary' }).items[0]
+    expect(dealRow.pipedrive_endpoint).toBe('/activities')
+    expect(pastaRow.pipedrive_endpoint).toBe('/notes')
+    expect(JSON.parse(dealRow.pipedrive_payload_json)).toHaveProperty('subject')
+    expect(JSON.parse(pastaRow.pipedrive_payload_json)).toHaveProperty('content')
+    db.close()
+  })
+
+  it('manual=true is propagated to the row', async () => {
+    const db = new Database(':memory:')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    const { client } = fakeClient()
+    const pub = new PipedrivePublisher(client, fakeLogger(), store)
+    pub.enqueuePhoneFail(phoneFail, { manual: true, triggered_by: 'alice' })
+    await pub.flush()
+    const row = store.list({ scenario: 'phone_fail' }).items[0]
+    expect(row.manual).toBe(1)
+    expect(row.triggered_by).toBe('alice')
+    db.close()
   })
 })

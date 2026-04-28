@@ -18,6 +18,7 @@ import {
   PrecheckJobStore,
   PrecheckScanner,
   PipedriveClient,
+  PipedriveActivityStore,
   PipedrivePublisher,
 } from './adb-precheck/index.js'
 
@@ -72,7 +73,9 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
 
   private pipedriveClient: PipedriveClient | null = null
   private pipedrivePublisher: PipedrivePublisher | null = null
+  private pipedriveActivityStore: PipedriveActivityStore | null = null
   private readonly pipedriveCacheTtlDays: number | undefined
+  private readonly pipedriveCompanyDomain: string | null
 
   constructor(
     opts: {
@@ -104,6 +107,11 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
         ratePerSec?: number
         burst?: number
         cacheTtlDays?: number
+        /**
+         * Pipedrive company subdomain (just the prefix — e.g. `debt-5188cf`).
+         * Used to build clickable deal links in Markdown notes/activities.
+         */
+        companyDomain?: string
       }
       /** Dispatch emitter — required for Pipedrive failure event surfacing. */
       emitter?: DispatchEmitter
@@ -120,6 +128,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     this.pg = new PipeboardPg(opts.pgConnectionString, opts.pgMaxConnections ?? 4)
     this.store = new PrecheckJobStore(db)
     this.pipedriveCacheTtlDays = opts.pipedrive?.cacheTtlDays
+    this.pipedriveCompanyDomain = opts.pipedrive?.companyDomain ?? null
 
     // Pipedrive client + publisher are wired only when a token is provided.
     // Stays null when the env var is missing — scanner becomes a no-op for
@@ -157,8 +166,17 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     this.ctx = ctx
     this.store.initialize()
     if (this.pipedriveClient) {
-      this.pipedrivePublisher = new PipedrivePublisher(this.pipedriveClient, ctx.logger)
-      ctx.logger.info('Pipedrive integration enabled')
+      this.pipedriveActivityStore = new PipedriveActivityStore(this.db)
+      this.pipedriveActivityStore.initialize()
+      this.pipedrivePublisher = new PipedrivePublisher(
+        this.pipedriveClient,
+        ctx.logger,
+        this.pipedriveActivityStore,
+        this.pipedriveCompanyDomain,
+      )
+      ctx.logger.info('Pipedrive integration enabled', {
+        companyDomain: this.pipedriveCompanyDomain ?? '(unset — links disabled)',
+      })
     }
     this.scanner = new PrecheckScanner({
       pg: this.pg,
@@ -185,6 +203,31 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     ctx.registerRoute('POST', '/probe',      this.handleProbePhone.bind(this))
 
     ctx.logger.info('ADB pre-check plugin initialized')
+  }
+
+  /** Exposes the Pipedrive activity store for the core API layer. */
+  getPipedriveActivityStore(): PipedriveActivityStore | null {
+    return this.pipedriveActivityStore
+  }
+
+  /** Exposes the Pipedrive client for the core API layer (preview/health). */
+  getPipedriveClient(): PipedriveClient | null {
+    return this.pipedriveClient
+  }
+
+  /** Exposes the publisher so the API can manually trigger and re-enqueue. */
+  getPipedrivePublisher(): PipedrivePublisher | null {
+    return this.pipedrivePublisher
+  }
+
+  /** Configured PIPEDRIVE_COMPANY_DOMAIN (or null if unset). */
+  getPipedriveCompanyDomain(): string | null {
+    return this.pipedriveCompanyDomain
+  }
+
+  /** Cache TTL hint forwarded into manual phone-fail intents. */
+  getPipedriveCacheTtlDays(): number | undefined {
+    return this.pipedriveCacheTtlDays
   }
 
   async destroy(): Promise<void> {

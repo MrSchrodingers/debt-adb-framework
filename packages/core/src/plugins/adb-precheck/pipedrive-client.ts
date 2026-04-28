@@ -143,6 +143,52 @@ export class PipedriveClient {
     return this.post(path, intent.payload, intent.kind, dealId)
   }
 
+  /**
+   * Lightweight diagnostic GET — used by /api/v1/pipedrive/health to confirm
+   * the token is accepted by Pipedrive and surface owner/company info. Never
+   * throws: returns `{ ok:false, error }` on any failure.
+   */
+  async whoami(): Promise<{
+    ok: boolean
+    status: number | null
+    name?: string
+    email?: string
+    company_name?: string
+    company_domain?: string
+    error?: string
+  }> {
+    await this.bucket.take()
+    const url = `${this.baseUrl}users/me?api_token=${encodeURIComponent(this.opts.apiToken)}`
+    const ctrl = new AbortController()
+    const tid = setTimeout(() => ctrl.abort(), this.opts.timeoutMs ?? 15_000)
+    try {
+      const res = await this.fetchImpl(url, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: ctrl.signal,
+      })
+      clearTimeout(tid)
+      if (!res.ok) return { ok: false, status: res.status, error: `http_${res.status}` }
+      const json = (await res.json().catch(() => null)) as
+        | { success?: boolean; data?: { name?: string; email?: string; company_name?: string; company_domain?: string } }
+        | null
+      if (!json || json.success !== true) {
+        return { ok: false, status: res.status, error: 'success_false' }
+      }
+      return {
+        ok: true,
+        status: res.status,
+        name: json.data?.name,
+        email: json.data?.email,
+        company_name: json.data?.company_name,
+        company_domain: json.data?.company_domain,
+      }
+    } catch (e) {
+      clearTimeout(tid)
+      return { ok: false, status: null, error: e instanceof Error ? e.message : String(e) }
+    }
+  }
+
   private async post(
     path: string,
     body: unknown,
