@@ -31,3 +31,4 @@ data/
 /infra/run/
 /infra/logs/
 
+scripts/__pycache__/
