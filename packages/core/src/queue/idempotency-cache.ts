@@ -26,6 +26,9 @@ interface IdempotencyRow {
 
 export class IdempotencyCache {
   private readonly now: () => number
+  private stmtGet: Database.Statement<[string], IdempotencyRow> | null = null
+  private stmtUpsert: Database.Statement | null = null
+  private stmtCleanup: Database.Statement | null = null
 
   constructor(
     private readonly db: Database.Database,
@@ -37,6 +40,7 @@ export class IdempotencyCache {
   /**
    * Create the idempotency_keys table and supporting index if they do not
    * already exist. Safe to call multiple times (idempotent).
+   * Also prepares hot-path statements once (avoids re-prepare on every call).
    */
   initialize(): void {
     this.db.exec(`
@@ -48,6 +52,25 @@ export class IdempotencyCache {
       CREATE INDEX IF NOT EXISTS idx_idempotency_keys_expires
         ON idempotency_keys(expires_at);
     `)
+
+    this.stmtGet = this.db.prepare<[string], IdempotencyRow>(
+      'SELECT key, message_id, expires_at FROM idempotency_keys WHERE key = ?',
+    )
+    this.stmtUpsert = this.db.prepare(
+      `INSERT INTO idempotency_keys (key, message_id, expires_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET
+         message_id = excluded.message_id,
+         expires_at = excluded.expires_at`,
+    )
+    this.stmtCleanup = this.db.prepare(
+      'DELETE FROM idempotency_keys WHERE expires_at < ?',
+    )
+  }
+
+  /** Lazy fallback if checkAndReserve is called before initialize() (defensive). */
+  private ensurePrepared(): void {
+    if (!this.stmtGet || !this.stmtUpsert || !this.stmtCleanup) this.initialize()
   }
 
   /**
@@ -67,28 +90,18 @@ export class IdempotencyCache {
     messageId: string,
     ttlSec?: number,
   ): { hit: boolean; messageId: string } {
+    this.ensurePrepared()
+    const stmtGet = this.stmtGet!
+    const stmtUpsert = this.stmtUpsert!
     const effectiveTtl = ttlSec ?? this.config.defaultTtlSec
     const nowMs = this.now()
     const expiresAt = new Date(nowMs + effectiveTtl * 1000).toISOString()
 
-    const stmtGet = this.db.prepare<[string], IdempotencyRow>(
-      'SELECT key, message_id, expires_at FROM idempotency_keys WHERE key = ?',
-    )
-    const stmtUpsert = this.db.prepare(
-      `INSERT INTO idempotency_keys (key, message_id, expires_at)
-       VALUES (?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET
-         message_id = excluded.message_id,
-         expires_at = excluded.expires_at`,
-    )
-
     return this.db.transaction((): { hit: boolean; messageId: string } => {
       const existing = stmtGet.get(key)
       if (existing && new Date(existing.expires_at).getTime() > nowMs) {
-        // Active entry — return original message_id to caller
         return { hit: true, messageId: existing.message_id }
       }
-      // Either no row OR row expired — write new mapping
       stmtUpsert.run(key, messageId, expiresAt)
       return { hit: false, messageId }
     })()
@@ -99,11 +112,9 @@ export class IdempotencyCache {
    * Returns the number of rows deleted.
    */
   cleanupExpired(): number {
+    this.ensurePrepared()
     const nowIso = new Date(this.now()).toISOString()
-    const result = this.db.prepare(
-      'DELETE FROM idempotency_keys WHERE expires_at < ?',
-    ).run(nowIso)
-    return result.changes
+    return this.stmtCleanup!.run(nowIso).changes
   }
 
   /**
@@ -111,9 +122,8 @@ export class IdempotencyCache {
    * (Does NOT remove expired rows — call cleanupExpired() for that.)
    */
   get(key: string): { key: string; messageId: string; expiresAt: string } | null {
-    const row = this.db.prepare<[string], IdempotencyRow>(
-      'SELECT key, message_id, expires_at FROM idempotency_keys WHERE key = ?',
-    ).get(key)
+    this.ensurePrepared()
+    const row = this.stmtGet!.get(key)
     if (!row) return null
     return { key: row.key, messageId: row.message_id, expiresAt: row.expires_at }
   }
