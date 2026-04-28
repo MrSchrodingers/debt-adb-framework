@@ -7,6 +7,8 @@ export interface MessageEvent {
   timestamp: string
   type: string
   metadata: Record<string, unknown> | null
+  /** Populated for screenshot_saved events: the API URL to retrieve the captured image. */
+  screenshotUrl?: string | null
 }
 
 export interface FailedCallback {
@@ -48,12 +50,26 @@ export function registerMessageTimelineRoutes(
       metadata: string | null
     }>
 
-    const events: MessageEvent[] = eventRows.map(row => ({
-      id: row.id,
-      timestamp: row.created_at,
-      type: row.event,
-      metadata: row.metadata ? (JSON.parse(row.metadata) as Record<string, unknown>) : null,
-    }))
+    const events: MessageEvent[] = eventRows.map(row => {
+      const parsedMeta: Record<string, unknown> | null = row.metadata
+        ? (JSON.parse(row.metadata) as Record<string, unknown>)
+        : null
+
+      // For screenshot_saved events, expose a typed screenshotUrl so the UI
+      // can build per-event film-strip frames without parsing raw metadata.
+      let screenshotUrl: string | null = null
+      if (row.event === 'screenshot_saved' && parsedMeta && typeof parsedMeta.path === 'string') {
+        screenshotUrl = `/api/v1/messages/${id}/screenshot`
+      }
+
+      return {
+        id: row.id,
+        timestamp: row.created_at,
+        type: row.event,
+        metadata: parsedMeta,
+        screenshotUrl,
+      }
+    })
 
     // Screenshot URL — if persisted and screenshotPath exists
     let screenshotUrl: string | null = null
