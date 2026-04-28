@@ -155,13 +155,23 @@ export class WebhookHandler {
 
       // Persist ack for the calibrator (research/ack-rate-calibrator.ts).
       // INSERT OR IGNORE makes this idempotent across webhook replays.
-      this.ackHistory.insert({
-        wahaMessageId: ack.id,
-        ackLevel,
-        ackLevelName,
-        deliveredAt,
-        readAt,
-      })
+      // Persistence failure must NOT 500 the webhook — that triggers WAHA
+      // retry storms. Log and continue; the emitter event still fires below.
+      try {
+        this.ackHistory.insert({
+          wahaMessageId: ack.id,
+          ackLevel,
+          ackLevelName,
+          deliveredAt,
+          readAt,
+        })
+      } catch (err) {
+        this.emitter.emit('waha:ack_persist_failed', {
+          wahaMessageId: ack.id,
+          ackLevel,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
 
       this.emitter.emit('waha:message_ack', {
         wahaMessageId: ack.id,
