@@ -19,6 +19,7 @@ import { DeviceProfileSelector, type DeviceProfileSelection } from './components
 import { PluginTabs } from './components/plugin-tabs'
 import { SenderDashboard } from './components/sender-dashboard'
 import { ContactsAudit } from './components/contacts-audit'
+import { AnomalyBanner } from './components/anomaly-banner'
 import type { DeviceRecord, HealthSnapshot, WhatsAppAccount, Alert } from './types'
 
 type Tab = 'devices' | 'queue' | 'senders' | 'sessions' | 'metricas' | 'auditoria' | 'plugins' | 'contatos'
@@ -249,6 +250,9 @@ export function App() {
             <span className="text-xs text-zinc-600 font-mono">{CORE_URL.replace('http://', '')}</span>
           </div>
         </header>
+
+        {/* Anomaly banner — spans full width */}
+        <AnomalyBanner />
 
         {/* Stats */}
         <StatsBar
