@@ -1,0 +1,140 @@
+{
+  "nav": {
+    "devices": "Dispositivos",
+    "queue": "Fila",
+    "senders": "Senders",
+    "sessions": "Sessoes",
+    "metrics": "Metricas",
+    "audit": "Auditoria",
+    "contacts": "Contatos",
+    "plugins": "Plugins",
+    "logout": "Sair"
+  },
+  "header": {
+    "title": "Dispatch",
+    "subtitle": "ADB Orchestrator",
+    "live": "Live",
+    "offline": "Offline"
+  },
+  "stats": {
+    "devices": "Dispositivos",
+    "online": "online",
+    "alerts": "alertas",
+    "queue": "na fila",
+    "sendersPaused": "pausados",
+    "sendersQuarantined": "quarentena"
+  },
+  "messages": {
+    "title": "Mensagens",
+    "loading": "Carregando...",
+    "empty": "Nenhuma mensagem encontrada.",
+    "searchPlaceholder": "Buscar telefone...",
+    "exportCsv": "CSV",
+    "to": "Para",
+    "body": "Corpo",
+    "status": "Status",
+    "plugin": "Plugin",
+    "priority": "Prioridade",
+    "created": "Criado",
+    "all": "Todos",
+    "selected": "selecionada",
+    "selectedPlural": "selecionadas",
+    "message": "mensagem",
+    "messagePlural": "mensagens",
+    "retrying": "Reenfileirando...",
+    "retry": "Retry",
+    "clear": "Limpar",
+    "requeued": "reenfileiradas",
+    "failed": "falharam",
+    "skipped": "ignoradas"
+  },
+  "timeline": {
+    "title": "Timeline",
+    "events": "Eventos",
+    "screenshot": "Screenshot",
+    "failedCallbacks": "Callbacks com falha",
+    "loading": "Carregando timeline...",
+    "unavailable": "Timeline indisponivel",
+    "noEvents": "Nenhum evento registrado ainda",
+    "sender": "Sender",
+    "plugin": "Plugin",
+    "attempts": "Tentativas",
+    "metadata": "metadata",
+    "lastAttempt": "Ultima tentativa",
+    "screenshotAvailable": "Screenshot disponivel",
+    "screenshotNeverPersisted": "Screenshot nao capturada",
+    "screenshotSkipped": "Ignorada pela politica",
+    "screenshotFailed": "Falha ao salvar",
+    "screenshotMissing": "Arquivo ausente no disco",
+    "screenshotDeleted": "Removida pela retencao",
+    "screenshotUnavailable": "Indisponivel"
+  },
+  "devices": {
+    "title": "Dispositivos",
+    "noDevices": "Nenhum dispositivo conectado.",
+    "online": "online",
+    "offline": "offline",
+    "battery": "Bateria",
+    "temperature": "Temperatura",
+    "ram": "RAM",
+    "storage": "Armazenamento",
+    "screenshot": "Screenshot",
+    "reboot": "Reiniciar",
+    "restartWa": "Reiniciar WA"
+  },
+  "alerts": {
+    "title": "Alertas",
+    "noAlerts": "Nenhum alerta ativo.",
+    "resolve": "Resolver",
+    "active": "ativos",
+    "alert": "alerta",
+    "alertPlural": "alertas",
+    "new": "novo alerta detectado"
+  },
+  "auditLog": {
+    "title": "Log de Auditoria",
+    "search": "Buscar...",
+    "action": "Acao",
+    "resource": "Recurso",
+    "timestamp": "Horario",
+    "user": "Usuario",
+    "empty": "Nenhum registro encontrado."
+  },
+  "errors": {
+    "loadFailed": "Falha ao carregar",
+    "sendFailed": "Falha ao enviar",
+    "generic": "Ocorreu um erro inesperado"
+  },
+  "toasts": {
+    "messageSent": "Mensagem enviada para",
+    "messageFailed": "Falha ao enviar para",
+    "alert": "Alerta",
+    "messageDelivered": "Mensagem entregue",
+    "messageRead": "Mensagem lida",
+    "senderQuarantined": "em quarentena",
+    "senderReleased": "liberado da quarentena",
+    "optOut": "Opt-out detectado",
+    "blacklisted": "blacklistado",
+    "failuresSuffix": "falhas consecutivas"
+  },
+  "preferences": {
+    "title": "Preferencias",
+    "language": "Idioma",
+    "theme": "Tema",
+    "dark": "Escuro",
+    "light": "Claro"
+  },
+  "filmStrip": {
+    "title": "Replay Film-strip",
+    "noScreenshots": "Nenhum screenshot disponivel para este passo",
+    "play": "Reproduzir",
+    "pause": "Pausar",
+    "prev": "Anterior",
+    "next": "Proximo",
+    "frame": "Quadro",
+    "of": "de",
+    "limitationNote": "Apenas o screenshot final esta disponivel por mensagem. Capturas por evento serao adicionadas futuramente.",
+    "expand": "Expandir",
+    "close": "Fechar"
+  }
+}
