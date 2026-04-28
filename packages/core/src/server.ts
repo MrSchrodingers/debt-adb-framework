@@ -9,7 +9,8 @@ import { MessageQueue, IdempotencyCache } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
 import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, SenderScoring, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
-import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes, registerMessageTimelineRoutes, registerAdminMessageRoutes } from './api/index.js'
+import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes, registerMessageTimelineRoutes, registerAdminMessageRoutes, registerInsightsHeatmapRoutes } from './api/index.js'
+import { registerAnomalyRoutes, registerChanged24hRoutes } from './insights/index.js'
 import { verifyJwt } from './api/jwt.js'
 import { ContactRegistry } from './contacts/index.js'
 import { HygieneJobService } from './hygiene/index.js'
@@ -325,6 +326,11 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // Phase 9: Contact Registry + Hygiene
   registerContactRoutes(server, contactRegistry, adb, queue)
   registerHygieneRoutes(server, hygieneJobService)
+
+  // Phase 9 (P9): Insights endpoints
+  registerInsightsHeatmapRoutes(server, db)
+  registerAnomalyRoutes(server, db)
+  registerChanged24hRoutes(server, db)
 
   // Manual phone number mapping moved to api/devices.ts
 
