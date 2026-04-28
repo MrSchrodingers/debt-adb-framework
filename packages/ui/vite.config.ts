@@ -10,8 +10,13 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
+      // SELF-DESTRUCT MODE — generates a kill-switch SW that unregisters itself
+      // and clears all caches on activate. After every client visits once, no
+      // SW remains. Re-enable PWA later with `selfDestroying: false` once cache
+      // semantics are tuned (binary endpoints, JWT auth flows, etc.) so users
+      // don't get stuck on stale assets.
+      selfDestroying: true,
       registerType: 'autoUpdate',
-      // Generates sw.js via workbox-build; keep the manifest separate.
       manifest: false, // We provide our own manifest.webmanifest in public/
       workbox: {
         // Order matters — first match wins. Bypass binary/streaming endpoints
