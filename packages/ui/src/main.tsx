@@ -1,10 +1,16 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { I18nextProvider } from 'react-i18next'
 import { App } from './App'
 import { AuthProvider, useAuth } from './auth/auth-context'
 import { Login } from './components/login'
 import { BrandMark } from './components/brand-mark'
+import i18n from './lib/i18n'
+import { applyTheme, getStoredTheme } from './lib/theme'
 import './index.css'
+
+// Apply persisted theme immediately (before first paint)
+applyTheme(getStoredTheme())
 
 function AppGate() {
   const { loading, mode, token } = useAuth()
@@ -31,8 +37,10 @@ function AppGate() {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <AuthProvider>
-      <AppGate />
-    </AuthProvider>
+    <I18nextProvider i18n={i18n}>
+      <AuthProvider>
+        <AppGate />
+      </AuthProvider>
+    </I18nextProvider>
   </StrictMode>,
 )

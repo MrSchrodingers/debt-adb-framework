@@ -26,6 +26,7 @@ import { parseConfig } from './config/config-schema.js'
 import { AuditLogger } from './config/audit-logger.js'
 import { ScreenshotPolicy } from './config/screenshot-policy.js'
 import { metricsRegistry, messagesSentTotal, messagesFailedTotal, messagesQueuedTotal, sendDurationSeconds, interMessageDelaySeconds, queueDepth, devicesOnline, senderDailyCount, quarantineEventsTotal, senderQuarantined, callbacksTotal, pluginErrorsTotal, queueDepthByPlugin } from './config/metrics.js'
+import { sendCriticalAlert } from './alerts/notifier.js'
 import { OralsinPlugin } from './plugins/oralsin-plugin.js'
 import { AdbPrecheckPlugin } from './plugins/adb-precheck-plugin.js'
 import { AdbProbeStrategy, WahaCheckStrategy, CacheOnlyStrategy } from './check-strategies/index.js'
@@ -1059,6 +1060,33 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     }
   }, 30_000)
 
+  // ── Task 10.3: Critical alert forwarding ──────────────────────────────────
+  // Fires to Slack/Telegram when env vars DISPATCH_ALERT_SLACK_WEBHOOK and/or
+  // DISPATCH_ALERT_TELEGRAM_BOT_TOKEN + DISPATCH_ALERT_TELEGRAM_CHAT_ID are set.
+
+  emitter.on('device:circuit:opened', (data) => {
+    const msg = `[Dispatch] Circuit opened — device ${data.serial}\nReason: ${data.reason}\nFailures: ${data.consecutiveFailures}\nNext attempt: ${data.nextAttemptAt}`
+    void sendCriticalAlert(msg)
+  })
+
+  // number:invalid events that originate from a ban detection surface
+  emitter.on('number:invalid', (data) => {
+    if (data.source === 'send_failure' || data.source === 'adb_probe') {
+      const msg = `[Dispatch] Number invalid (${data.source}) — ${data.phone_normalized}\nConfidence: ${data.confidence ?? 'n/a'}\nCheck ID: ${data.check_id}`
+      void sendCriticalAlert(msg)
+    }
+  })
+
+  // Periodic failure-rate check (every 5 min). Fires when failedLastHour > 100.
+  const ALERT_FAILURE_THRESHOLD = Number(process.env.DISPATCH_ALERT_FAILURE_THRESHOLD) || 100
+  const criticalAlertInterval = setInterval(() => {
+    const stats = queue.getQueueStats()
+    if (stats.failedLastHour > ALERT_FAILURE_THRESHOLD) {
+      const msg = `[Dispatch] High failure rate — ${stats.failedLastHour} messages failed in the last hour (threshold: ${ALERT_FAILURE_THRESHOLD})`
+      void sendCriticalAlert(msg)
+    }
+  }, 5 * 60_000)
+
   // DP-5: Worker orchestrator — extracted from inline closures
   const sendWindow = new SendWindow({
     start: Number(process.env.SEND_WINDOW_START) || 7,
@@ -1193,6 +1221,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     clearInterval(metricsInterval)
     clearInterval(screenshotCleanupInterval)
     clearInterval(idempotencyCacheCleanupInterval)
+    clearInterval(criticalAlertInterval)
   })
 
   shutdown.addHandler('stale-locks', async () => {

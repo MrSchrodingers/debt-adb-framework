@@ -1,0 +1,140 @@
+{
+  "nav": {
+    "devices": "Devices",
+    "queue": "Queue",
+    "senders": "Senders",
+    "sessions": "Sessions",
+    "metrics": "Metrics",
+    "audit": "Audit",
+    "contacts": "Contacts",
+    "plugins": "Plugins",
+    "logout": "Sign out"
+  },
+  "header": {
+    "title": "Dispatch",
+    "subtitle": "ADB Orchestrator",
+    "live": "Live",
+    "offline": "Offline"
+  },
+  "stats": {
+    "devices": "Devices",
+    "online": "online",
+    "alerts": "alerts",
+    "queue": "in queue",
+    "sendersPaused": "paused",
+    "sendersQuarantined": "quarantine"
+  },
+  "messages": {
+    "title": "Messages",
+    "loading": "Loading...",
+    "empty": "No messages found.",
+    "searchPlaceholder": "Search phone...",
+    "exportCsv": "CSV",
+    "to": "To",
+    "body": "Body",
+    "status": "Status",
+    "plugin": "Plugin",
+    "priority": "Priority",
+    "created": "Created",
+    "all": "All",
+    "selected": "selected",
+    "selectedPlural": "selected",
+    "message": "message",
+    "messagePlural": "messages",
+    "retrying": "Re-queuing...",
+    "retry": "Retry",
+    "clear": "Clear",
+    "requeued": "re-queued",
+    "failed": "failed",
+    "skipped": "skipped"
+  },
+  "timeline": {
+    "title": "Timeline",
+    "events": "Events",
+    "screenshot": "Screenshot",
+    "failedCallbacks": "Failed callbacks",
+    "loading": "Loading timeline...",
+    "unavailable": "Timeline unavailable",
+    "noEvents": "No events recorded yet",
+    "sender": "Sender",
+    "plugin": "Plugin",
+    "attempts": "Attempts",
+    "metadata": "metadata",
+    "lastAttempt": "Last attempt",
+    "screenshotAvailable": "Screenshot available",
+    "screenshotNeverPersisted": "Screenshot not captured",
+    "screenshotSkipped": "Skipped by policy",
+    "screenshotFailed": "Failed to save",
+    "screenshotMissing": "File missing on disk",
+    "screenshotDeleted": "Removed by retention",
+    "screenshotUnavailable": "Unavailable"
+  },
+  "devices": {
+    "title": "Devices",
+    "noDevices": "No devices connected.",
+    "online": "online",
+    "offline": "offline",
+    "battery": "Battery",
+    "temperature": "Temperature",
+    "ram": "RAM",
+    "storage": "Storage",
+    "screenshot": "Screenshot",
+    "reboot": "Reboot",
+    "restartWa": "Restart WA"
+  },
+  "alerts": {
+    "title": "Alerts",
+    "noAlerts": "No active alerts.",
+    "resolve": "Resolve",
+    "active": "active",
+    "alert": "alert",
+    "alertPlural": "alerts",
+    "new": "new alert detected"
+  },
+  "auditLog": {
+    "title": "Audit Log",
+    "search": "Search...",
+    "action": "Action",
+    "resource": "Resource",
+    "timestamp": "Timestamp",
+    "user": "User",
+    "empty": "No records found."
+  },
+  "errors": {
+    "loadFailed": "Failed to load",
+    "sendFailed": "Failed to send",
+    "generic": "An unexpected error occurred"
+  },
+  "toasts": {
+    "messageSent": "Message sent to",
+    "messageFailed": "Failed to send to",
+    "alert": "Alert",
+    "messageDelivered": "Message delivered",
+    "messageRead": "Message read",
+    "senderQuarantined": "in quarantine",
+    "senderReleased": "released from quarantine",
+    "optOut": "Opt-out detected",
+    "blacklisted": "blacklisted",
+    "failuresSuffix": "consecutive failures"
+  },
+  "preferences": {
+    "title": "Preferences",
+    "language": "Language",
+    "theme": "Theme",
+    "dark": "Dark",
+    "light": "Light"
+  },
+  "filmStrip": {
+    "title": "Replay Film-strip",
+    "noScreenshots": "No screenshots available for this step",
+    "play": "Play",
+    "pause": "Pause",
+    "prev": "Previous",
+    "next": "Next",
+    "frame": "Frame",
+    "of": "of",
+    "limitationNote": "Only the final screenshot is available per message. Per-event captures will be added in a future release.",
+    "expand": "Expand",
+    "close": "Close"
+  }
+}

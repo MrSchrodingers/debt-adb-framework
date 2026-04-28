@@ -1,6 +1,8 @@
 import { Smartphone, Send, Users, Radio, BarChart3, FileText, X, AlertTriangle, Puzzle, BookUser, LogOut } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { useAuth } from '../auth/auth-context'
 import { BrandMark } from './brand-mark'
+import { PreferencesMenu } from './preferences-menu'
 
 type TabId = 'devices' | 'queue' | 'senders' | 'sessions' | 'metricas' | 'auditoria' | 'plugins' | 'contatos'
 
@@ -14,15 +16,15 @@ interface SidebarProps {
   alertCount: number
 }
 
-const NAV_ITEMS: { id: TabId; label: string; icon: typeof Smartphone }[] = [
-  { id: 'devices', label: 'Dispositivos', icon: Smartphone },
-  { id: 'queue', label: 'Fila', icon: Send },
-  { id: 'senders', label: 'Senders', icon: Users },
-  { id: 'sessions', label: 'Sessoes', icon: Radio },
-  { id: 'metricas', label: 'Metricas', icon: BarChart3 },
-  { id: 'auditoria', label: 'Auditoria', icon: FileText },
-  { id: 'contatos', label: 'Contatos', icon: BookUser },
-  { id: 'plugins', label: 'Plugins', icon: Puzzle },
+const NAV_ITEMS: { id: TabId; labelKey: string; icon: typeof Smartphone }[] = [
+  { id: 'devices',   labelKey: 'nav.devices',  icon: Smartphone },
+  { id: 'queue',     labelKey: 'nav.queue',    icon: Send },
+  { id: 'senders',   labelKey: 'nav.senders',  icon: Users },
+  { id: 'sessions',  labelKey: 'nav.sessions', icon: Radio },
+  { id: 'metricas',  labelKey: 'nav.metrics',  icon: BarChart3 },
+  { id: 'auditoria', labelKey: 'nav.audit',    icon: FileText },
+  { id: 'contatos',  labelKey: 'nav.contacts', icon: BookUser },
+  { id: 'plugins',   labelKey: 'nav.plugins',  icon: Puzzle },
 ]
 
 export function Sidebar({
@@ -94,6 +96,8 @@ function SidebarContent({
   onMobileClose: () => void
   showClose: boolean
 }) {
+  const { t } = useTranslation()
+
   return (
     <>
       {/* Header — DEBT brand mark */}
@@ -133,7 +137,7 @@ function SidebarContent({
               }`}
             >
               <Icon className="h-4 w-4 shrink-0" />
-              <span>{item.label}</span>
+              <span>{t(item.labelKey)}</span>
             </button>
           )
         })}
@@ -143,11 +147,13 @@ function SidebarContent({
       {alertCount > 0 && (
         <div className="mx-4 mb-2 flex items-center gap-2 rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2">
           <AlertTriangle className="h-4 w-4 text-red-400" />
-          <span className="text-xs font-medium text-red-400">{alertCount} alerta{alertCount !== 1 ? 's' : ''}</span>
+          <span className="text-xs font-medium text-red-400">
+            {alertCount} {alertCount !== 1 ? t('alerts.alertPlural') : t('alerts.alert')}
+          </span>
         </div>
       )}
 
-      {/* Footer — device count + logout */}
+      {/* Footer — device count + logout + preferences */}
       <SidebarFooter deviceCount={deviceCount} />
     </>
   )
@@ -155,6 +161,7 @@ function SidebarContent({
 
 function SidebarFooter({ deviceCount }: { deviceCount: number }) {
   const { mode, username, logout } = useAuth()
+  const { t } = useTranslation()
   return (
     <div className="border-t border-white/5 px-4 py-3 space-y-2">
       <div className="flex items-center justify-between">
@@ -162,10 +169,11 @@ function SidebarFooter({ deviceCount }: { deviceCount: number }) {
           {deviceCount} device{deviceCount !== 1 ? 's' : ''}
         </span>
         {username && (
-          <span className="font-mono text-[0.65rem] text-brand-300/70 truncate max-w-[120px]">
+          <span className="font-mono text-[0.65rem] text-brand-300/70 truncate max-w-[80px]">
             {username}
           </span>
         )}
+        <PreferencesMenu />
       </div>
       {mode === 'closed' && (
         <button
@@ -173,7 +181,7 @@ function SidebarFooter({ deviceCount }: { deviceCount: number }) {
           className="flex w-full items-center justify-center gap-2 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-xs font-medium text-white/60 transition hover:border-red-500/30 hover:bg-red-500/10 hover:text-red-200"
         >
           <LogOut className="h-3.5 w-3.5" />
-          Sair
+          {t('nav.logout')}
         </button>
       )}
     </div>

@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react'
 import { Clock, AlertTriangle, RefreshCw } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { CORE_URL, authHeaders } from '../config'
 import { ScreenshotViewer } from './screenshot-viewer'
+import { FilmStrip, buildFramesFromScreenshot } from './film-strip'
 
 // ── Types ──
 
@@ -122,12 +124,13 @@ interface MessageTimelineProps {
 
 export function MessageTimeline({ messageId }: MessageTimelineProps) {
   const { data, loading, error } = useMessageTimeline(messageId)
+  const { t } = useTranslation()
 
   if (loading) {
     return (
       <div className="flex items-center gap-2 p-6 text-zinc-500">
         <RefreshCw className="h-4 w-4 animate-spin" />
-        <span className="text-sm">Carregando timeline...</span>
+        <span className="text-sm">{t('timeline.loading')}</span>
       </div>
     )
   }
@@ -135,7 +138,7 @@ export function MessageTimeline({ messageId }: MessageTimelineProps) {
   if (error || !data) {
     return (
       <div className="p-6 text-sm text-red-400">
-        {error ?? 'Timeline indisponivel'}
+        {error ?? t('timeline.unavailable')}
       </div>
     )
   }
@@ -143,6 +146,12 @@ export function MessageTimeline({ messageId }: MessageTimelineProps) {
   const { message, events, failedCallbacks } = data
 
   const baseTime = message.createdAt
+
+  // Per-event screenshot frames are not yet available — Phase 7.1 timeline endpoint
+  // returns only the final screenshot meta via the ScreenshotViewer's own fetch.
+  // FilmStrip stays wired for future expansion (per-event captures); for now it's
+  // always empty and the ScreenshotViewer fallback renders.
+  const filmFrames = buildFramesFromScreenshot(message.screenshotPath, messageId)
 
   return (
     <div className="space-y-6 p-4">
@@ -159,20 +168,20 @@ export function MessageTimeline({ messageId }: MessageTimelineProps) {
           </span>
         </div>
         <p className="text-sm text-zinc-200">
-          Para: <span className="font-mono">{message.to}</span>
+          {t('messages.to')}: <span className="font-mono">{message.to}</span>
         </p>
         <p className="text-sm text-zinc-400 line-clamp-2">{message.body}</p>
         <div className="flex gap-4 text-xs text-zinc-500">
-          {message.senderNumber && <span>Sender: {message.senderNumber.slice(-4)}</span>}
-          {message.pluginName && <span>Plugin: {message.pluginName}</span>}
-          <span>Tentativas: {message.attempts}</span>
+          {message.senderNumber && <span>{t('timeline.sender')}: {message.senderNumber.slice(-4)}</span>}
+          {message.pluginName && <span>{t('timeline.plugin')}: {message.pluginName}</span>}
+          <span>{t('timeline.attempts')}: {message.attempts}</span>
         </div>
       </div>
 
       {/* Timeline */}
       {events.length > 0 ? (
         <div>
-          <h4 className="text-xs font-medium text-zinc-400 mb-3">Eventos</h4>
+          <h4 className="text-xs font-medium text-zinc-400 mb-3">{t('timeline.events')}</h4>
           <div className="relative space-y-3 pl-4">
             {/* Vertical line */}
             <div className="absolute left-[7px] top-2 bottom-2 w-px bg-zinc-700" />
@@ -200,7 +209,7 @@ export function MessageTimeline({ messageId }: MessageTimelineProps) {
                     {ev.metadata && Object.keys(ev.metadata).length > 0 && (
                       <details className="mt-1">
                         <summary className="cursor-pointer text-xs text-zinc-600 hover:text-zinc-400">
-                          metadata
+                          {t('timeline.metadata')}
                         </summary>
                         <pre className="mt-1 text-xs text-zinc-500 bg-zinc-950 rounded p-2 overflow-x-auto">
                           {JSON.stringify(ev.metadata, null, 2)}
@@ -216,21 +225,30 @@ export function MessageTimeline({ messageId }: MessageTimelineProps) {
       ) : (
         <div className="flex items-center gap-2 text-zinc-500 text-sm">
           <Clock className="h-4 w-4" />
-          <span>Nenhum evento registrado ainda</span>
+          <span>{t('timeline.noEvents')}</span>
         </div>
       )}
 
-      {/* Screenshot */}
+      {/* Film-strip (Task 10.4) */}
       <div>
-        <h4 className="text-xs font-medium text-zinc-400 mb-3">Screenshot</h4>
-        <ScreenshotViewer messageId={messageId} />
+        {filmFrames.length > 0 ? (
+          <>
+            <h4 className="text-xs font-medium text-zinc-400 mb-3">{t('filmStrip.title')}</h4>
+            <FilmStrip frames={filmFrames} messageId={messageId} />
+          </>
+        ) : (
+          <>
+            <h4 className="text-xs font-medium text-zinc-400 mb-3">{t('timeline.screenshot')}</h4>
+            <ScreenshotViewer messageId={messageId} />
+          </>
+        )}
       </div>
 
       {/* Failed callbacks */}
       {failedCallbacks.length > 0 && (
         <div>
           <h4 className="text-xs font-medium text-zinc-400 mb-3">
-            Callbacks com falha ({failedCallbacks.length})
+            {t('timeline.failedCallbacks')} ({failedCallbacks.length})
           </h4>
           <div className="space-y-2">
             {failedCallbacks.map(cb => (
@@ -244,7 +262,7 @@ export function MessageTimeline({ messageId }: MessageTimelineProps) {
                 </div>
                 <p className="text-xs text-zinc-500 mt-1 truncate">{cb.targetUrl}</p>
                 <p className="text-xs text-zinc-600 mt-0.5">
-                  Ultima tentativa: {new Date(cb.lastAttemptAt).toLocaleString('pt-BR')}
+                  {t('timeline.lastAttempt')}: {new Date(cb.lastAttemptAt).toLocaleString('pt-BR')}
                 </p>
               </div>
             ))}
