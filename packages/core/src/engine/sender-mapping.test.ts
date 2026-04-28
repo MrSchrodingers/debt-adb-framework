@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
 import { SenderMapping } from './sender-mapping.js'
+import { SenderHealth } from './sender-health.js'
+import { SenderScoring } from './sender-scoring.js'
 import type { SenderMappingRecord } from './sender-mapping.js'
 
 describe('SenderMapping', () => {
@@ -426,6 +428,176 @@ describe('SenderMapping', () => {
 
       const result = mapping.resolveSenderChain(senders)
       expect(result).toBeNull()
+    })
+  })
+
+  // ── resolveSenderChain — smart (scored) path ──────────────────────────────
+
+  describe('resolveSenderChain with SenderScoring', () => {
+    const T0 = new Date('2026-01-01T12:00:00.000Z').getTime()
+
+    function setupScoring(testDb: Database.Database) {
+      // Ensure sender_health table exists (sender-mapping tests only create sender_mapping)
+      testDb.prepare(`
+        CREATE TABLE IF NOT EXISTS sender_health (
+          sender_number TEXT PRIMARY KEY,
+          consecutive_failures INTEGER NOT NULL DEFAULT 0,
+          quarantined_until TEXT,
+          last_failure_at TEXT,
+          last_success_at TEXT,
+          total_failures INTEGER NOT NULL DEFAULT 0,
+          total_successes INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        )
+      `).run()
+      const senderHealth = new SenderHealth(testDb, { quarantineAfterFailures: 3 })
+      const scoring = new SenderScoring(senderHealth, testDb, { now: () => T0 })
+      scoring.initialize()
+      return { senderHealth, scoring }
+    }
+
+    it('returns the highest-scoring active sender (primary over overflow)', () => {
+      const { senderHealth, scoring } = setupScoring(db)
+      const smartMapping = new SenderMapping(db, scoring, senderHealth)
+      smartMapping.initialize()
+
+      mapping.create({
+        phoneNumber: '+554396837945',
+        deviceSerial: '9b01005930533036',
+        profileId: 0,
+        appPackage: 'com.whatsapp',
+        wahaSession: 'oralsin_1_4',
+      })
+      mapping.create({
+        phoneNumber: '+554396837844',
+        deviceSerial: '9b01005930533036',
+        profileId: 0,
+        appPackage: 'com.whatsapp',
+        wahaSession: 'oralsin_2_3',
+      })
+
+      const senders = [
+        { phone: '+554396837945', session: 'oralsin_1_4', pair: 'oralsin-1-4', role: 'primary' as const },
+        { phone: '+554396837844', session: 'oralsin_2_3', pair: 'oralsin-2-3', role: 'overflow' as const },
+      ]
+
+      const result = smartMapping.resolveSenderChain(senders)
+      expect(result).not.toBeNull()
+      // Primary has weight 1.0, overflow 0.7 — primary wins when all else is equal
+      expect(result!.sender.role).toBe('primary')
+    })
+
+    it('falls back to legacy order-walk when no scoring is injected (BACKWARD COMPAT)', () => {
+      mapping.create({
+        phoneNumber: '+554396837844',
+        deviceSerial: '9b01005930533036',
+        profileId: 0,
+        appPackage: 'com.whatsapp',
+        wahaSession: 'oralsin_2_3',
+      })
+
+      const legacyMapping = new SenderMapping(db)
+      legacyMapping.initialize()
+
+      const senders = [
+        { phone: '+554396837945', session: 'oralsin_1_4', pair: 'oralsin-1-4', role: 'primary' as const },
+        { phone: '+554396837844', session: 'oralsin_2_3', pair: 'oralsin-2-3', role: 'overflow' as const },
+      ]
+
+      const result = legacyMapping.resolveSenderChain(senders)
+      expect(result).not.toBeNull()
+      // Legacy: first active wins — primary has no mapping, falls back to overflow
+      expect(result!.sender.role).toBe('overflow')
+    })
+
+    it('skips quarantined senders even when their role is highest', () => {
+      const { senderHealth, scoring } = setupScoring(db)
+      const smartMapping = new SenderMapping(db, scoring, senderHealth)
+      smartMapping.initialize()
+
+      mapping.create({
+        phoneNumber: '+554396837945',
+        deviceSerial: '9b01005930533036',
+        profileId: 0,
+        appPackage: 'com.whatsapp',
+      })
+      mapping.create({
+        phoneNumber: '+554396837844',
+        deviceSerial: '9b01005930533036',
+        profileId: 0,
+        appPackage: 'com.whatsapp',
+      })
+
+      // Quarantine the primary sender
+      senderHealth.recordFailure('554396837945')
+      senderHealth.recordFailure('554396837945')
+      senderHealth.recordFailure('554396837945')
+      expect(senderHealth.isQuarantined('554396837945')).toBe(true)
+
+      const senders = [
+        { phone: '+554396837945', session: 's1', pair: 'p1', role: 'primary' as const },
+        { phone: '+554396837844', session: 's2', pair: 'p2', role: 'overflow' as const },
+      ]
+
+      const result = smartMapping.resolveSenderChain(senders)
+      expect(result).not.toBeNull()
+      // Primary is quarantined: scoring filters it out, overflow wins
+      expect(result!.sender.role).toBe('overflow')
+    })
+
+    it('returns null when all candidates are quarantined in scored mode', () => {
+      const { senderHealth, scoring } = setupScoring(db)
+      const smartMapping = new SenderMapping(db, scoring, senderHealth)
+      smartMapping.initialize()
+
+      mapping.create({
+        phoneNumber: '+554396837945',
+        deviceSerial: '9b01005930533036',
+        profileId: 0,
+        appPackage: 'com.whatsapp',
+      })
+
+      senderHealth.recordFailure('554396837945')
+      senderHealth.recordFailure('554396837945')
+      senderHealth.recordFailure('554396837945')
+
+      const senders = [
+        { phone: '+554396837945', session: 's1', pair: 'p1', role: 'primary' as const },
+      ]
+
+      const result = smartMapping.resolveSenderChain(senders)
+      expect(result).toBeNull()
+    })
+
+    it('paused senders are skipped before reaching scoring', () => {
+      const { senderHealth, scoring } = setupScoring(db)
+      const smartMapping = new SenderMapping(db, scoring, senderHealth)
+      smartMapping.initialize()
+
+      mapping.create({
+        phoneNumber: '+554396837945',
+        deviceSerial: '9b01005930533036',
+        profileId: 0,
+        appPackage: 'com.whatsapp',
+      })
+      mapping.create({
+        phoneNumber: '+554396837844',
+        deviceSerial: '9b01005930533036',
+        profileId: 0,
+        appPackage: 'com.whatsapp',
+      })
+
+      // Pause primary
+      mapping.pauseSender('554396837945', 'maintenance')
+
+      const senders = [
+        { phone: '+554396837945', session: 's1', pair: 'p1', role: 'primary' as const },
+        { phone: '+554396837844', session: 's2', pair: 'p2', role: 'overflow' as const },
+      ]
+
+      const result = smartMapping.resolveSenderChain(senders)
+      expect(result).not.toBeNull()
+      expect(result!.sender.role).toBe('overflow')
     })
   })
 })

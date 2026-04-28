@@ -1,5 +1,7 @@
 import type Database from 'better-sqlite3'
 import { nanoid } from 'nanoid'
+import type { SenderScoring } from './sender-scoring.js'
+import type { SenderHealth } from './sender-health.js'
 
 export interface SenderMappingRecord {
   id: string
@@ -48,7 +50,11 @@ export interface ResolvedSender {
 }
 
 export class SenderMapping {
-  constructor(private db: Database.Database) {}
+  constructor(
+    private db: Database.Database,
+    private scoring?: SenderScoring,
+    private senderHealth?: SenderHealth,
+  ) {}
 
   /** Decision #39: Normalize phone to digits-only (Postel's Law) */
   private normalizePhone(phone: string): string {
@@ -197,17 +203,56 @@ export class SenderMapping {
   }
 
   /**
-   * Walk the senders array in order, returning the first sender
-   * that has an active mapping. Returns null if none found.
+   * Resolve the best available sender from the chain.
+   *
+   * With scoring injected (smart path):
+   *   1. Build candidates: load mapping + health for each sender in the chain.
+   *   2. Skip senders that have no mapping, are inactive (mapping = null), or are paused.
+   *   3. Delegate to SenderScoring.pickBest() — winner is the highest-scoring active sender.
+   *   4. Call scoring.recordSend(winner.phone) to update last_send_at for the next dispatch.
+   *
+   * Without scoring (legacy fallback):
+   *   Walk in order and return the first active sender (original order-walk behaviour).
+   *   All existing tests continue to pass without modification.
    */
   resolveSenderChain(senders: SenderConfig[]): ResolvedSender | null {
+    if (!this.scoring) {
+      // ── Legacy order-walk (backward compat) ────────────────────────────
+      for (const sender of senders) {
+        const record = this.getByPhone(sender.phone)
+        if (record && record.paused === 0) {
+          return { mapping: record, sender }
+        }
+      }
+      return null
+    }
+
+    // ── Smart path: build candidates, score, pick best ──────────────────
+    const candidates: Array<{ mapping: SenderMappingRecord; sender: SenderConfig }> = []
     for (const sender of senders) {
       const record = this.getByPhone(sender.phone)
-      // Q2: skip paused senders
-      if (record && record.paused === 0) {
-        return { mapping: record, sender }
-      }
+      if (!record || record.paused !== 0) continue
+      candidates.push({ mapping: record, sender })
     }
-    return null
+
+    if (candidates.length === 0) return null
+
+    const scoringCandidates = candidates.map(({ mapping, sender }) => ({
+      phone: mapping.phone_number,
+      role: sender.role,
+      health: this.senderHealth?.getStatus(mapping.phone_number) ?? null,
+      // lastSendAt is fetched inside SenderScoring.scoreSender via DB
+    }))
+
+    const best = this.scoring.pickBest(scoringCandidates)
+    if (!best) return null
+
+    // Record the dispatch so idle-time tracking stays accurate
+    this.scoring.recordSend(best.candidate.phone)
+
+    const winner = candidates.find(c => c.mapping.phone_number === best.candidate.phone)
+    if (!winner) return null
+
+    return { mapping: winner.mapping, sender: winner.sender }
   }
 }

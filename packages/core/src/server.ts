@@ -6,7 +6,7 @@ import Database from 'better-sqlite3'
 import { Server as SocketIOServer } from 'socket.io'
 import { MessageQueue, IdempotencyCache } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
-import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender } from './engine/index.js'
+import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, SenderScoring, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender } from './engine/index.js'
 import { DispatchEmitter } from './events/index.js'
 import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes } from './api/index.js'
 import { verifyJwt } from './api/jwt.js'
@@ -357,8 +357,21 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const receiptTracker = new ReceiptTracker(db, queue, emitter)
   receiptTracker.initialize()
 
+  // ── Smart Sender Scoring (Task 5.2) ──
+  const senderScoring = new SenderScoring(senderHealth, db, {
+    failurePenalty: Number(process.env.DISPATCH_SCORING_FAILURE_PENALTY) || 1.0,
+    idleSaturationSec: Number(process.env.DISPATCH_SCORING_IDLE_SATURATION_SEC) || 3600,
+    rolePriorityWeights: {
+      primary:  Number(process.env.DISPATCH_SCORING_WEIGHT_PRIMARY)  || 1.0,
+      overflow: Number(process.env.DISPATCH_SCORING_WEIGHT_OVERFLOW) || 0.7,
+      backup:   Number(process.env.DISPATCH_SCORING_WEIGHT_BACKUP)   || 0.5,
+      reserve:  Number(process.env.DISPATCH_SCORING_WEIGHT_RESERVE)  || 0.3,
+    },
+  })
+  senderScoring.initialize()
+
   // ── Sender Mapping (DP-1) ──
-  const senderMapping = new SenderMapping(db)
+  const senderMapping = new SenderMapping(db, senderScoring, senderHealth)
   senderMapping.initialize()
   registerSenderMappingRoutes(server, senderMapping, auditLogger)
   registerSenderRoutes(server, { senderWarmup, senderMapping, senderHealth, queue, deviceManager })
