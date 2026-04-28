@@ -27,7 +27,21 @@ import sys
 import time
 from pathlib import Path
 
-MESSAGE_RE = re.compile(r"^message:\s*(\{.*?\})\s*data:\s*(\S.*)?$")
+def parse_frida_line(line: str) -> str | None:
+    """Extract the message body (Python-repr dict) from a frida CLI output line.
+    Returns None if the line is not a structured `message:` line.
+
+    Example input:
+      message: {'type': 'send', 'payload': {'kind': 'class_loaded'}} data: None
+    """
+    line = line.strip()
+    if not line.startswith("message:"):
+        return None
+    rest = line[len("message:"):].strip()
+    if " data:" not in rest:
+        return None
+    body, _ = rest.rsplit(" data:", 1)
+    return body.strip()
 
 
 def safe(serial: str) -> str:
@@ -118,12 +132,11 @@ def run(serial: str, hours: float, tag: str) -> int:
                 line = proc.stdout.readline()
                 if not line:
                     break  # frida exited
-                m = MESSAGE_RE.match(line.strip())
-                if not m:
+                body = parse_frida_line(line)
+                if body is None:
                     continue
-                json_body = repr_to_json(m.group(1))
                 try:
-                    parsed = json.loads(json_body)
+                    parsed = json.loads(repr_to_json(body))
                 except json.JSONDecodeError:
                     continue
                 if parsed.get("type") != "send":
