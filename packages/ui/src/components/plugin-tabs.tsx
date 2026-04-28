@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Stethoscope, Package } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
+import { useTranslation } from 'react-i18next'
 import { CORE_URL, authHeaders } from '../config'
 import { OralsinTab } from './oralsin-tab'
 import { AdbPrecheckTab } from './adb-precheck-tab'
@@ -55,6 +56,7 @@ const PLUGINS: PluginDescriptor[] = [
 ]
 
 export function PluginTabs() {
+  const { t } = useTranslation()
   const [active, setActive] = useState<Plugin>('oralsin')
   const [statuses, setStatuses] = useState<Record<Plugin, PluginStatus>>({
     oralsin: 'checking',
@@ -94,8 +96,8 @@ export function PluginTabs() {
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-lg font-semibold text-zinc-100">Plugins</h2>
-        <p className="text-xs text-zinc-500">Hub-and-spoke · cada plugin roda isolado, compartilhando apenas o registro de contatos WhatsApp.</p>
+        <h2 className="text-lg font-semibold text-zinc-100">{t('pluginTabs.title')}</h2>
+        <p className="text-xs text-zinc-500">{t('pluginTabs.subtitle')}</p>
       </div>
 
       {/* Rich plugin selector */}

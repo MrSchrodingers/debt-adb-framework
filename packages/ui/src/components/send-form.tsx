@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Send, Phone, User } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 interface SendFormProps {
   onSend: (to: string, body: string, contactName?: string) => Promise<void>
@@ -7,6 +8,7 @@ interface SendFormProps {
 }
 
 export function SendForm({ onSend, disabled }: SendFormProps) {
+  const { t } = useTranslation()
   const [to, setTo] = useState('5543991938235')
   const [contactName, setContactName] = useState('')
   const [body, setBody] = useState('')
@@ -26,7 +28,7 @@ export function SendForm({ onSend, disabled }: SendFormProps) {
       setSuccess(true)
       setTimeout(() => setSuccess(false), 3000)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Falha ao enviar')
+      setError(err instanceof Error ? err.message : t('sendForm.sendFailed'))
     } finally {
       setSending(false)
     }
@@ -34,7 +36,7 @@ export function SendForm({ onSend, disabled }: SendFormProps) {
 
   return (
     <div className="rounded-xl border border-zinc-800/60 bg-zinc-900/60 p-4">
-      <h3 className="text-sm font-medium text-zinc-300 mb-3">Enviar Mensagem</h3>
+      <h3 className="text-sm font-medium text-zinc-300 mb-3">{t('sendForm.title')}</h3>
       <form onSubmit={handleSubmit} className="space-y-3">
         <div className="flex gap-3">
           <div className="relative w-44">
@@ -43,7 +45,7 @@ export function SendForm({ onSend, disabled }: SendFormProps) {
               type="text"
               value={to}
               onChange={(e) => setTo(e.target.value)}
-              placeholder="Numero"
+              placeholder={t('sendForm.phonePlaceholder')}
               className="w-full rounded-lg bg-zinc-800/80 pl-9 pr-3 py-2.5 text-sm text-zinc-100 border border-zinc-700/60 font-mono focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 transition-colors"
               disabled={disabled || sending}
             />
@@ -54,7 +56,7 @@ export function SendForm({ onSend, disabled }: SendFormProps) {
               type="text"
               value={contactName}
               onChange={(e) => setContactName(e.target.value)}
-              placeholder="Nome do contato"
+              placeholder={t('sendForm.contactPlaceholder')}
               className="w-full rounded-lg bg-zinc-800/80 pl-9 pr-3 py-2.5 text-sm text-zinc-100 border border-zinc-700/60 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 transition-colors"
               disabled={disabled || sending}
             />
@@ -63,7 +65,7 @@ export function SendForm({ onSend, disabled }: SendFormProps) {
             type="text"
             value={body}
             onChange={(e) => setBody(e.target.value)}
-            placeholder="Digite a mensagem..."
+            placeholder={t('sendForm.messagePlaceholder')}
             className="flex-1 rounded-lg bg-zinc-800/80 px-4 py-2.5 text-sm text-zinc-100 border border-zinc-700/60 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 transition-colors"
             disabled={disabled || sending}
           />
@@ -73,7 +75,7 @@ export function SendForm({ onSend, disabled }: SendFormProps) {
             className="rounded-lg bg-emerald-600 hover:bg-emerald-500 px-5 py-2.5 text-sm font-medium text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
           >
             <Send className="h-3.5 w-3.5" />
-            <span>{sending ? 'Enviando...' : 'Enviar'}</span>
+            <span>{sending ? t('sendForm.sending') : t('sendForm.send')}</span>
           </button>
         </div>
 
@@ -82,12 +84,12 @@ export function SendForm({ onSend, disabled }: SendFormProps) {
         )}
         {success && (
           <p className="text-xs text-emerald-400 bg-emerald-500/10 rounded-lg px-3 py-2">
-            Mensagem enfileirada com sucesso
+            {t('sendForm.queued')}
           </p>
         )}
         {disabled && (
           <p className="text-xs text-amber-400 bg-amber-500/10 rounded-lg px-3 py-2">
-            Nenhum dispositivo online disponivel
+            {t('sendForm.noDevice')}
           </p>
         )}
       </form>
