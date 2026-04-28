@@ -1,5 +1,7 @@
 import { Fragment, useEffect, useState, useCallback } from 'react'
+import { Download } from 'lucide-react'
 import { CORE_URL, authHeaders } from '../config'
+import { useCsvExport } from '../utils/csv'
 
 // ── Types ──
 
@@ -58,34 +60,6 @@ const directionStyles: Record<string, string> = {
   outgoing: 'text-violet-400 bg-violet-950',
 }
 
-// ── CSV Export ──
-
-function exportToCsv(items: AuditItem[]): void {
-  const headers = ['Direcao', 'De', 'Para', 'Texto', 'Status', 'Via', 'Criado']
-  const rows = items.map(item => [
-    item.direction,
-    item.fromNumber ?? '',
-    item.toNumber ?? '',
-    (item.text ?? '').replace(/"/g, '""'),
-    item.status ?? '',
-    item.capturedVia ?? (item.source === 'queue' ? 'adb_queue' : ''),
-    item.createdAt,
-  ])
-
-  const csv = [
-    headers.join(','),
-    ...rows.map(r => r.map(c => `"${c}"`).join(',')),
-  ].join('\n')
-
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `auditoria-${new Date().toISOString().slice(0, 10)}.csv`
-  link.click()
-  URL.revokeObjectURL(url)
-}
-
 // ── Component ──
 
 interface AuditLogProps {
@@ -98,6 +72,13 @@ export function AuditLog({ deviceSerial }: AuditLogProps = {}) {
   const limit = 50
   const [offset, setOffset] = useState(0)
   const [loading, setLoading] = useState(false)
+
+  const auditCsvFields = ['direction', 'fromNumber', 'toNumber', 'text', 'status', 'capturedVia', 'createdAt'] as const
+  const { exportToCsv } = useCsvExport(
+    items,
+    `auditoria-${new Date().toISOString().slice(0, 10)}.csv`,
+    auditCsvFields as unknown as ReadonlyArray<keyof typeof items[number] & string>,
+  )
 
   // Filters
   const [phone, setPhone] = useState('')
