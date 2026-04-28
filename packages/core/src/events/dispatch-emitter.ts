@@ -48,6 +48,8 @@ export interface DispatchEventMap {
     detected_at: string
     correlation_id?: string
   }
+  'config:reloaded': { components: number; failed: number }
+  'config:reload_failed': { components: number; failed: number; errors: Array<{ name: string; error: string }> }
 }
 
 export type DispatchEventName = keyof DispatchEventMap
