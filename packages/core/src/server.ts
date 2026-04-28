@@ -1125,7 +1125,13 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const serverLogger = {
     info: (msg: string, data?: Record<string, unknown>) => server.log.info(data ?? {}, msg),
     warn: (msg: string, data?: Record<string, unknown>) => server.log.warn(data ?? {}, msg),
-    error: (msg: string | Record<string, unknown>, ...args: unknown[]) => server.log.error(...args, msg),
+    error: (msg: string | Record<string, unknown>) => {
+      if (typeof msg === 'string') {
+        server.log.error(msg)
+      } else {
+        server.log.error(msg)
+      }
+    },
   }
   const hotReload = new HotReloadCoordinator(serverLogger, emitter)
   hotReload.register({
