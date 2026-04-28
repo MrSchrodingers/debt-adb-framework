@@ -76,7 +76,7 @@ def run(serial: str, hours: float, tag: str) -> int:
             time.sleep(10)
             continue
 
-        script = session.create_script(hook_source, runtime="v8")
+        script = session.create_script(hook_source)
 
         def on_message(msg, _data):
             if msg.get("type") == "send":
