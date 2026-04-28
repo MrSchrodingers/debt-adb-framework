@@ -49,6 +49,13 @@ sudo -u "$ADB_USER" bash -lc '
     xz -d ~/frida-server.xz
     chmod +x ~/frida-server
   fi
+  # Stealth-renamed copy: identical binary, randomized name to thwart string-based detection.
+  if [ -f ~/frida-server ] && [ ! -f ~/.local/bin/.fs-stealth ]; then
+    mkdir -p ~/.local/bin
+    cp ~/frida-server ~/.local/bin/.fs-stealth
+    chmod 0755 ~/.local/bin/.fs-stealth
+    echo "  stealth frida-server staged at ~/.local/bin/.fs-stealth"
+  fi
 '
 echo "  frida client: $(sudo -u "$ADB_USER" bash -lc '~/.venv-frida/bin/frida --version')"
 echo "  frida-server binary: $(ls -la $(getent passwd $ADB_USER | cut -d: -f6)/frida-server 2>/dev/null | awk "{print \$5}") bytes"
