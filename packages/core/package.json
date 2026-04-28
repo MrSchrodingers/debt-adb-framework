@@ -8,7 +8,8 @@
     ".": "./dist/index.js"
   },
   "bin": {
-    "dispatch": "dist/cli.js",
+    "dispatch": "dist/cli/dispatch.js",
+    "dispatch-server": "dist/cli.js",
     "dispatch-replay": "dist/cli/replay.js"
   },
   "scripts": {
@@ -19,6 +20,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1038.0",
     "@devicefarmer/adbkit": "^3.3.8",
     "@fastify/cors": "^10.0.0",
     "@opentelemetry/api": "^1.9.1",
