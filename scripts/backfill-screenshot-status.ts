@@ -18,7 +18,13 @@
  *   DB_PATH=/var/www/adb_tools/dispatch.db pnpm tsx scripts/backfill-screenshot-status.ts
  */
 
-import Database from 'better-sqlite3'
+// Use createRequire for better-sqlite3 because the script may be invoked from
+// the repo root, where the dep is hoisted under packages/core. createRequire
+// performs Node's classic resolution which walks the directory tree.
+import { createRequire } from 'node:module'
+const require = createRequire(import.meta.url)
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const Database = require('better-sqlite3') as typeof import('better-sqlite3').default
 
 const dbPath = process.env.DB_PATH ?? 'packages/core/dispatch.db'
 
