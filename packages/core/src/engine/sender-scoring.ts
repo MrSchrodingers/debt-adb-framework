@@ -104,9 +104,9 @@ export interface ScoredSender {
  * recordSend(phone) writes it after every successful dispatch (called by resolveSenderChain).
  */
 export class SenderScoring {
-  private readonly roleWeights: Record<'primary' | 'overflow' | 'backup' | 'reserve', number>
-  private readonly failurePenalty: number
-  private readonly idleSaturationSec: number
+  private roleWeights: Record<'primary' | 'overflow' | 'backup' | 'reserve', number>
+  private failurePenalty: number
+  private idleSaturationSec: number
   private readonly now: () => number
 
   constructor(
@@ -121,6 +121,26 @@ export class SenderScoring {
     this.failurePenalty = config.failurePenalty ?? DEFAULT_FAILURE_PENALTY
     this.idleSaturationSec = config.idleSaturationSec ?? DEFAULT_IDLE_SATURATION_SEC
     this.now = config.now ?? (() => Date.now())
+  }
+
+  /**
+   * Hot-reload: update scoring weights and penalties from a new config snapshot.
+   * Takes effect immediately for subsequent scoreSender / scoreChain calls.
+   * The `now` clock and database reference are not replaced.
+   */
+  reloadConfig(config: Pick<SenderScoringConfig, 'failurePenalty' | 'idleSaturationSec' | 'rolePriorityWeights'>): void {
+    if (config.failurePenalty !== undefined) {
+      this.failurePenalty = config.failurePenalty
+    }
+    if (config.idleSaturationSec !== undefined) {
+      this.idleSaturationSec = config.idleSaturationSec
+    }
+    if (config.rolePriorityWeights) {
+      this.roleWeights = {
+        ...this.roleWeights,
+        ...config.rolePriorityWeights,
+      }
+    }
   }
 
   /**

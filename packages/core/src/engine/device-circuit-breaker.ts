@@ -73,7 +73,7 @@ const MAX_REASON_LENGTH = 500
  *   device:circuit:closed    — when circuit transitions to closed from half_open
  */
 export class DeviceCircuitBreaker {
-  private readonly cfg: Required<DeviceCircuitBreakerConfig>
+  private cfg: Required<DeviceCircuitBreakerConfig>
 
   // Prepared statements (set by initialize())
   private stmtUpsert!: Database.Statement
@@ -89,6 +89,16 @@ export class DeviceCircuitBreaker {
     if (typeof this.cfg.now !== 'function') {
       this.cfg.now = DEFAULT_CONFIG.now
     }
+  }
+
+  /**
+   * Hot-reload: update thresholds applied to future canUse/recordFailure calls.
+   * The `now` clock and DB reference are not replaced.
+   * In-flight circuit states (open/half_open rows) continue using previously
+   * computed next_attempt_at timestamps — only new openings use the new cooldownMs.
+   */
+  reloadConfig(config: Pick<DeviceCircuitBreakerConfig, 'failureThreshold' | 'cooldownMs'>): void {
+    this.cfg = { ...this.cfg, ...config }
   }
 
   /**
