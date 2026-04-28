@@ -1,20 +1,51 @@
 #!/usr/bin/env python3
 """
-research-collect.py — Drive the `frida` CLI as a subprocess, parse its REPL
-output (`message: {...}` lines, Python-repr style), and write a clean JSONL
-of every send() payload.
+research-collect.py — KNOWN-BROKEN. Kept as artifact of 2026-04-28 research
+attempts. DO NOT RUN against the production POCO without first solving the
+underlying Frida-vs-anti-tamper problem (see issues below).
 
-Why subprocess instead of `frida` Python bindings:
-  Frida 17.x's Python `session.create_script()` does NOT auto-inject the
-  `Java` global bridge — scripts get `ReferenceError: 'Java' is not defined`.
-  The `frida` CLI binary still injects Java automatically. Wrapping the CLI
-  is the simplest, most reliable path until the binding API stabilizes.
+Original goal: drive the `frida` CLI as a subprocess, parse its REPL output,
+write JSONL of every send() payload for ban-prediction calibration.
 
-Usage:
-  research-collect.py <serial> <duration-hours> <tag>
+Why it does not work in this setup:
 
-Output:
-  /tmp/research-<tag>-<safe-serial>.jsonl
+  1. Frida 17.x Python bindings — `session.create_script()` does NOT auto-inject
+     the `Java` global bridge → scripts crash with
+     `ReferenceError: 'Java' is not defined`. CLI still injects Java.
+  2. Frida CLI subprocess — exits the REPL when stdin EOFs (DEVNULL) and even
+     with PIPE keeps the script ~5s before unloading. Pseudo-TTY via `script -qec`
+     and Python `pty` produce zero emitted messages.
+  3. `frida-trace` 90s sandbox: stable, no ANR, but ZERO method invocations on
+     the 5 classes when WhatsApp is idle (anti-tamper classes are reactive to
+     send/sync paths only).
+  4. `frida-trace` 5min idle: WhatsApp `Process terminated` after ~3min.
+     Anti-tamper detected Frida and killed the process.
+  5. Frida 16.6.6 downgrade attempt: starting frida-server-16.x on the device
+     triggered a full Android reboot (likely a Magisk module fingerprint check
+     on the new binary signature).
+
+Decision (2026-04-28): stop Frida path on this device. Next session must:
+  - Study Zygisk-Frida module compatibility with the installed Magisk + PIF +
+    Zygisk-Assistant stack BEFORE pushing anything to the device.
+  - Validate stealth via offline test (a redroid container or a 2nd POCO),
+    NOT against the production POCO.
+  - Reconsider whether the calibration goal can be achieved via a sidechannel
+    (logcat exception rate, ban-detection OCR, queue retry rate as proxy)
+    rather than direct method-call counting.
+
+Discovered anti-tamper classes (8s frida runtime enumeration before tooling
+broke — these names are valid and valuable for next session):
+  - com.whatsapp.kmp.syncd.syncdengine.crypto.KmpSyncdAntiTamperingLoggingHelper
+  - com.whatsapp.kmp.syncd.syncdengine.crypto.KmpSyncdIncomingAntiTamperingValidator
+  - com.whatsapp.bizintegritysignals.BizIntegritySignalsManager
+  - com.whatsapp.bizintegritysignals.BizIntegritySignalsGraphQLFetcher
+  - com.whatsapp.integritysignals.waiutils.F38E2C86AEEBBEDDC0324  (obfuscated)
+  - com.whatsapp.infra.security.sandbox.OxidizedCurve25519
+  - com.whatsapp.infra.crash.anr.SigquitBasedANRDetector
+  - com.whatsapp.dobverification.common.CommonRemediationApi
+  - com.whatsapp.dobverification.ContextualAgeCollectionRepository
+  - com.whatsapp.bizintegrity.logger.receiver.scheduler.ReceiverLoggingWorker
+  - com.whatsapp.bizintegrity.logger.receiver.handler.ReceiverLoggingManager$createReceiverData$threadsAndMessageCounts$1
 """
 
 import json
@@ -115,9 +146,11 @@ def run(serial: str, hours: float, tag: str) -> int:
         remaining = max(60, int(end_ts - time.time()))
         session_secs = min(remaining, 3600)
 
+        # frida CLI exits the REPL (and unloads the script) when stdin EOFs.
+        # Keep stdin open as an empty PIPE so the script keeps running.
         proc = subprocess.Popen(
             [frida_bin, "-U", "-p", str(pid), "-l", str(hook_path)],
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
