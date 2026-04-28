@@ -3,7 +3,7 @@
 **Date**: 2026-04-28
 **Status**: Proposed
 **Owner**: Matheus
-**Estimated**: 4-6 semanas (5 fases obrigatórias + 1 opcional)
+**Estimated**: 5-7 semanas (7 fases obrigatórias + 1 opcional)
 
 ---
 
@@ -42,33 +42,45 @@ Roadmap de produto consolidando 5 features convergentes (análise interna + rese
 ## Architecture Overview
 
 ```
-┌────────────────────────────────────────────────────────────────────┐
-│                       DISPATCH ROADMAP V2                          │
-│                                                                    │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────┐    │
-│  │  Phase 1    │───►│  Phase 2    │───►│  Phase 4            │    │
-│  │  Warmup     │    │  Quality    │    │  DDD Router +       │    │
-│  │  Orchestr.  │    │  Dashboard  │    │  Fingerprint Rot.   │    │
-│  └─────────────┘    └─────────────┘    └──────────┬──────────┘    │
-│                                                    │               │
-│  ┌─────────────┐                       ┌──────────▼──────────┐    │
-│  │  Phase 3    │ (parallel)            │  Phase 5            │    │
-│  │  Chip Cost  │ ──────────────────────│  E2E Correlation    │    │
-│  │  Manager    │                       │  Timeline           │    │
-│  └─────────────┘                       └──────────┬──────────┘    │
-│                                                    │               │
-│                                         ┌──────────▼──────────┐    │
-│                                         │  Phase 6 (OPT)      │    │
-│                                         │  Inbound-First      │    │
-│                                         │  Opt-In Funnel      │    │
-│                                         └─────────────────────┘    │
-│                                                                    │
-│  ┌──────────────────────────────────────────────────────────────┐  │
-│  │  Cross-cutting Phase 7: Headless API Hardening (threads      │  │
-│  │  through phases 1-5: OpenAPI, SSE, NDJSON, sender CRUD,      │  │
-│  │  outbound webhooks, idempotency-key)                         │  │
-│  └──────────────────────────────────────────────────────────────┘  │
-└────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                       DISPATCH ROADMAP V2                            │
+│                                                                      │
+│  ┌─────────────┐                                                     │
+│  │  Phase 1    │   Warmup Orchestrator + Honeymoon (5-7d)            │
+│  └──────┬──────┘                                                     │
+│         │                                                            │
+│  ┌──────▼──────┐                                                     │
+│  │  Phase 1.5  │   Template Engine + Linter (2d) ← anti-ban concreto │
+│  └──────┬──────┘                                                     │
+│         │                                                            │
+│  ┌──────▼──────┐                                                     │
+│  │  Phase 2    │   Quality Dashboard + Burst Detector (4-5d)         │
+│  └──────┬──────┘                                                     │
+│         │                                                            │
+│  ┌──────▼──────────────┐    ┌──────────────────────┐                 │
+│  │  Phase 4            │    │  Phase 3             │                 │
+│  │  DDD Router +       │    │  Chip Cost Manager   │                 │
+│  │  Fingerprint Rot.   │    │  + Bulk Import       │                 │
+│  └──────┬──────────────┘    │  (parallel track)    │                 │
+│         │                   └──────────────────────┘                 │
+│  ┌──────▼──────┐                                                     │
+│  │  Phase 5    │   E2E Correlation Timeline (3-4d)                   │
+│  └──────┬──────┘                                                     │
+│         │                                                            │
+│  ┌──────▼──────┐                                                     │
+│  │  Phase 5.5  │   LGPD Compliance Suite (2-3d) ← enterprise BR      │
+│  └──────┬──────┘                                                     │
+│         │                                                            │
+│  ┌──────▼──────────┐                                                 │
+│  │  Phase 6 (OPT)  │   Inbound-First Funnel (7-10d)                  │
+│  └─────────────────┘                                                 │
+│                                                                      │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │  Cross-cutting Phase 7: Headless API Hardening                 │  │
+│  │  (threads através das phases 1-5.5: OpenAPI, SSE, NDJSON,      │  │
+│  │  sender CRUD, outbound webhooks, idempotency-key)              │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -159,6 +171,94 @@ Pool de chips em WARMING_P1+ conversa entre si com mensagens orgânicas:
 | Dois chips warming trocam msg idêntica (spike) | Hash dedup last-N entre pares |
 | Synthetic competindo com workload real por device-time | Priority class na queue: real > synthetic, synthetic só quando device idle |
 | Carrier vê tráfego só p/ outros chips do mesmo CPF (suspeito) | Mix com seeds incluindo números fora da frota (whitelist 10-20 contatos amigáveis) |
+
+---
+
+## Phase 1.5: Template Engine + Personalization Linter
+
+**Deps**: Phase 1 (warmup é onde primeiro chip novo precisa de template)
+**Esforço**: 2 dias
+**Issue**: #(criar)
+
+### Goal
+Mensagens hoje vão hardcoded ou interpoladas client-side antes de enqueue. Risco: `Olá {nome}` literal escapa = giveaway óbvio de bot. Engine server-side força interpolação + linter bloqueia send com placeholder não-substituído. Audit registra qual template gerou cada mensagem.
+
+### Schema
+
+```sql
+CREATE TABLE IF NOT EXISTS message_templates (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT,                            -- null = global, else plugin/tenant scope
+  name TEXT NOT NULL,
+  body TEXT NOT NULL,                        -- "Olá {nome}, sua fatura..."
+  required_vars_json TEXT NOT NULL,          -- ["nome", "valor", "vencimento"]
+  optional_vars_json TEXT,
+  approved_by_operator TEXT NOT NULL,        -- audit
+  approved_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',     -- active, deprecated, archived
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (tenant_id, name)
+);
+
+ALTER TABLE messages ADD COLUMN template_id TEXT;  -- audit qual template gerou
+```
+
+### Files
+
+```
+CREATE:
+  packages/core/src/templates/template-engine.ts        (interpolação server-side)
+  packages/core/src/templates/template-engine.test.ts
+  packages/core/src/templates/template-linter.ts        (detecta placeholders sobrando)
+  packages/core/src/templates/template-linter.test.ts
+  packages/core/src/templates/template-registry.ts      (CRUD)
+  packages/core/src/templates/template-registry.test.ts
+  packages/core/src/api/templates.ts                    (REST)
+  packages/ui/src/components/templates/builder.tsx
+  packages/ui/src/components/templates/library.tsx
+
+MODIFY:
+  packages/core/src/queue/message-queue.ts              (linter pré-enqueue)
+  packages/core/src/plugins/oralsin/index.ts            (aceita template_id no enqueue)
+```
+
+### Linter Rules
+
+```typescript
+// Pré-send pipeline:
+const placeholders = body.match(/\{[a-zA-Z_][a-zA-Z0-9_]*\}/g) ?? []
+if (placeholders.length > 0) {
+  throw new TemplateLintError({
+    code: 'UNSUBSTITUTED_PLACEHOLDER',
+    placeholders,
+    body,
+  })
+}
+
+// Detecta também:
+// - emoji obviamente repetitivo (mesmo emoji 5+ vezes seguidas)
+// - URLs encurtadas conhecidas em blocklist (bit.ly, tinyurl etc — flagged como spam-like)
+// - bloco de capslock ≥10 char consecutivos
+// - mais de 3 quebras de linha consecutivas (formatting estranho)
+```
+
+### API
+
+```
+GET    /api/v1/templates                        (filtros: tenant, status)
+POST   /api/v1/templates                        (cria + aprovação operator)
+GET    /api/v1/templates/:id
+PATCH  /api/v1/templates/:id/deprecate
+POST   /api/v1/templates/:id/render             (preview com vars substituídas)
+POST   /api/v1/templates/lint                   (lint ad-hoc body sem template salvo)
+```
+
+### Acceptance
+- [x] POST /messages com `{ template_id, vars: {...} }` interpola server-side
+- [x] Bypass legacy (POST /messages com `text` direto) ainda funciona, mas passa pelo linter
+- [x] Linter bloqueia mensagem com placeholder sobrando + retorna erro estruturado
+- [x] message_history audita `template_id` usado
+- [x] Tests: interpolation correctness, missing-var detection, optional-var handling, edge cases (vars com chaves duplas `{{escape}}`, unicode)
 
 ---
 
@@ -375,7 +475,8 @@ GET    /api/v1/fleet/reports/overdue
 │   ├── Lista com filtros (carrier, status, operador)
 │   ├── Cards com phone + R$/mês + status + dias-até-vencimento
 │   ├── Drilldown: timeline de events + payments + receipt thumbnails
-│   └── [+ Cadastrar chip] modal (com upload de NF de aquisição)
+│   ├── [+ Cadastrar chip] modal (com upload de NF de aquisição)
+│   └── [↑ Importar lote (CSV)]   ← bulk import wizard
 ├── [Pagamentos]
 │   ├── Recorder: chip dropdown + period + amount + método + receipt upload
 │   └── Histórico: tabela paginada com filtros
@@ -386,6 +487,24 @@ GET    /api/v1/fleet/reports/overdue
     ├── Por operador (tabela)
     └── Depreciação (chart line acumulado)
 ```
+
+### Bulk Import Wizard (within Phase 3)
+
+Endpoint `POST /api/v1/fleet/chips/bulk-import` aceita CSV com colunas:
+```
+phone_number,carrier,plan_name,acquisition_date,acquisition_cost_brl,monthly_cost_brl,payment_due_day,payment_method,paid_by_operator,acquired_for_purpose,notes
+```
+
+UI: drag-drop CSV → server faz dry-run validation → preview com erros por linha (formato fone, valor numérico, due_day 1-31) → confirma → transação única:
+1. INSERT chips
+2. INSERT sender_mapping (provisionamento programático)
+3. INSERT chip_warmup_state com phase=NEW (Phase 1 transiciona p/ HONEYMOON automático)
+4. (opcional) chama Chatwoot inbox automation já existente
+5. Telegram alerta sucesso com count
+
+Rollback transacional se qualquer step falhar. Files added:
+- `packages/core/src/fleet/bulk-import.ts` + tests
+- `packages/ui/src/components/fleet/bulk-import-wizard.tsx`
 
 ### Acceptance
 - [x] Cadastra chip → aparece em sender_mapping automaticamente (one-way: chip → sender_mapping; sender_mapping CRUD existente continua para senders sem chip-tracking)
@@ -543,6 +662,132 @@ Click any event → side panel with payload_json + raw logs
 
 ---
 
+## Phase 5.5: LGPD Compliance Suite
+
+**Deps**: Phase 5 (correlation timeline alimenta audit export)
+**Esforço**: 2-3 dias
+**Issue**: #(criar)
+
+### Goal
+Suite formal de compliance LGPD pra viabilizar venda enterprise BR. Cobre: right-to-be-forgotten (RTBF), consent log com origem, retention policies por tenant, audit export assinado para evidência legal.
+
+### Schema
+
+```sql
+CREATE TABLE IF NOT EXISTS consent_log (
+  id TEXT PRIMARY KEY,
+  recipient_phone TEXT NOT NULL,
+  consent_type TEXT NOT NULL,            -- opt_in, opt_out, transactional_only, marketing
+  source TEXT NOT NULL,                  -- "contrato Oralsin #1234", "campanha SMS X", "WA opt-in"
+  source_ref TEXT,                       -- ID externo (contrato, campanha)
+  collected_at TEXT NOT NULL,
+  collected_by TEXT,                     -- operador que registrou OU system
+  legal_basis TEXT NOT NULL,             -- art_7 (consentimento), art_11 (legítimo interesse), etc
+  evidence_path TEXT,                    -- caminho do PDF de prova (contrato assinado, screenshot)
+  revoked_at TEXT,
+  revoked_reason TEXT,
+  metadata_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS rtbf_requests (
+  id TEXT PRIMARY KEY,
+  recipient_phone TEXT NOT NULL,
+  requested_at TEXT NOT NULL,
+  requested_by TEXT NOT NULL,            -- operator OU "self_service"
+  reason TEXT,
+  legal_ref TEXT,                        -- LGPD art 18
+  executed_at TEXT,
+  affected_tables_json TEXT,             -- ["messages", "message_history", "contacts", "consent_log"]
+  rows_tombstoned INTEGER,
+  proof_hash TEXT,                       -- SHA-256 da execução para auditoria
+  status TEXT NOT NULL                   -- pending, executed, rejected
+);
+
+CREATE TABLE IF NOT EXISTS retention_policies (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT,                        -- null = global default
+  table_name TEXT NOT NULL,              -- messages, message_history, message_ack_history, etc
+  retention_days INTEGER NOT NULL,
+  delete_strategy TEXT NOT NULL,         -- tombstone, hard_delete, encrypt_only
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_consent_phone ON consent_log(recipient_phone, collected_at);
+CREATE INDEX IF NOT EXISTS idx_rtbf_phone ON rtbf_requests(recipient_phone);
+```
+
+### Files
+
+```
+CREATE:
+  packages/core/src/lgpd/consent-registry.ts
+  packages/core/src/lgpd/consent-registry.test.ts
+  packages/core/src/lgpd/rtbf-executor.ts            (tombstone cross-tabela)
+  packages/core/src/lgpd/rtbf-executor.test.ts
+  packages/core/src/lgpd/retention-watcher.ts        (cron diário aplica policies)
+  packages/core/src/lgpd/retention-watcher.test.ts
+  packages/core/src/lgpd/audit-exporter.ts           (export HMAC-signed)
+  packages/core/src/lgpd/audit-exporter.test.ts
+  packages/core/src/api/lgpd.ts                      (REST: consent CRUD, RTBF execute, export)
+  packages/ui/src/components/lgpd/consent-log.tsx
+  packages/ui/src/components/lgpd/rtbf-console.tsx
+  packages/ui/src/components/lgpd/retention-config.tsx
+
+MODIFY:
+  packages/core/src/queue/message-queue.ts           (block send se recipient com opt_out ativo)
+  packages/core/src/api/contacts.ts                  (lookup consent_log no validate)
+```
+
+### Endpoints
+
+```
+POST   /api/v1/lgpd/consent                       (registra consentimento + evidence upload)
+GET    /api/v1/lgpd/consent/:phone                (histórico de consentimento de um número)
+PATCH  /api/v1/lgpd/consent/:id/revoke            (revoga)
+
+POST   /api/v1/lgpd/forget                        (RTBF — body: { phone, reason })
+                                                   → enfileira execução, retorna request_id
+GET    /api/v1/lgpd/forget/:id                    (status)
+POST   /api/v1/lgpd/forget/:id/execute            (operator confirma; tombstone cross-tabela)
+
+GET    /api/v1/lgpd/policies                      (retention policies)
+POST   /api/v1/lgpd/policies                      (set tenant policy)
+
+GET    /api/v1/lgpd/audit-export?since=2026-01-01&until=2026-04-30
+                                                   (NDJSON streaming, HMAC-signed manifest)
+```
+
+### RTBF Execution
+
+Tombstone (não DELETE físico — preserva integridade audit) cross-tabela:
+- `messages.text` → "[REDACTED]"
+- `messages.recipient_phone` → SHA256(phone)[:8] + "_redacted"
+- `message_history.from_number/to_number/text` → mesmo padrão
+- `contacts` → tombstone row
+- `correlation_events.payload_json` → strip recipient_phone field
+- Insere `rtbf_requests` row com `proof_hash` (hash SHA-256 dos antes/depois para auditoria)
+
+### Retention Watcher
+
+Cron diário 03:00 lê `retention_policies`, aplica delete_strategy às tabelas vencidas. Telegram resume "Retention: 1234 rows tombstoned em N tabelas".
+
+### Audit Export
+
+Endpoint streaming NDJSON: cada linha um event do `correlation_events` no range. Manifest final inclui:
+- `total_lines`, `start_at`, `end_at`, `tenant_id`
+- `hmac_sha256` do conteúdo (key from env `DISPATCH_LGPD_EXPORT_HMAC_KEY`)
+- Verificável offline para evidência judicial
+
+### Acceptance
+- [x] POST /lgpd/consent com evidence_path retorna 201 + audit log
+- [x] POST /lgpd/forget enfileira request; execute tombstoneia em transação atômica cross-tabela
+- [x] queue.dequeue bloqueia recipient com opt_out ativo (consent_log latest com revoked=null + type=opt_out)
+- [x] Retention watcher honra policy por tenant
+- [x] Audit export valida HMAC offline com `openssl` + key
+- [x] Tests: RTBF idempotency, opt-out blocking, retention watcher dry-run vs apply, audit signature
+
+---
+
 ## Phase 6 (OPCIONAL): Inbound-First Opt-In Funnel
 
 **Deps**: Phases 1+2+4
@@ -597,12 +842,13 @@ Threads através das phases 1-5. Não tem fase própria, é continuous.
 
 | Concern | Onde aterrissa |
 |---|---|
-| LGPD: consent log + RTBF | Phase 3 (consent ao cadastrar chip) + Phase 5 (RTBF endpoint) |
+| LGPD: consent log + RTBF + retention | **Phase 5.5** (suite formal) |
+| Templates server-side + linting | **Phase 1.5** (anti-ban concreto) |
+| Bulk number provisioning (CSV) | **Phase 3** (wizard explícito) |
 | Burst detector / fleet auto-pause | Phase 2 |
 | Honeymoon protection | Phase 1 |
 | Cohort analytics | Phase 2 dashboard |
 | Cross-tenant recipient cooldown | Phase 4 |
-| Templates com vars + linting | (parking — não inclui agora; reabrir após Phase 6) |
 
 ---
 
@@ -611,16 +857,20 @@ Threads através das phases 1-5. Não tem fase própria, é continuous.
 ```
        ┌──── Phase 1 (Warmup) ────┐
        │                           ▼
+       │                    Phase 1.5 (Templates)
+       │                           ▼
        │                    Phase 2 (Quality)
        │                           ▼
        │                    Phase 4 (Router + Rotation)
        │                           ▼
+       │                    Phase 5 (Correlation)
+       │                           ▼
+       │                    Phase 5.5 (LGPD)
+       │                           ▼
        │                    Phase 6 (Funnel — OPT)
        │
        │                    
-       └─── independent ───► Phase 3 (Chip Cost) — paralelo
-                             
-                             Phase 5 (Correlation) ◄── depende Phase 4
+       └─── independent ───► Phase 3 (Chip Cost + Bulk Import) — paralelo
 ```
 
 ---
@@ -628,11 +878,12 @@ Threads através das phases 1-5. Não tem fase própria, é continuous.
 ## Sprint Allocation
 
 ```
-Semana 1-2: Phase 1 (Warmup)
-Semana 2-3: Phase 2 (Quality) + Phase 3 (Chip Cost) em paralelo (tracks diferentes)
-Semana 3-4: Phase 4 (Router + Fingerprint Rotation)
-Semana 4:   Phase 5 (Correlation)
-Semana 5-6: Phase 6 (Funnel — OPCIONAL)
+Semana 1-2:  Phase 1 (Warmup, 5-7d) + Phase 1.5 (Templates, 2d) sequenciais
+Semana 2-3:  Phase 2 (Quality, 4-5d) + Phase 3 (Chip Cost + Bulk Import, 5-6d) em paralelo
+Semana 3-4:  Phase 4 (Router + Fingerprint, 3-4d)
+Semana 4:    Phase 5 (Correlation, 3-4d)
+Semana 5:    Phase 5.5 (LGPD, 2-3d)
+Semana 5-7:  Phase 6 (Funnel — OPCIONAL, 7-10d)
 ```
 
 Cross-cutting Phase 7 (Headless) executa em paralelo embeded em cada phase.
@@ -695,12 +946,14 @@ Cross-cutting Phase 7 (Headless) executa em paralelo embeded em cada phase.
 | Phase | Esforço | Sprint |
 |---|---|---|
 | Phase 1 — Warmup Orchestrator | 5-7d | Sem 1-2 |
+| Phase 1.5 — Template Engine + Linter | 2d | Sem 2 |
 | Phase 2 — Quality Dashboard | 4-5d | Sem 2-3 |
-| Phase 3 — Chip Cost Manager | 4-5d | Sem 2-3 (paralelo) |
+| Phase 3 — Chip Cost Manager + Bulk Import | 5-6d | Sem 2-3 (paralelo) |
 | Phase 4 — DDD Router + Fingerprint | 3-4d | Sem 3-4 |
 | Phase 5 — E2E Correlation | 3-4d | Sem 4 |
-| Phase 6 — Inbound Funnel (OPT) | 7-10d | Sem 5-6 |
+| Phase 5.5 — LGPD Compliance Suite | 2-3d | Sem 5 |
+| Phase 6 — Inbound Funnel (OPT) | 7-10d | Sem 5-7 |
 | Phase 7 — Headless threads | 0.5d/phase | continuous |
 
-**Total core (Phases 1-5)**: ~19-25 dias úteis = ~4-5 semanas
-**Com Phase 6 opcional**: +1.5-2 semanas = 6 semanas total
+**Total core (Phases 1-5.5)**: ~24-32 dias úteis = ~5-6 semanas
+**Com Phase 6 opcional**: +1.5-2 semanas = 7 semanas total
