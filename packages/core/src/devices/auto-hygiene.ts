@@ -95,6 +95,40 @@ export class AutoHygiene {
     await this.execute(serial, source, /* honorTtl */ false)
   }
 
+  /**
+   * Boot-time sweep: walk devices already online (no device:connected event
+   * was fired for them since they were already up before the listener
+   * attached) and trigger hygienize on the ones whose last run is past TTL.
+   * Idempotent — `maybeTrigger` honors TTL + inflight mutex.
+   *
+   * Caller passes the list of currently-online serials (typically obtained
+   * after the first DeviceManager.poll() succeeds).
+   */
+  async sweepInitialDevices(serials: string[]): Promise<{ scheduled: number; skipped: number }> {
+    let scheduled = 0
+    let skipped = 0
+    for (const serial of serials) {
+      if (!this.deps.hygieneLog.isDue(serial, this.opts.ttlDays)) {
+        skipped++
+        continue
+      }
+      // Schedule via setTimeout to spread load — same pattern used by the
+      // listener (avoids 4 simultaneous hygienize on multi-device boot).
+      const delay = scheduled * 60_000  // stagger 60s per device
+      this.deps.logger?.info(
+        { serial, delayMs: delay },
+        'auto-hygiene boot-sweep scheduled',
+      )
+      const t = setTimeout(() => {
+        this.timers.delete(serial)
+        void this.maybeTrigger(serial, 'auto:device_connected')
+      }, delay)
+      this.timers.set(serial, t)
+      scheduled++
+    }
+    return { scheduled, skipped }
+  }
+
   private async maybeTrigger(serial: string, source: 'auto:device_connected'): Promise<void> {
     if (!this.deps.hygieneLog.isDue(serial, this.opts.ttlDays)) {
       const last = this.deps.hygieneLog.getLastSuccess(serial)

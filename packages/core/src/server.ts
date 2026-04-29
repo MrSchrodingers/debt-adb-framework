@@ -1183,6 +1183,27 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // so devices already plugged in still trigger after their first poll cycle.
   autoHygiene.start()
 
+  // Boot sweep: devices already online before the listener attached won't
+  // emit a device:connected event. Wait one poll cycle (5s) then check what
+  // is online and schedule hygienize for any device past the TTL.
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const online = deviceManager.getDevices()
+          .filter((d) => d.status === 'online')
+          .map((d) => d.serial)
+        if (online.length === 0) return
+        const result = await autoHygiene.sweepInitialDevices(online)
+        server.log.info(
+          { online: online.length, scheduled: result.scheduled, skipped: result.skipped },
+          'auto-hygiene boot-sweep dispatched',
+        )
+      } catch (err) {
+        server.log.warn({ err }, 'auto-hygiene boot-sweep failed')
+      }
+    })()
+  }, 7_000)
+
   // Auto-import the chip catalogue from device-side mapping tables on boot.
   // Operator may have edited values in `chips` — INSERT OR IGNORE preserves
   // them; only NEW phones discovered on devices get a placeholder row.
