@@ -169,6 +169,8 @@ function ChipsPanel() {
   const [search, setSearch] = useState('')
   const [creating, setCreating] = useState(false)
   const [importing, setImporting] = useState(false)
+  const [autoImporting, setAutoImporting] = useState(false)
+  const [autoImportMsg, setAutoImportMsg] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
@@ -237,6 +239,37 @@ function ChipsPanel() {
           <option value="banned">Banidos</option>
           <option value="retired">Retirados</option>
         </select>
+        <AccentButton
+          accent={ACCENT}
+          onClick={async () => {
+            setAutoImporting(true)
+            setAutoImportMsg(null)
+            try {
+              const r = await fetch(`${FLEET_BASE}/chips/import-from-devices`, {
+                method: 'POST',
+                headers: authHeaders(),
+              })
+              if (!r.ok) throw new Error(`HTTP ${r.status}`)
+              const data = (await r.json()) as {
+                total_inserted: number
+                total_skipped: number
+              }
+              setAutoImportMsg(
+                `Importado ${data.total_inserted} chip(s) de devices. ` +
+                  `${data.total_skipped} já existia(m).`,
+              )
+              void load()
+            } catch (e) {
+              setAutoImportMsg(`Falhou: ${e instanceof Error ? e.message : String(e)}`)
+            } finally {
+              setAutoImporting(false)
+            }
+          }}
+          icon={Smartphone}
+          variant="ghost"
+        >
+          {autoImporting ? 'Importando…' : 'Importar de devices'}
+        </AccentButton>
         <AccentButton accent={ACCENT} onClick={() => setImporting(true)} icon={FileSpreadsheet} variant="ghost">
           Importar CSV
         </AccentButton>
@@ -244,6 +277,12 @@ function ChipsPanel() {
           Cadastrar chip
         </AccentButton>
       </div>
+
+      {autoImportMsg ? (
+        <div className="rounded-md border border-emerald-700/40 bg-emerald-950/30 px-3 py-2 text-sm text-emerald-200">
+          {autoImportMsg}
+        </div>
+      ) : null}
 
       {err ? <InlineError message={err} /> : null}
 

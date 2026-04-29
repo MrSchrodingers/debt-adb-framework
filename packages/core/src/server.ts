@@ -12,6 +12,7 @@ import { DispatchPauseState, type PauseScope } from './engine/dispatch-pause-sta
 import { DispatchEmitter } from './events/index.js'
 import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes, registerMessageTimelineRoutes, registerAdminMessageRoutes, registerInsightsHeatmapRoutes, registerAckRateRoutes, registerFleetRoutes } from './api/index.js'
 import { ChipRegistry } from './fleet/index.js'
+import { HygieneLog, AutoHygiene } from './devices/index.js'
 import { registerAnomalyRoutes, registerChanged24hRoutes } from './insights/index.js'
 import { verifyJwt } from './api/jwt.js'
 import { ContactRegistry } from './contacts/index.js'
@@ -159,6 +160,10 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const chipRegistry = new ChipRegistry(db)
   chipRegistry.initialize()
 
+  // Hygiene audit log — every hygienize run (manual + auto) writes here.
+  const hygieneLog = new HygieneLog(db)
+  hygieneLog.initialize()
+
   const auditLogger = new AuditLogger(db)
 
   const adb = new AdbBridge()
@@ -234,6 +239,17 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   waMapper.initialize()
   const alertSystem = new AlertSystem(db, emitter)
   alertSystem.initialize()
+
+  // Auto-hygiene: run hygienizeDevice() on device:connected when due (TTL).
+  // Manual REST endpoint also writes to the same log table.
+  const autoHygiene = new AutoHygiene(
+    { emitter, adb, hygieneLog, logger: server.log as unknown as { info: (o: object, m?: string) => void; warn: (o: object, m?: string) => void; error: (o: object, m?: string) => void } },
+    {
+      enabled: (process.env.DISPATCH_AUTO_HYGIENE_ENABLED ?? 'true') !== 'false',
+      ttlDays: Number(process.env.DISPATCH_AUTO_HYGIENE_DAYS) || 14,
+      aggressive: (process.env.DISPATCH_HYGIENE_AGGRESSIVE ?? 'false') === 'true',
+    },
+  )
 
   // Initialize WAHA modules (Phase 4)
   const messageHistory = new MessageHistory(db)
@@ -335,7 +351,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   })
 
   registerMessageRoutes(server, queue, emitter)
-  registerDeviceRoutes(server, adb)
+  registerDeviceRoutes(server, adb, { hygieneLog, autoHygiene })
   registerMonitorRoutes(server, { adb, engine, deviceManager, healthCollector, waMapper, alertSystem })
 
   // WAHA routes always registered (webhook receiver works without WAHA client)
@@ -1162,6 +1178,29 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   // Device discovery polling (5s) — managed by DeviceManager
   deviceManager.startPolling(5_000)
+
+  // Auto-hygiene: attach listener BEFORE poll fires its first connect events
+  // so devices already plugged in still trigger after their first poll cycle.
+  autoHygiene.start()
+
+  // Auto-import the chip catalogue from device-side mapping tables on boot.
+  // Operator may have edited values in `chips` — INSERT OR IGNORE preserves
+  // them; only NEW phones discovered on devices get a placeholder row.
+  try {
+    const importResult = chipRegistry.importFromDevices()
+    server.log.info(
+      {
+        whatsapp_accounts: importResult.whatsapp_accounts,
+        sender_mapping: importResult.sender_mapping,
+      },
+      'Boot chip auto-import completed',
+    )
+  } catch (err) {
+    server.log.warn(
+      { err: (err as Error).message },
+      'Boot chip auto-import failed (non-fatal)',
+    )
+  }
 
   // In-memory health map for WorkerOrchestrator (populated by health interval)
   const latestHealthMap = new Map<string, import('./monitor/types.js').HealthSnapshot>()

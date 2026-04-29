@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import type { AdbBridge } from '../adb/index.js'
 import { IpRateLimiter } from './rate-limiter.js'
+import { hygienizeDevice, type HygieneLog, type AutoHygiene } from '../devices/index.js'
 
 const shellRateLimiter = new IpRateLimiter({ maxRequests: 10, windowMs: 60_000 })
 const shellSchema = z.object({ command: z.string().min(1).max(4096) })
@@ -78,25 +79,15 @@ async function switchAndUnlock(adb: AdbShell, serial: string, targetUid: number)
   return { switched: true, unlocked }
 }
 
-/** Verify a setting was applied by reading it back */
-async function verifySetting(adb: AdbShell, serial: string, namespace: string, key: string, expected: string): Promise<boolean> {
-  try {
-    const actual = (await adb.shell(serial, `settings get ${namespace} ${key}`)).trim()
-    return actual === expected
-  } catch { return false }
-}
-
-/** Get list of profile IDs from device */
-async function getProfileIds(adb: AdbShell, serial: string): Promise<number[]> {
-  try {
-    const out = await adb.shell(serial, 'pm list users')
-    return [...out.matchAll(/UserInfo\{(\d+):/g)].map(m => Number(m[1]))
-  } catch { return [0] }
+export interface DeviceRoutesDeps {
+  hygieneLog?: HygieneLog
+  autoHygiene?: AutoHygiene
 }
 
 export function registerDeviceRoutes(
   server: FastifyInstance,
   adb: AdbBridge,
+  deps: DeviceRoutesDeps = {},
 ): void {
   server.get('/api/v1/devices', async () => {
     return adb.discover()
@@ -143,129 +134,72 @@ export function registerDeviceRoutes(
     return reply.send({ serial, applied: results })
   })
 
-  // Hygienize device — standardized: always starts from P0, processes all, returns to P0
+  // Hygienize device — standardized: always starts from P0, processes all, returns to P0.
+  // Delegates to the shared `hygienizeDevice()` core function (also used by
+  // the auto-trigger on device:connected). Both writes to `device_hygiene_log`
+  // for a single audit trail.
   server.post('/api/v1/devices/:serial/hygienize', async (request, reply) => {
     const { serial } = request.params as { serial: string }
-    const steps: Record<string, string> = {}
+    const operator = (request.headers['x-operator'] as string | undefined) ?? null
+    const triggeredBy = operator ? 'manual:operator' : 'manual:api'
 
-    // STEP 0: Always start from user 0 (standardized entry point)
-    const startedOnZero = await ensureUserZero(adb, serial)
-    steps.initial_state = startedOnZero ? 'P0:ok' : 'P0:forced'
+    const aggressive = (process.env.DISPATCH_HYGIENE_AGGRESSIVE ?? 'false') === 'true'
+    const logId = deps.hygieneLog?.start({
+      device_serial: serial,
+      triggered_by: triggeredBy as 'manual:operator' | 'manual:api',
+    })
 
-    const bloatPackages = [
-      'com.facebook.appmanager', 'com.facebook.services', 'com.facebook.system',
-      'com.amazon.appmanager',
-      'com.google.android.apps.youtube.music', 'com.google.android.youtube',
-      'com.google.android.apps.maps', 'com.google.android.apps.photosgo',
-      'com.google.android.apps.walletnfcrel', 'com.android.chrome',
-      'com.google.android.apps.docs', 'com.google.android.apps.messaging',
-      'com.google.android.apps.nbu.files', 'com.google.android.apps.restore',
-      'com.google.android.apps.safetyhub', 'com.google.android.apps.searchlite',
-      'com.google.android.apps.subscriptions.red', 'com.google.android.apps.tachyon',
-      'com.google.android.apps.wellbeing', 'com.google.android.feedback',
-      'com.google.android.gm', 'com.google.android.marvin.talkback',
-      'com.google.android.videos', 'com.google.android.safetycore',
-      'com.google.android.gms.supervision',
-      'com.miui.android.fashiongallery', 'com.miui.gameCenter.overlay',
-      'com.miui.calculator.go', 'com.miui.analytics.go', 'com.miui.bugreport',
-      'com.miui.cleaner.go', 'com.miui.msa.global', 'com.miui.qr',
-      'com.miui.theme.lite', 'com.miui.videoplayer', 'com.miui.player',
-      'com.xiaomi.discover', 'com.xiaomi.mipicks', 'com.xiaomi.scanner',
-      'com.xiaomi.glgm', 'com.mi.globalminusscreen',
-      'com.unisoc.phone', 'com.android.mms.service',
-      'com.android.calendar.go', 'com.android.fmradio', 'com.go.browser',
-    ]
-
-    // Settings that work via ADB shell WITHOUT needing screen unlock
-    const settingsCommands = [
-      'locksettings clear --old 12345',    // remove PIN first
-      'locksettings set-disabled true',     // disable lock screen
-      'settings put system screen_off_timeout 2147483647',
-      'settings put system screen_brightness 255',
-      'settings put system screen_brightness_mode 0',
-      'svc power stayon usb',
-      'cmd notification set_dnd priority',
-      'settings put secure notification_badging 0',
-      'settings put system ringtone_volume 0',
-      'settings put system notification_sound_volume 0',
-      'settings put system alarm_volume 0',
-      'settings put system vibrate_when_ringing 0',
-      'settings put system haptic_feedback_enabled 0',
-    ]
-
-    // Discover profiles
-    const profileIds = await getProfileIds(adb, serial)
-    steps.profiles_found = profileIds.join(', ')
-
-    // Process each profile
-    let totalRemoved = 0
-    const perUser: Record<number, string> = {}
-
-    for (const uid of profileIds) {
-      const log: string[] = []
-
-      // Step 1: Switch user (verified with polling)
-      const switched = await switchUserVerified(adb, serial, uid)
-      if (!switched) {
-        log.push('FALHOU: switch-user timeout (15s)')
-        perUser[uid] = log.join(', ')
-        continue
-      }
-      log.push('switch:ok')
-
-      // Step 2: Apply settings (NO UI needed — works with locked screen)
-      let settingsOk = 0
-      for (const cmd of settingsCommands) {
-        try { await adb.shell(serial, cmd); settingsOk++ } catch { /* ignore */ }
-      }
-      log.push(`settings:${settingsOk}/${settingsCommands.length}`)
-
-      // Step 3: Remove bloatware (NO UI needed)
-      let removed = 0
-      for (const pkg of bloatPackages) {
-        try {
-          const out = await adb.shell(serial, `pm uninstall -k --user ${uid} ${pkg}`)
-          if (out.includes('Success')) removed++
-        } catch { /* skip */ }
-      }
-      totalRemoved += removed
-      log.push(`bloat:${removed}`)
-
-      // Step 4: Ensure essential packages (NO UI needed)
-      for (const pkg of ['com.whatsapp', 'com.whatsapp.w4b', 'com.android.contacts', 'com.android.providers.contacts']) {
-        try { await adb.shell(serial, `cmd package install-existing --user ${uid} ${pkg}`) } catch { /* ignore */ }
-      }
-      log.push('pkgs:ensured')
-
-      // Step 5: Force stop noisy services
-      for (const svc of ['com.google.android.gms', 'com.google.android.gsf', 'com.google.android.safetycore']) {
-        try { await adb.shell(serial, `am force-stop ${svc}`) } catch { /* ignore */ }
-      }
-
-      // Step 6: Verify critical settings
-      const briOk = await verifySetting(adb, serial, 'system', 'screen_brightness', '255')
-      const toOk = await verifySetting(adb, serial, 'system', 'screen_off_timeout', '2147483647')
-      const dndOk = await verifySetting(adb, serial, 'global', 'zen_mode', '1')
-      log.push(`verify:bri=${briOk ? 'ok' : 'FAIL'},timeout=${toOk ? 'ok' : 'FAIL'},dnd=${dndOk ? 'ok' : 'FAIL'}`)
-
-      perUser[uid] = log.join(', ')
-    }
-
-    steps.bloat_removed = `${totalRemoved} total`
-    steps.per_user = JSON.stringify(perUser)
-
-    // FINAL: Always return to user 0 (standardized exit)
-    const backedToZero = await ensureUserZero(adb, serial)
-    steps.switched_back = backedToZero ? 'P0:ok' : 'P0:FAILED'
-
-    // Wake screen at the end
     try {
-      await adb.shell(serial, 'input keyevent KEYCODE_WAKEUP')
-    } catch { /* ignore */ }
+      const result = await hygienizeDevice(adb, serial, { aggressive })
 
-    server.log.info({ serial, profiles: profileIds, totalRemoved, perUser }, 'Device hygienized')
+      if (deps.hygieneLog && logId) {
+        deps.hygieneLog.finish(logId, {
+          status: 'completed',
+          profiles_processed: result.profilesProcessed,
+          bloat_removed_count: result.bloatRemovedCount,
+          per_profile_log: result.perProfileLog,
+          survived_packages: result.survivedPackages,
+        })
+      }
 
-    return reply.send({ serial, profiles: profileIds, steps })
+      const totalSurvivors = Object.values(result.survivedPackages).reduce(
+        (sum, list) => sum + list.length,
+        0,
+      )
+      server.log.info(
+        {
+          serial,
+          profiles: result.profilesProcessed,
+          totalRemoved: result.bloatRemovedCount,
+          survivors: totalSurvivors,
+          triggeredBy,
+        },
+        'Device hygienized',
+      )
+      return reply.send({
+        serial,
+        profiles: result.profilesProcessed,
+        steps: result.steps,
+        survived: result.survivedPackages,
+        log_id: logId ?? null,
+      })
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err)
+      if (deps.hygieneLog && logId) {
+        deps.hygieneLog.finish(logId, { status: 'failed', error_msg: errorMsg })
+      }
+      server.log.error({ serial, err: errorMsg }, 'Manual hygienize failed')
+      return reply.status(500).send({ serial, error: errorMsg, log_id: logId ?? null })
+    }
+  })
+
+  // List recent hygiene runs for a device (for the UI indicator).
+  server.get('/api/v1/devices/:serial/hygienize/log', async (request, reply) => {
+    const { serial } = request.params as { serial: string }
+    if (!deps.hygieneLog) return reply.send({ serial, items: [], last: null })
+    const items = deps.hygieneLog.list(serial, 20)
+    const last = deps.hygieneLog.getLast(serial)
+    return reply.send({ serial, items, last })
   })
 
   // Validate device readiness — check all profiles are ready for sending

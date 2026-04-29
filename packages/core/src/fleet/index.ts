@@ -12,6 +12,7 @@ export type {
   RecordPaymentInput,
   RecordEventInput,
   RecordMessageInput,
+  ChipImportResult,
 } from './chip-registry.js'
 export { RenewalWatcher, classifyAlerts } from './renewal-watcher.js'
 export type { RenewalAlert, RenewalAlertKind, RenewalAlertSink } from './renewal-watcher.js'

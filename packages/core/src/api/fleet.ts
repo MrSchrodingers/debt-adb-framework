@@ -162,6 +162,22 @@ export function registerFleetRoutes(server: FastifyInstance, deps: FleetRoutesDe
     return reply.status(207).send({ inserted, skipped, results })
   })
 
+  // ── Auto-import from device-side mapping tables ───────────────────────
+  // POST /api/v1/fleet/chips/import-from-devices
+  // Triggers the same routine that runs on boot — reads
+  // `whatsapp_accounts` and `sender_mapping` and INSERT OR IGNORE's any
+  // phone_number not yet present in `chips`. Idempotent — safe to retry.
+  server.post('/api/v1/fleet/chips/import-from-devices', async (_req, reply) => {
+    const result = registry.importFromDevices()
+    const totalInserted = result.whatsapp_accounts.inserted + result.sender_mapping.inserted
+    const totalSkipped = result.whatsapp_accounts.skipped + result.sender_mapping.skipped
+    return reply.status(200).send({
+      total_inserted: totalInserted,
+      total_skipped: totalSkipped,
+      sources: result,
+    })
+  })
+
   // ── Chip detail / patch / retire ──────────────────────────────────────
   server.get('/api/v1/fleet/chips/:id', async (req, reply) => {
     const { id } = req.params as { id: string }

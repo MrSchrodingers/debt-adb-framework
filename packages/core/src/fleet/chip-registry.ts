@@ -688,6 +688,197 @@ export class ChipRegistry {
   overdue(now: Date = new Date()): RenewalCalendarEntry[] {
     return this.renewalCalendar(365, now).filter((e) => e.status === 'overdue')
   }
+
+  // ── Auto-import from the device-side mapping tables ──────────────────
+  //
+  // The `whatsapp_accounts` table is populated by WaAccountMapper as it
+  // walks each Android profile and reads the registered phone via the
+  // contacts content provider. `sender_mapping` is populated by the
+  // device commissioning UI when an operator binds a phone to a profile.
+  //
+  // Both are good sources for the chip catalogue: every phone that lives
+  // on a device should have a corresponding row in `chips` so cost
+  // tracking, renewal alerts, and the Frota page never show empty.
+  //
+  // Idempotency: `INSERT OR IGNORE` against the UNIQUE phone_number — an
+  // operator-edited chip (real plan/cost values) is preserved across boots.
+  // Re-running the import only inserts NEW phones discovered on devices.
+
+  /**
+   * Import every distinct phone_number from `whatsapp_accounts` as a chip.
+   * Skips rows where phone_number IS NULL (placeholders waiting for setup).
+   *
+   * Returns counts so the boot log + admin endpoint can report progress.
+   */
+  importFromWhatsappAccounts(now: Date = new Date()): ChipImportResult {
+    return this.importFromTable({
+      sourceTable: 'whatsapp_accounts',
+      query: `SELECT device_serial, profile_id, package_name, phone_number
+              FROM whatsapp_accounts
+              WHERE phone_number IS NOT NULL AND phone_number != ''`,
+      buildNotes: (row) =>
+        `Auto-importado de whatsapp_accounts: device ${row.device_serial} ` +
+        `profile ${row.profile_id} package ${row.package_name}. ` +
+        `Editar valores reais (custo, vencimento, operadora).`,
+      buildMetadata: (row) => ({
+        profile_id: row.profile_id,
+        package_name: row.package_name,
+        device_serial: row.device_serial,
+      }),
+      now,
+    })
+  }
+
+  /**
+   * Import every distinct phone_number from `sender_mapping` as a chip.
+   * Skips inactive senders.
+   */
+  importFromSenderMapping(now: Date = new Date()): ChipImportResult {
+    // Defensive: sender_mapping may not exist in tests that only init the registry.
+    const tableExists = this.db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='sender_mapping'",
+      )
+      .get() as { name: string } | undefined
+    if (!tableExists) {
+      return { source: 'sender_mapping', inserted: 0, skipped: 0, errors: [] }
+    }
+    return this.importFromTable({
+      sourceTable: 'sender_mapping',
+      query: `SELECT phone_number, device_serial, profile_id, app_package
+              FROM sender_mapping
+              WHERE active = 1 AND phone_number IS NOT NULL AND phone_number != ''`,
+      buildNotes: (row) =>
+        `Auto-importado de sender_mapping: device ${row.device_serial} ` +
+        `profile ${row.profile_id} package ${row.app_package}. ` +
+        `Editar valores reais (custo, vencimento, operadora).`,
+      buildMetadata: (row) => ({
+        profile_id: row.profile_id,
+        package_name: row.app_package,
+        device_serial: row.device_serial,
+      }),
+      now,
+    })
+  }
+
+  /** Run BOTH imports — used at boot. */
+  importFromDevices(now: Date = new Date()): {
+    whatsapp_accounts: ChipImportResult
+    sender_mapping: ChipImportResult
+  } {
+    return {
+      whatsapp_accounts: this.importFromWhatsappAccounts(now),
+      sender_mapping: this.importFromSenderMapping(now),
+    }
+  }
+
+  private importFromTable(args: {
+    sourceTable: string
+    query: string
+    buildNotes: (row: ImportSourceRow) => string
+    buildMetadata: (row: ImportSourceRow) => Record<string, unknown>
+    now: Date
+  }): ChipImportResult {
+    const { sourceTable, query, buildNotes, buildMetadata, now } = args
+    let rows: ImportSourceRow[]
+    try {
+      rows = this.db.prepare(query).all() as ImportSourceRow[]
+    } catch {
+      // Table doesn't exist yet (e.g. fresh DB before WaAccountMapper init).
+      return { source: sourceTable, inserted: 0, skipped: 0, errors: [] }
+    }
+
+    let inserted = 0
+    let skipped = 0
+    const errors: Array<{ phone_number: string; error: string }> = []
+    const acquisitionDate = now.toISOString().slice(0, 10)
+
+    // Group by phone_number — `whatsapp_accounts` has one row per
+    // (device, profile, package) but a chip is keyed by phone_number alone.
+    const byPhone = new Map<string, ImportSourceRow>()
+    for (const row of rows) {
+      const phone = String(row.phone_number ?? '').trim()
+      if (!phone) continue
+      if (!byPhone.has(phone)) byPhone.set(phone, row)
+    }
+
+    for (const [phone, row] of byPhone.entries()) {
+      // INSERT OR IGNORE on UNIQUE — preserves operator edits.
+      try {
+        const id = nanoid()
+        const result = this.db
+          .prepare(
+            `INSERT OR IGNORE INTO chips (
+              id, phone_number, carrier, plan_name, plan_type,
+              acquisition_date, acquisition_cost_brl, monthly_cost_brl,
+              payment_due_day, payment_method, paid_by_operator,
+              invoice_ref, invoice_path, device_serial, status,
+              acquired_for_purpose, notes
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            id,
+            phone,
+            'unknown',
+            'A definir',
+            'postpago',
+            acquisitionDate,
+            0,
+            0,
+            15,
+            null,
+            `auto-import (${sourceTable})`,
+            null,
+            null,
+            row.device_serial ?? null,
+            'active',
+            null,
+            buildNotes(row),
+          )
+        if (result.changes > 0) {
+          inserted += 1
+          // Auto-event for the new chip's timeline.
+          try {
+            this.recordEvent(id, {
+              event_type: 'acquired',
+              occurred_at: acquisitionDate,
+              operator: `auto-import (${sourceTable})`,
+              metadata: buildMetadata(row),
+              notes: 'Auto-importado a partir do device — preencher dados reais',
+            })
+          } catch {
+            // recordEvent throws if the chip wasn't actually created (race).
+            // Safe to ignore — the chip insert was the source of truth.
+          }
+        } else {
+          skipped += 1
+        }
+      } catch (e) {
+        errors.push({
+          phone_number: phone,
+          error: e instanceof Error ? e.message : String(e),
+        })
+      }
+    }
+    return { source: sourceTable, inserted, skipped, errors }
+  }
+}
+
+// ── Import-from-devices types ───────────────────────────────────────────
+
+interface ImportSourceRow {
+  phone_number: string | null
+  device_serial: string | null
+  profile_id: number
+  package_name?: string
+  app_package?: string
+}
+
+export interface ChipImportResult {
+  source: string
+  inserted: number
+  skipped: number
+  errors: Array<{ phone_number: string; error: string }>
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────

@@ -205,6 +205,35 @@ describe('Fleet API', () => {
     expect(body.total).toBe(1)
   })
 
+  it('POST /api/v1/fleet/chips/import-from-devices imports from whatsapp_accounts + sender_mapping', async () => {
+    db.exec(`
+      CREATE TABLE whatsapp_accounts (
+        device_serial TEXT NOT NULL,
+        profile_id INTEGER NOT NULL,
+        package_name TEXT NOT NULL,
+        phone_number TEXT,
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        PRIMARY KEY (device_serial, profile_id, package_name)
+      );
+      INSERT INTO whatsapp_accounts (device_serial, profile_id, package_name, phone_number)
+      VALUES ('SN1', 0, 'com.whatsapp', '5543991938235'),
+             ('SN2', 0, 'com.whatsapp', '5543996837813'),
+             ('SN1', 10, 'com.whatsapp', NULL);
+    `)
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/fleet/chips/import-from-devices',
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json() as {
+      total_inserted: number
+      total_skipped: number
+      sources: { whatsapp_accounts: { inserted: number }; sender_mapping: { inserted: number } }
+    }
+    expect(body.total_inserted).toBe(2)
+    expect(body.sources.whatsapp_accounts.inserted).toBe(2)
+  })
+
   it('POST /api/v1/fleet/chips/import bulk-inserts and reports per-row outcome', async () => {
     const res = await app.inject({
       method: 'POST',

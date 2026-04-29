@@ -32,6 +32,16 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose, onProf
   }
   const [profiles, setProfiles] = useState<ProfileInfo[]>([])
 
+  interface HygieneLogEntry {
+    id: string
+    triggered_by: string
+    started_at: string
+    finished_at: string | null
+    status: 'running' | 'completed' | 'failed'
+    bloat_removed_count: number | null
+  }
+  const [hygieneLast, setHygieneLast] = useState<HygieneLogEntry | null>(null)
+
   const fetchProfiles = useCallback(() => {
     fetch(`${CORE_URL}/api/v1/devices/${device.serial}/profiles`, { headers: authHeaders() })
       .then(r => r.ok ? r.json() : null)
@@ -39,7 +49,17 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose, onProf
       .catch(() => {})
   }, [device.serial])
 
+  const fetchHygieneLog = useCallback(() => {
+    fetch(`${CORE_URL}/api/v1/devices/${device.serial}/hygienize/log`, { headers: authHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.last) setHygieneLast(data.last as HygieneLogEntry)
+      })
+      .catch(() => {})
+  }, [device.serial])
+
   useEffect(() => { fetchProfiles() }, [fetchProfiles])
+  useEffect(() => { fetchHygieneLog() }, [fetchHygieneLog])
 
   const latest = health[health.length - 1] ?? null
   const hasAlert = (type: string) => alerts.some((a) => a.type === type)
@@ -253,6 +273,41 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose, onProf
           </div>
         )}
 
+        {/* Hygiene status indicator */}
+        {hygieneLast ? (
+          <div className="rounded-md border border-zinc-800/60 bg-zinc-900/40 px-3 py-2 text-xs text-zinc-300 flex items-center gap-2 flex-wrap">
+            <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
+            <span className="font-medium text-zinc-100">Auto-higienização:</span>
+            <span
+              className={
+                hygieneLast.status === 'completed'
+                  ? 'rounded px-1.5 py-0.5 bg-emerald-900/40 text-emerald-300 border border-emerald-700/40'
+                  : hygieneLast.status === 'failed'
+                  ? 'rounded px-1.5 py-0.5 bg-rose-900/40 text-rose-300 border border-rose-700/40'
+                  : 'rounded px-1.5 py-0.5 bg-amber-900/40 text-amber-300 border border-amber-700/40'
+              }
+            >
+              {hygieneLast.status}
+            </span>
+            <span className="text-zinc-500">·</span>
+            <span title={hygieneLast.finished_at ?? hygieneLast.started_at}>
+              {hygieneLast.finished_at
+                ? new Date(hygieneLast.finished_at).toLocaleString('pt-BR')
+                : new Date(hygieneLast.started_at).toLocaleString('pt-BR')}
+            </span>
+            <span className="text-zinc-500">·</span>
+            <span className="text-zinc-400">por {hygieneLast.triggered_by}</span>
+            {hygieneLast.bloat_removed_count !== null ? (
+              <>
+                <span className="text-zinc-500">·</span>
+                <span className="text-zinc-300">
+                  {hygieneLast.bloat_removed_count} bloat removidos
+                </span>
+              </>
+            ) : null}
+          </div>
+        ) : null}
+
         {/* Actions */}
         <div className="flex items-center gap-2 pt-2 border-t border-zinc-800/40 flex-wrap">
           <ActionBtn
@@ -293,6 +348,7 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose, onProf
 
                 if (res.ok) {
                   const data = await res.json()
+                  fetchHygieneLog()
                   const profileCount = data.profiles?.length ?? 0
                   const bloatRemoved = data.steps?.bloat_removed ?? '0'
                   // Parse per_user results
