@@ -124,7 +124,7 @@ export class WaAccountMapper {
   }> {
     const rows = this.db
       .prepare(
-        'SELECT device_serial, profile_id, package_name, phone_number FROM whatsapp_accounts WHERE phone_number IS NOT NULL AND phone_number != ""',
+        "SELECT device_serial, profile_id, package_name, phone_number FROM whatsapp_accounts WHERE phone_number IS NOT NULL AND phone_number != ''",
       )
       .all() as Array<{
         device_serial: string

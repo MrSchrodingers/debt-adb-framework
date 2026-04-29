@@ -160,6 +160,23 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const chipRegistry = new ChipRegistry(db)
   chipRegistry.initialize()
 
+  // Boot migration: normalize legacy phone_number rows in `chips` (12-digit
+  // → 13 with 9-prefix; 11-digit → prepend cc=55). Conflicts are resolved
+  // by deleting the orphan and keeping the canonical row.
+  try {
+    const chipNormChanges = chipRegistry.normalizeStoredPhones({
+      warn: (payload, msg) => server.log.warn(payload, msg),
+    })
+    if (chipNormChanges.length > 0) {
+      server.log.info(
+        { changes: chipNormChanges, count: chipNormChanges.length },
+        'Boot migration: normalized chips.phone_number to canonical 13-digit',
+      )
+    }
+  } catch (err) {
+    server.log.warn({ err }, 'chips phone normalization migration failed (non-fatal)')
+  }
+
   // Hygiene audit log — every hygienize run (manual + auto) writes here.
   const hygieneLog = new HygieneLog(db)
   hygieneLog.initialize()
@@ -241,6 +258,9 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // One-shot boot migration: re-normalize every persisted phone number
   // (12-digit legacy → 13-digit canonical with 9-prefix). Idempotent — already
   // canonical rows are skipped silently. Logs each change for diagnostics.
+  // Sweeps both `whatsapp_accounts` (write-only path used by the extractor)
+  // and `chips` (operator-facing fleet table). The chips sweep is run AFTER
+  // chipRegistry initialization further down, so it lives there.
   try {
     const phoneNormChanges = waMapper.normalizeStoredPhones({
       warn: (payload, msg) => server.log.warn(payload, msg),

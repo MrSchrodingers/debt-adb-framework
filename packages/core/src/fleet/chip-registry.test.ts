@@ -304,6 +304,60 @@ describe('ChipRegistry — reports', () => {
   })
 })
 
+describe('ChipRegistry — normalizeStoredPhones', () => {
+  it('upgrades a 12-digit legacy phone to canonical 13-digit', () => {
+    const { db, reg } = buildRegistry()
+    db.prepare(
+      `INSERT INTO chips (id, phone_number, carrier, plan_name, plan_type,
+         acquisition_date, acquisition_cost_brl, monthly_cost_brl,
+         payment_due_day, paid_by_operator, status)
+       VALUES ('c1', '554391938235', 'vivo', 'Plan', 'postpago', '2026-01-01',
+               0, 0, 15, 'op', 'active')`,
+    ).run()
+    const changes = reg.normalizeStoredPhones()
+    expect(changes).toEqual([{ id: 'c1', before: '554391938235', after: '5543991938235', action: 'updated' }])
+    const row = db.prepare('SELECT phone_number FROM chips WHERE id = ?').get('c1') as { phone_number: string }
+    expect(row.phone_number).toBe('5543991938235')
+  })
+
+  it('deletes the orphan when normalization would create a duplicate', () => {
+    const { db, reg } = buildRegistry()
+    db.prepare(
+      `INSERT INTO chips (id, phone_number, carrier, plan_name, plan_type,
+         acquisition_date, acquisition_cost_brl, monthly_cost_brl,
+         payment_due_day, paid_by_operator, status)
+       VALUES (?, ?, 'vivo', 'P', 'postpago', '2026-01-01', 0, 0, 15, 'op', 'active')`,
+    ).run('canonical', '5543991938235')
+    db.prepare(
+      `INSERT INTO chips (id, phone_number, carrier, plan_name, plan_type,
+         acquisition_date, acquisition_cost_brl, monthly_cost_brl,
+         payment_due_day, paid_by_operator, status)
+       VALUES (?, ?, 'vivo', 'P', 'postpago', '2026-01-01', 0, 0, 15, 'op', 'active')`,
+    ).run('orphan', '554391938235')
+
+    const changes = reg.normalizeStoredPhones()
+    expect(changes).toEqual([{ id: 'orphan', before: '554391938235', after: '5543991938235', action: 'deleted_duplicate' }])
+    expect(reg.listChips()).toHaveLength(1)
+    expect(reg.listChips()[0]!.id).toBe('canonical')
+  })
+
+  it('is idempotent — re-running over canonical rows is a no-op', () => {
+    const { reg } = buildRegistry()
+    reg.createChip({
+      phone_number: '5543991938235',
+      carrier: 'vivo',
+      plan_name: 'P',
+      acquisition_date: '2026-01-01',
+      acquisition_cost_brl: 0,
+      monthly_cost_brl: 0,
+      payment_due_day: 15,
+      paid_by_operator: 'op',
+    })
+    expect(reg.normalizeStoredPhones()).toHaveLength(0)
+    expect(reg.normalizeStoredPhones()).toHaveLength(0)
+  })
+})
+
 describe('nextDueDate edge cases', () => {
   it('clamps to last day of month for short months (Feb 30)', () => {
     const date = nextDueDate(30, new Date('2026-02-01T00:00:00Z'))

@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import { nanoid } from 'nanoid'
+import { normalizeBrPhone, type PhoneNormalizerLogger } from '../monitor/phone-normalizer.js'
 import type {
   Chip,
   ChipEvent,
@@ -201,6 +202,56 @@ export class ChipRegistry {
 
   initialize(): void {
     this.db.exec(SCHEMA_SQL)
+  }
+
+  /**
+   * Normalize every legacy `chips.phone_number` to canonical 13-digit BR
+   * mobile (12-digit → insert 9-prefix; 11-digit → prepend `cc=55`).
+   *
+   * Conflict handling: when normalizing produces a value that already
+   * exists in the table, the orphan row is DELETED (the canonical one
+   * wins). This is safe because chip rows are placeholders auto-imported
+   * from device mappings — operator edits live on the canonical row, the
+   * orphan was created by an earlier buggy import. Returns the per-row
+   * diff so the caller can log + diagnose.
+   *
+   * Idempotent — re-running over already-canonical rows is a no-op.
+   */
+  normalizeStoredPhones(logger?: PhoneNormalizerLogger): Array<{
+    id: string
+    before: string
+    after: string
+    action: 'updated' | 'deleted_duplicate'
+  }> {
+    const rows = this.db
+      .prepare("SELECT id, phone_number FROM chips WHERE phone_number IS NOT NULL AND phone_number != ''")
+      .all() as Array<{ id: string; phone_number: string }>
+    const changes: Array<{
+      id: string
+      before: string
+      after: string
+      action: 'updated' | 'deleted_duplicate'
+    }> = []
+    const update = this.db.prepare('UPDATE chips SET phone_number = ? WHERE id = ?')
+    const findExisting = this.db.prepare('SELECT id FROM chips WHERE phone_number = ?')
+    const del = this.db.prepare('DELETE FROM chips WHERE id = ?')
+    const txn = this.db.transaction(() => {
+      for (const row of rows) {
+        const norm = normalizeBrPhone(row.phone_number, logger).phone
+        if (!norm || norm === row.phone_number) continue
+        const conflict = findExisting.get(norm) as { id: string } | undefined
+        if (conflict && conflict.id !== row.id) {
+          // Canonical row already exists — drop the orphan.
+          del.run(row.id)
+          changes.push({ id: row.id, before: row.phone_number, after: norm, action: 'deleted_duplicate' })
+        } else {
+          update.run(norm, row.id)
+          changes.push({ id: row.id, before: row.phone_number, after: norm, action: 'updated' })
+        }
+      }
+    })
+    txn()
+    return changes
   }
 
   // ── Chips CRUD ────────────────────────────────────────────────────────
