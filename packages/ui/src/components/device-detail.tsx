@@ -206,7 +206,18 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose, onProf
       .catch(() => {})
   }, [device.serial])
 
-  useEffect(() => { fetchProfiles() }, [fetchProfiles])
+  // Bug #2 fix — reset per-device state ON serial change BEFORE the new
+  // fetch resolves. Without this, navigating from POCO #1 → POCO #2 leaves
+  // the previous device's profile cards (e.g. "P11 Oralsin 1 3") rendered
+  // for ~200ms while the new fetch is in flight, leading operators to
+  // believe POCO #2 hosts P11 (which actually lives on POCO #1).
+  // Each device numbers its own users from 0 — P11 on POCO #1 ≠ P11 on POCO #2.
+  useEffect(() => {
+    setProfiles([])
+    setDeviceRooted(false)
+    setHygieneLast(null)
+    fetchProfiles()
+  }, [device.serial, fetchProfiles])
   useEffect(() => { fetchHygieneLog() }, [fetchHygieneLog])
 
   const latest = health[health.length - 1] ?? null
@@ -385,24 +396,41 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose, onProf
         {/* Android Profiles + WA Accounts */}
         {profiles.length > 0 && (
           <div>
-            <h4 className="text-xs font-medium text-zinc-400 mb-2">
-              Profiles ({profiles.length})
+            {/*
+              Bug #2 fix — render device identity in the section header so
+              operators always know which physical device's user IDs they're
+              looking at. Each device numbers its own users from 0; the same
+              "P11" label means a different profile on POCO #1 vs POCO #2.
+            */}
+            <h4 className="text-xs font-medium text-zinc-400 mb-2 flex items-center gap-2">
+              <span>Profiles ({profiles.length})</span>
+              <span className="text-[10px] font-mono text-zinc-500">
+                {device.brand} {device.model} · {device.serial.slice(-8)}
+              </span>
             </h4>
             <div className="space-y-2">
               {profiles.map((profile) => (
                 <div
-                  key={profile.id}
+                  key={`${device.serial}:${profile.id}`}
                   className="rounded-lg bg-zinc-800/60 border border-zinc-700/40 px-3 py-2.5"
                 >
                   <div className="flex items-center gap-2 mb-1.5">
-                    <div className={`h-6 w-6 rounded-full flex items-center justify-center flex-shrink-0 ${
-                      profile.running ? 'bg-emerald-500/10' : 'bg-zinc-700/50'
-                    }`}>
+                    <div
+                      className={`h-6 w-6 rounded-full flex items-center justify-center flex-shrink-0 ${
+                        profile.running ? 'bg-emerald-500/10' : 'bg-zinc-700/50'
+                      }`}
+                      title={`Profile ${profile.id} on ${device.model || device.serial}`}
+                    >
                       <span className={`text-xs font-bold ${profile.running ? 'text-emerald-400' : 'text-zinc-500'}`}>
                         {profile.id}
                       </span>
                     </div>
-                    <span className="text-xs font-medium text-zinc-300">{profile.name}</span>
+                    <span
+                      className="text-xs font-medium text-zinc-300"
+                      title={`P${profile.id} · ${profile.name} · ${device.model || device.serial}`}
+                    >
+                      P{profile.id} · {profile.name}
+                    </span>
                     <span className={`ml-auto rounded-full px-1.5 py-0.5 text-xs ${
                       profile.running
                         ? 'bg-emerald-500/10 text-emerald-400'

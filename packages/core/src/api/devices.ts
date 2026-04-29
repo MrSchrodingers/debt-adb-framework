@@ -115,11 +115,65 @@ export interface DeviceRoutesDeps {
  * `POST /:serial/scan-all-numbers` share one implementation. Keeping it
  * private to this module — the only callers are the two route handlers.
  */
+/**
+ * Helper: read foreground app from `dumpsys window`.
+ * Returns the trimmed lowercase string we use both for diagnostic display
+ * and for substring containment checks.
+ */
+async function readForegroundApp(
+  adb: { shell: (serial: string, cmd: string) => Promise<string> },
+  serial: string,
+): Promise<string> {
+  try {
+    const out = await adb.shell(
+      serial,
+      'dumpsys window | grep -E "mCurrentFocus|mFocusedApp" | head -2',
+    )
+    return out.trim()
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Best-effort WA launch with `am start -n HomeActivity` then a LAUNCHER
+ * intent fallback. Some never-opened profiles report `am start -n ...
+ * does not exist` because PackageManager hasn't indexed the activity yet
+ * — the LAUNCHER intent works in that case.
+ *
+ * Returns the raw `am start` output (or fallback output) for diagnostics.
+ * Does NOT verify foreground — callers do that.
+ */
+async function amStartWaWithFallback(
+  adb: { shell: (serial: string, cmd: string) => Promise<string> },
+  serial: string,
+  uid: number,
+  pkg: 'com.whatsapp' | 'com.whatsapp.w4b',
+): Promise<{ output: string; fallback: boolean }> {
+  const homeActivity = `${pkg}/com.whatsapp.home.ui.HomeActivity`
+  const primary = (await adb.shell(serial, `am start --user ${uid} -n ${homeActivity} 2>&1`)).trim()
+  const lower = primary.toLowerCase()
+  if (
+    lower.includes('error') ||
+    lower.includes('does not exist') ||
+    lower.includes('not found')
+  ) {
+    const fallback = (
+      await adb.shell(
+        serial,
+        `am start --user ${uid} -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p ${pkg} 2>&1`,
+      )
+    ).trim()
+    return { output: `${primary} | fallback: ${fallback}`, fallback: true }
+  }
+  return { output: primary || 'ok', fallback: false }
+}
+
 async function extractWaPhoneViaUiAutomator(
   adb: AdbBridge,
   serial: string,
   profileId: number,
-): Promise<string | null> {
+): Promise<{ phone: string | null; foreground: string; error?: string }> {
   // Helper: dump UI, find element by pattern, return center coords.
   async function findElement(pattern: RegExp): Promise<{ x: number; y: number } | null> {
     await adb.shell(serial, 'uiautomator dump /sdcard/_scan.xml')
@@ -134,9 +188,25 @@ async function extractWaPhoneViaUiAutomator(
     }
   }
 
-  // Open WA on the requested user.
-  await adb.shell(serial, `am start --user ${profileId} -n com.whatsapp/com.whatsapp.home.ui.HomeActivity`)
+  // Open WA on the requested user (with LAUNCHER intent fallback when the
+  // explicit activity is not yet known to PackageManager).
+  await amStartWaWithFallback(adb, serial, profileId, 'com.whatsapp')
   await new Promise((r) => setTimeout(r, 3000))
+
+  // Verify WA actually came to the foreground BEFORE driving UIAutomator.
+  // Without this guard we end up scraping whatever Activity happens to be
+  // on top (Settings, launcher, …) and matching unrelated text — which is
+  // exactly Bug #1 reported in production: "Detectar abre Configurações".
+  const foreground = await readForegroundApp(adb, serial)
+  if (!foreground.toLowerCase().includes('com.whatsapp')) {
+    return {
+      phone: null,
+      foreground,
+      error:
+        `WhatsApp não veio para o foreground em P${profileId}. Foreground atual: ` +
+        `${foreground.slice(0, 200) || '(vazio)'}. Pode estar não-instalado, sem login, ou bloqueado por Setup Wizard. Use "Abrir WA" antes de "Detectar".`,
+    }
+  }
 
   // Step 1: overflow menu.
   const menuBtn = await findElement(/menuitem_overflow[^>]*bounds="[^"]*"/)
@@ -178,7 +248,7 @@ async function extractWaPhoneViaUiAutomator(
   }
   await adb.shell(serial, 'input keyevent KEYCODE_HOME').catch(() => {})
 
-  return phone
+  return { phone, foreground }
 }
 
 export function registerDeviceRoutes(
@@ -437,10 +507,29 @@ export function registerDeviceRoutes(
         return reply.status(500).send({ error: `Nao conseguiu destravar tela do P${uid}` })
       }
 
-      const phone = await extractWaPhoneViaUiAutomator(adb, serial, uid)
+      const scan = await extractWaPhoneViaUiAutomator(adb, serial, uid)
 
       // Return to user 0 (standardized exit)
       await ensureUserZero(adb, serial)
+
+      // If the WA foreground guard failed, surface a 400 with the diagnostic
+      // hint instead of pretending the scan ran. This is what Bug #1 needs:
+      // operator clicked "Detectar" on a profile where WA never came up,
+      // UIAutomator scraped Settings, returned nothing meaningful.
+      if (scan.error) {
+        return reply.status(400).send({
+          serial,
+          profile_id: uid,
+          phone: null,
+          persisted: false,
+          chip_created: false,
+          error: scan.error,
+          hint: 'Use "Abrir WA no device" primeiro para garantir que o WhatsApp esteja em primeiro plano.',
+          foreground: scan.foreground,
+        })
+      }
+
+      const phone = scan.phone
 
       // Persist + auto-create chip when phone was successfully extracted.
       let persisted = false
@@ -699,7 +788,17 @@ export function registerDeviceRoutes(
             continue
           }
 
-          const phone = await extractWaPhoneViaUiAutomator(adb, serial, uid)
+          const scan = await extractWaPhoneViaUiAutomator(adb, serial, uid)
+          if (scan.error) {
+            results.push({
+              profile_id: uid,
+              phone: null,
+              persisted: false,
+              error: scan.error,
+            })
+            continue
+          }
+          const phone = scan.phone
           let persisted = false
           if (phone && deps.waMapper) {
             try {
@@ -1090,22 +1189,50 @@ export function registerDeviceRoutes(
     //    `am start --user N` opens the activity in user N's container even
     //    when the foreground user is 0. But on locked screens nothing is
     //    visible, so still wake the device.
+    //
+    //    Bug #3 fix: `input keyevent 82` (MENU) does NOT dismiss the
+    //    keyguard on modern Android (12+). Replace with a swipe-up gesture
+    //    after WAKEUP + locksettings disable. This is what the rest of the
+    //    codebase (`unlockScreen`) does for hygienize.
     try { await adb.shell(serial, 'input keyevent KEYCODE_WAKEUP') } catch { /* ignore */ }
     try { await adb.shell(serial, 'locksettings set-disabled true') } catch { /* ignore */ }
-    try { await adb.shell(serial, 'input keyevent 82') } catch { /* ignore */ }
-    await new Promise(r => setTimeout(r, 1000))
+    try { await adb.shell(serial, 'input swipe 540 1500 540 500 100') } catch { /* ignore */ }
+    await new Promise(r => setTimeout(r, 800))
 
-    // 5. Launch WA HomeActivity in the target user
-    const homeActivity = pkg === 'com.whatsapp'
-      ? 'com.whatsapp/com.whatsapp.home.ui.HomeActivity'
-      : 'com.whatsapp.w4b/com.whatsapp.home.ui.HomeActivity'
+    // 5. Launch WA HomeActivity in the target user, with LAUNCHER intent
+    //    fallback when PackageManager doesn't yet know the explicit
+    //    activity (common for never-opened profiles — same path used by
+    //    extractWaPhoneViaUiAutomator above).
     try {
-      steps.am_start = (
-        await adb.shell(serial, `am start --user ${uid} -n ${homeActivity}`)
-      ).trim() || 'ok'
+      const launch = await amStartWaWithFallback(adb, serial, uid, pkg)
+      steps.am_start = launch.output
+      if (launch.fallback) {
+        steps.am_start_fallback_used = 'true'
+      }
     } catch (err) {
       return reply.status(500).send({
         error: `Failed to launch ${pkg}: ${(err as Error).message}`,
+        steps,
+      })
+    }
+
+    // 6. Verify foreground. If WA didn't come up (never-opened profile,
+    //    Setup Wizard intercept, app missing for that user), surface a
+    //    diagnostic 500 instead of returning ok: true while the operator
+    //    sees a black launcher. Bug #3: previously we always returned 200.
+    await new Promise(r => setTimeout(r, 1500))
+    const fg = await readForegroundApp(adb, serial)
+    steps.foreground_check = fg.slice(0, 200)
+    if (!fg.toLowerCase().includes(pkg)) {
+      return reply.status(500).send({
+        error: `${pkg} não chegou ao foreground em P${uid}. Foreground atual: ${fg.slice(0, 200) || '(vazio)'}.`,
+        hint:
+          'Possíveis causas: (a) app não instalado para esse user, (b) primeira execução requer interação manual no device, ' +
+          '(c) Setup Wizard interceptou — tente "Bypass Setup Wizard" e reabrir.',
+        serial,
+        profile_id: uid,
+        package_name: pkg,
+        rooted,
         steps,
       })
     }

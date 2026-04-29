@@ -162,6 +162,8 @@ describe('POST /api/v1/devices/:serial/profiles/:id/launch-wa', () => {
       { match: 'su -c id', response: 'uid=0(root) gid=0(root)' },
       { match: 'am start-user', response: 'Success' },
       { match: 'am start --user', response: 'Starting: Intent { act=android.intent.action.MAIN }' },
+      // Foreground verification (Bug #3 fix) — fake WA in front
+      { match: 'dumpsys window', response: 'mCurrentFocus=Window{abc u0 com.whatsapp/com.whatsapp.home.ui.HomeActivity}' },
     ])
     shell = adb.shell as unknown as ReturnType<typeof vi.fn>
     server = await buildServer(adb)
@@ -191,7 +193,13 @@ describe('POST /api/v1/devices/:serial/profiles/:id/launch-wa', () => {
     const cmds: string[] = (shell.mock.calls as Array<[string, string]>).map((c) => c[1])
     expect(cmds.some((c) => c.includes('am start-user 10'))).toBe(true)
     expect(cmds.some((c) => c.includes('am start --user 10') && c.includes('com.whatsapp/'))).toBe(true)
-  })
+    // Bug #3 fix: swipe-up gesture must replace input keyevent 82 for unlock
+    expect(cmds.some((c) => c.includes('input swipe 540 1500 540 500'))).toBe(true)
+    expect(cmds.some((c) => c === 'input keyevent 82')).toBe(false)
+    // Foreground check must run
+    expect(cmds.some((c) => c.includes('dumpsys window'))).toBe(true)
+    expect(body.steps.foreground_check).toContain('com.whatsapp')
+  }, 15_000)
 
   it('rejects invalid package_name via Zod', async () => {
     const res = await server.inject({
@@ -211,6 +219,123 @@ describe('POST /api/v1/devices/:serial/profiles/:id/launch-wa', () => {
     expect(res.statusCode).toBe(200)
     const body = res.json() as { package_name: string }
     expect(body.package_name).toBe('com.whatsapp')
+  }, 15_000)
+
+  // Bug #3 — never-opened profile: HomeActivity unknown → fall back to LAUNCHER
+  it('falls back to LAUNCHER intent when HomeActivity does not exist for the user', async () => {
+    const adb = buildAdb([
+      { match: 'pm list users', response: POCO1_PM_LIST_USERS },
+      { match: 'su -c id', response: 'uid=0(root) gid=0(root)' },
+      { match: 'am start-user', response: 'Success' },
+      // Explicit `am start -n` fails ("does not exist") for never-opened profile
+      {
+        match: 'am start --user 10 -n com.whatsapp/',
+        response: 'Error: Activity class {com.whatsapp/com.whatsapp.home.ui.HomeActivity} does not exist.',
+      },
+      // LAUNCHER intent fallback succeeds
+      {
+        match: 'am start --user 10 -a android.intent.action.MAIN',
+        response: 'Starting: Intent { act=android.intent.action.MAIN cat=[android.intent.category.LAUNCHER] pkg=com.whatsapp }',
+      },
+      // After fallback, WA is in foreground
+      { match: 'dumpsys window', response: 'mCurrentFocus=Window{xyz u0 com.whatsapp/com.whatsapp.home.ui.HomeActivity}' },
+    ])
+    const shellLocal = adb.shell as unknown as ReturnType<typeof vi.fn>
+    const localServer = await buildServer(adb)
+    const res = await localServer.inject({
+      method: 'POST',
+      url: '/api/v1/devices/POCO1/profiles/10/launch-wa',
+      payload: { package_name: 'com.whatsapp' },
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json() as { ok: boolean; steps: Record<string, string> }
+    expect(body.ok).toBe(true)
+    expect(body.steps.am_start_fallback_used).toBe('true')
+    const cmds: string[] = (shellLocal.mock.calls as Array<[string, string]>).map((c) => c[1])
+    expect(cmds.some((c) => c.includes('-a android.intent.action.MAIN') && c.includes('-c android.intent.category.LAUNCHER'))).toBe(true)
+  }, 15_000)
+
+  // Bug #3 — when WA never reaches foreground, surface diagnostic 500
+  it('returns 500 with diagnostic when WhatsApp does not come to foreground', async () => {
+    const adb = buildAdb([
+      { match: 'pm list users', response: POCO1_PM_LIST_USERS },
+      { match: 'su -c id', response: 'uid=0(root) gid=0(root)' },
+      { match: 'am start-user', response: 'Success' },
+      { match: 'am start --user', response: 'Starting: Intent' },
+      // Foreground is the launcher, NOT WA
+      { match: 'dumpsys window', response: 'mCurrentFocus=Window{aaa u0 com.miui.home/com.miui.home.launcher.Launcher}' },
+    ])
+    const localServer = await buildServer(adb)
+    const res = await localServer.inject({
+      method: 'POST',
+      url: '/api/v1/devices/POCO1/profiles/10/launch-wa',
+      payload: { package_name: 'com.whatsapp' },
+    })
+    expect(res.statusCode).toBe(500)
+    const body = res.json() as { error: string; hint: string; steps: Record<string, string> }
+    expect(body.error).toContain('com.whatsapp')
+    expect(body.error).toContain('foreground')
+    expect(body.hint).toContain('Setup Wizard')
+    expect(body.steps.foreground_check).toContain('com.miui.home')
+  }, 15_000)
+})
+
+// ── POST /scan-number — Bug #1: refuse when WA isn't foreground ─────────
+
+describe('POST /api/v1/devices/:serial/profiles/:id/scan-number', () => {
+  it('returns 400 with diagnostic hint when WhatsApp does not reach foreground', async () => {
+    // Stateful adb mock: tracks the active Android user across `am switch-user`
+    // calls so `switchUserVerified` and `ensureUserZero` (called BEFORE and
+    // AFTER the scan) both converge instead of polling for 15s.
+    let currentUser = 0
+    const shellLocal = vi.fn(async (_serial: string, cmd: string) => {
+      if (cmd.includes('am get-current-user')) return String(currentUser)
+      const switchMatch = cmd.match(/am switch-user (\d+)/)
+      if (switchMatch) {
+        currentUser = Number(switchMatch[1])
+        return ''
+      }
+      if (cmd.includes('isKeyguardShowing')) return 'isKeyguardShowing=false'
+      if (cmd.includes('am start --user 10 -n com.whatsapp/')) {
+        return 'Starting: Intent { act=android.intent.action.MAIN }'
+      }
+      if (cmd.includes('dumpsys window | grep -E "mCurrentFocus|mFocusedApp"')) {
+        // Bug #1 reproduction: foreground is Settings, not WhatsApp
+        return 'mCurrentFocus=Window{abc u0 com.android.settings/com.android.settings.Settings}'
+      }
+      return ''
+    })
+    const adb = {
+      shell: shellLocal,
+      discover: vi.fn().mockResolvedValue([]),
+      health: vi.fn(),
+      screenshot: vi.fn(),
+    } as unknown as AdbBridge
+
+    const server = await buildServer(adb)
+    const res = await server.inject({
+      method: 'POST',
+      url: '/api/v1/devices/POCO1/profiles/10/scan-number',
+    })
+    expect(res.statusCode).toBe(400)
+    const body = res.json() as { phone: null; persisted: boolean; error: string; hint: string; foreground: string }
+    expect(body.phone).toBeNull()
+    expect(body.persisted).toBe(false)
+    expect(body.error).toContain('foreground')
+    expect(body.hint).toContain('Abrir WA')
+    expect(body.foreground).toContain('com.android.settings')
+    // Should have returned to user 0 after the failed scan
+    expect(currentUser).toBe(0)
+  }, 20_000)
+
+  it('rejects invalid package query parameter', async () => {
+    const adb = buildAdb([])
+    const server = await buildServer(adb)
+    const res = await server.inject({
+      method: 'POST',
+      url: '/api/v1/devices/POCO1/profiles/10/scan-number?package=com.evil',
+    })
+    expect(res.statusCode).toBe(400)
   })
 })
 
