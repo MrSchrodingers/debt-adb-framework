@@ -12,6 +12,19 @@ import type {
  * Three scenarios, three layouts. Deterministic — same input ⇒ same output ⇒
  * snapshot-friendly. NEVER calls into IO. The publisher composes these into
  * full intents (with dedup keys) before handing them to the client.
+ *
+ * IMPORTANT — output format split:
+ *   - `phone_fail`     → HTML (Pipedrive Activity `note` field renders HTML
+ *                        from a constrained safelist; Markdown is shown raw).
+ *   - `deal_all_fail`  → HTML (same reason).
+ *   - `pasta_summary`  → Markdown (Pipedrive Note `content` renders Markdown
+ *                        beautifully — confirmed visually).
+ *
+ * Pipedrive Activity HTML safelist (per docs / observed behavior):
+ *   <p> <br> <strong> <em> <u> <ul> <ol> <li> <a> <table> <tr> <td> <th>
+ *   <thead> <tbody>
+ * Tags outside this list are stripped (notably <h1>..<h6>, <code>). We only
+ * use safelist tags. Bullets are emitted as &bull; entities inside <p><br>.
  */
 
 const FALLBACK_PHONE = '(número desconhecido)'
@@ -19,7 +32,7 @@ const FALLBACK_PHONE = '(número desconhecido)'
 /**
  * Build a Pipedrive deal URL from the configured PIPEDRIVE_COMPANY_DOMAIN.
  * Returns null when the domain is not configured (or empty), so callers can
- * gracefully omit the link from their Markdown layout.
+ * gracefully omit the link from their layout.
  *
  * Domain format: subdomain prefix only — e.g. `debt-5188cf` →
  * `https://debt-5188cf.pipedrive.com/deal/{id}`. We sanitize the input to a
@@ -77,7 +90,27 @@ export function strategyLabel(source: string): string {
   return source
 }
 
-// ── Scenario A — per-phone fail Activity ────────────────────────────────
+/**
+ * HTML-escape any user-provided string before interpolating into an HTML
+ * payload destined for Pipedrive. Returns empty string for nullish inputs so
+ * concatenation cannot accidentally introduce the literal "null"/"undefined".
+ *
+ * Covers the 5 chars that can break HTML structure: & < > " '. Entities use
+ * named refs where they exist (&amp; &lt; &gt; &quot;) and the numeric ref
+ * for the apostrophe (&#39;) which is the most portable form (some legacy
+ * sanitizers still drop &apos;).
+ */
+export function escapeHtml(value: string | null | undefined): string {
+  if (value === null || value === undefined) return ''
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+// ── Scenario A — per-phone fail Activity (HTML) ─────────────────────────
 
 export function buildPhoneFailActivity(
   intent: PipedrivePhoneFailIntent,
@@ -85,25 +118,38 @@ export function buildPhoneFailActivity(
 ): PipedriveActivityIntent {
   const pretty = formatBrPhonePretty(intent.phone)
   const dealUrl = buildDealUrl(intent.deal_id, companyDomain)
-  const lines: string[] = []
+  // All user-facing values get escaped before HTML interpolation.
+  const prettyEsc = escapeHtml(pretty)
+  const pastaEsc = escapeHtml(intent.pasta)
+  const columnEsc = escapeHtml(intent.column)
+  const strategyEsc = escapeHtml(strategyLabel(intent.strategy))
+  const jobIdEsc = escapeHtml(intent.job_id)
+  const occurredEsc = escapeHtml(intent.occurred_at)
+
+  const parts: string[] = []
   if (dealUrl) {
-    lines.push(`**Deal**: [#${intent.deal_id}](${dealUrl})`, '')
+    // dealUrl is built from sanitized inputs (dealId integer, domain regex), so
+    // it does not require escaping — but we still escape for defense-in-depth.
+    parts.push(
+      `<p><strong>Deal:</strong> <a href="${escapeHtml(dealUrl)}">#${intent.deal_id}</a> &middot; <strong>Pasta:</strong> ${pastaEsc}</p>`,
+    )
+  } else {
+    parts.push(`<p><strong>Pasta:</strong> ${pastaEsc}</p>`)
   }
-  lines.push(
-    `**Verificação adb-precheck — ${intent.occurred_at}**`,
-    '',
-    '| Campo | Valor |',
-    '|---|---|',
-    `| Telefone | \`${pretty}\` |`,
-    `| Coluna em prov_consultas | \`${intent.column}\` |`,
-    `| Resultado | ❌ NÃO localizado no WhatsApp |`,
-    `| Validado via | ${strategyLabel(intent.strategy)} |`,
-    `| Job ID | \`${intent.job_id}\` |`,
+  parts.push(`<p><strong>Verificação adb-precheck</strong> &middot; ${occurredEsc}</p>`)
+  parts.push(
+    '<table>'
+      + `<tr><td><strong>Telefone</strong></td><td>${prettyEsc}</td></tr>`
+      + `<tr><td><strong>Coluna</strong></td><td>${columnEsc}</td></tr>`
+      + '<tr><td><strong>Resultado</strong></td><td>❌ NÃO localizado no WhatsApp</td></tr>'
+      + `<tr><td><strong>Validado via</strong></td><td>${strategyEsc}</td></tr>`
+      + `<tr><td><strong>Job ID</strong></td><td>${jobIdEsc}</td></tr>`
+      + '</table>',
   )
   if (intent.cache_ttl_days) {
-    lines.push('', `_Validation cache TTL: ${intent.cache_ttl_days} dias_`)
+    parts.push(`<p><em>Cache TTL: ${intent.cache_ttl_days} dias</em></p>`)
   }
-  const note = lines.join('\n')
+  const note = parts.join('')
 
   return {
     kind: 'activity',
@@ -118,47 +164,60 @@ export function buildPhoneFailActivity(
   }
 }
 
-// ── Scenario B — deal-level all-fail Activity ───────────────────────────
+// ── Scenario B — deal-level all-fail Activity (HTML) ────────────────────
 
 export function buildDealAllFailActivity(
   intent: PipedriveDealAllFailIntent,
   companyDomain?: string | null,
 ): PipedriveActivityIntent {
   const dealUrl = buildDealUrl(intent.deal_id, companyDomain)
+  const pastaEsc = escapeHtml(intent.pasta)
+  const motivoEsc = escapeHtml(intent.motivo)
+  const jobIdEsc = escapeHtml(intent.job_id)
+  const occurredEsc = escapeHtml(intent.occurred_at)
+
   const rows = intent.phones
-    .map(
-      (p) =>
-        `| \`${p.column}\` | \`${formatBrPhonePretty(p.phone)}\` | ${
-          p.outcome === 'invalid'
-            ? '❌ Não existe'
-            : p.outcome === 'error'
-              ? '⚠️ Erro de validação'
-              : '✅ OK'
-        } |`,
-    )
-    .join('\n')
-  const noteLines: string[] = []
+    .map((p) => {
+      const colEsc = escapeHtml(p.column)
+      const phoneEsc = escapeHtml(formatBrPhonePretty(p.phone))
+      const result =
+        p.outcome === 'invalid'
+          ? '❌ Não existe'
+          : p.outcome === 'error'
+            ? '⚠️ Erro de validação'
+            : '✅ OK'
+      return `<tr><td>${colEsc}</td><td>${phoneEsc}</td><td>${result}</td></tr>`
+    })
+    .join('')
+
+  const parts: string[] = []
   if (dealUrl) {
-    noteLines.push(`**Deal**: [#${intent.deal_id}](${dealUrl})`, '')
+    parts.push(
+      `<p><strong>Deal:</strong> <a href="${escapeHtml(dealUrl)}">#${intent.deal_id}</a> &middot; <strong>Pasta:</strong> ${pastaEsc}</p>`,
+    )
+  } else {
+    parts.push(`<p><strong>Pasta:</strong> ${pastaEsc}</p>`)
   }
-  noteLines.push(
-    '## ATENÇÃO — Deal arquivado em `prov_consultas_snapshot`',
-    '',
-    `**Verificação completa — ${intent.occurred_at}**`,
-    '',
-    '| Coluna | Telefone | Resultado |',
-    '|---|---|---|',
-    rows,
-    '',
-    `**Motivo arquival**: \`${intent.motivo}\``,
-    `**Job ID**: \`${intent.job_id}\``,
-    '',
-    '### Próximos passos sugeridos',
-    '- Contato manual via canais alternativos (e-mail, SMS, telefone fixo)',
-    '- Skip tracing externo',
-    '- Verificar dados cadastrais com a contraparte',
+  // No <code> tag — not in the safelist; use <strong> as visual emphasis instead.
+  parts.push(`<p>🚨 <strong>ATENÇÃO</strong> — Deal arquivado em <strong>prov_consultas_snapshot</strong></p>`)
+  parts.push(`<p><strong>Verificação completa</strong> &middot; ${occurredEsc}</p>`)
+  parts.push(
+    '<table>'
+      + '<thead><tr><th>Coluna</th><th>Telefone</th><th>Resultado</th></tr></thead>'
+      + `<tbody>${rows}</tbody>`
+      + '</table>',
   )
-  const note = noteLines.join('\n')
+  parts.push(`<p><strong>Motivo arquival:</strong> ${motivoEsc}</p>`)
+  parts.push(`<p><strong>Job ID:</strong> ${jobIdEsc}</p>`)
+  parts.push('<p><strong>Próximos passos sugeridos:</strong></p>')
+  parts.push(
+    '<p>'
+      + '&bull; Contato manual via canais alternativos (e-mail, SMS, telefone fixo)<br>'
+      + '&bull; Skip tracing externo<br>'
+      + '&bull; Verificar dados cadastrais com a contraparte'
+      + '</p>',
+  )
+  const note = parts.join('')
 
   return {
     kind: 'activity',
@@ -173,7 +232,10 @@ export function buildDealAllFailActivity(
   }
 }
 
-// ── Scenario C — pasta sweep Note ───────────────────────────────────────
+// ── Scenario C — pasta sweep Note (Markdown — UNCHANGED) ────────────────
+//
+// Pipedrive Note `content` field renders Markdown correctly — headings, tables,
+// lists all show as expected. Do NOT migrate this to HTML.
 
 function pct(numerator: number, denominator: number): string {
   if (denominator <= 0) return '0.0'

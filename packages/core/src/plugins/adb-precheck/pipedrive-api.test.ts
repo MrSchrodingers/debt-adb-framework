@@ -174,7 +174,7 @@ describe('plugin pipedrive API — preview', () => {
     env.db.close()
   })
 
-  it('POST /pipedrive/preview renders phone_fail Markdown without persisting', async () => {
+  it('POST /pipedrive/preview renders phone_fail HTML without persisting', async () => {
     const res = await server.inject({
       method: 'POST',
       url: `${PREFIX}/pipedrive/preview`,
@@ -187,7 +187,8 @@ describe('plugin pipedrive API — preview', () => {
     expect(res.statusCode).toBe(200)
     const body = res.json() as { endpoint: string; markdownBody: string; dealUrl: string }
     expect(body.endpoint).toBe('/activities')
-    expect(body.markdownBody).toContain('[#143611](https://debt-5188cf.pipedrive.com/deal/143611)')
+    // phone_fail now uses HTML — preview field name kept for back-compat with UI.
+    expect(body.markdownBody).toContain('<a href="https://debt-5188cf.pipedrive.com/deal/143611">#143611</a>')
     expect(body.markdownBody).toContain('5543991938235'.slice(-4))
     expect(body.dealUrl).toBe('https://debt-5188cf.pipedrive.com/deal/143611')
     expect(env.store.list({}).total).toBe(0)
