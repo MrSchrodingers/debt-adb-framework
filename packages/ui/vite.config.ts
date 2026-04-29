@@ -19,6 +19,11 @@ export default defineConfig({
       registerType: 'autoUpdate',
       manifest: false, // We provide our own manifest.webmanifest in public/
       workbox: {
+        // Bumped when icons changed (black-bg → transparent-bg). Combined with
+        // `cleanupOutdatedCaches: true`, any precache or runtime cache from
+        // an older SW build gets dropped on activate. Bump again if icons or
+        // any precached asset semantics change.
+        cacheId: 'dispatch-v2',
         // Order matters — first match wins. Bypass binary/streaming endpoints
         // BEFORE the generic /api/ NetworkFirst rule, otherwise NS_BINDING_ABORTED
         // happens when SW caches a partial PNG/stream response.

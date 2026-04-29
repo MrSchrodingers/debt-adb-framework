@@ -1,8 +1,22 @@
 import { useState, useEffect, useCallback } from 'react'
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts'
-import { X, Camera, RotateCcw, RefreshCw, Battery, Thermometer, MemoryStick, HardDrive, Phone, Sun, Sparkles, ScanLine } from 'lucide-react'
+import { X, Camera, RotateCcw, RefreshCw, Battery, Thermometer, MemoryStick, HardDrive, Phone, Sun, Sparkles, ScanLine, Smartphone, AlertTriangle } from 'lucide-react'
 import { CORE_URL, authHeaders } from '../config'
 import type { Alert, DeviceRecord, HealthSnapshot, WhatsAppAccount } from '../types'
+
+type ProfilePackageState =
+  | 'not_installed'
+  | 'installed_never_opened'
+  | 'opened_not_logged_in'
+  | 'logged_in'
+  | 'unknown'
+
+interface ProfilePackageInfo {
+  package_name: 'com.whatsapp' | 'com.whatsapp.w4b'
+  state: ProfilePackageState
+  phone_number: string | null
+  last_extracted_at: string | null
+}
 
 interface DeviceDetailProps {
   device: DeviceRecord
@@ -29,9 +43,15 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose, onProf
     running: boolean
     whatsapp: { installed: boolean; phone: string | null; active?: boolean }
     whatsappBusiness: { installed: boolean; phone: string | null; active?: boolean }
+    /** Backend may not include this field (legacy clients/tests) — treat as []. */
+    packages?: ProfilePackageInfo[]
   }
   const [profiles, setProfiles] = useState<ProfileInfo[]>([])
+  const [deviceRooted, setDeviceRooted] = useState<boolean>(false)
   const [scanningProfile, setScanningProfile] = useState<string | null>(null)
+  const [launchingProfile, setLaunchingProfile] = useState<string | null>(null)
+  const [bypassConfirm, setBypassConfirm] = useState<number | null>(null)
+  const [bypassingProfile, setBypassingProfile] = useState<number | null>(null)
 
   interface HygieneLogEntry {
     id: string
@@ -46,9 +66,93 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose, onProf
   const fetchProfiles = useCallback(() => {
     fetch(`${CORE_URL}/api/v1/devices/${device.serial}/profiles`, { headers: authHeaders() })
       .then(r => r.ok ? r.json() : null)
-      .then(data => { if (data?.profiles) setProfiles(data.profiles) })
+      .then(data => {
+        if (data?.profiles) setProfiles(data.profiles)
+        if (typeof data?.rooted === 'boolean') setDeviceRooted(data.rooted)
+      })
       .catch(() => {})
   }, [device.serial])
+
+  const launchWaInProfile = useCallback(
+    async (profileId: number, pkg: 'com.whatsapp' | 'com.whatsapp.w4b') => {
+      const key = `${profileId}:${pkg}`
+      setLaunchingProfile(key)
+      setActionResult(null)
+      try {
+        const res = await fetch(
+          `${CORE_URL}/api/v1/devices/${device.serial}/profiles/${profileId}/launch-wa`,
+          {
+            method: 'POST',
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ package_name: pkg }),
+          },
+        )
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}))
+          setActionResult({
+            type: 'error',
+            message: `Falha ao abrir WA em P${profileId}: ${(err as { error?: string }).error ?? res.status}`,
+          })
+          return
+        }
+        setActionResult({
+          type: 'success',
+          message: `WA aberto em P${profileId}. Escaneie o QR no device.`,
+        })
+        fetchProfiles()
+      } catch (e) {
+        setActionResult({
+          type: 'error',
+          message: `Erro: ${e instanceof Error ? e.message : String(e)}`,
+        })
+      } finally {
+        setLaunchingProfile(null)
+        setTimeout(() => setActionResult(null), 8000)
+      }
+    },
+    [device.serial, fetchProfiles],
+  )
+
+  const bypassSetupWizard = useCallback(
+    async (profileId: number) => {
+      setBypassingProfile(profileId)
+      setBypassConfirm(null)
+      setActionResult(null)
+      try {
+        const res = await fetch(
+          `${CORE_URL}/api/v1/devices/${device.serial}/profiles/${profileId}/bypass-setup-wizard`,
+          {
+            method: 'POST',
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ force: true }),
+          },
+        )
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}))
+          setActionResult({
+            type: 'error',
+            message: `Bypass P${profileId} falhou: ${(err as { error?: string }).error ?? res.status}`,
+          })
+          return
+        }
+        const data = (await res.json()) as { now_running?: boolean }
+        setActionResult({
+          type: 'success',
+          message: `P${profileId}: setup-wizard bypassed (running=${String(data.now_running ?? false)})`,
+        })
+        fetchProfiles()
+      } catch (e) {
+        setActionResult({
+          type: 'error',
+          message: `Erro: ${e instanceof Error ? e.message : String(e)}`,
+        })
+      } finally {
+        setBypassingProfile(null)
+        setTimeout(() => setActionResult(null), 10000)
+      }
+    },
+    [device.serial, fetchProfiles],
+  )
 
   const scanProfilePhone = useCallback(
     async (profileId: number, pkg: 'com.whatsapp' | 'com.whatsapp.w4b') => {
@@ -311,24 +415,68 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose, onProf
                     <ProfileWaSlot
                       label="WA"
                       info={profile.whatsapp}
+                      pkgState={profile.packages?.find((p) => p.package_name === 'com.whatsapp')}
                       onScan={
                         profile.whatsapp.installed && !profile.whatsapp.phone
                           ? () => void scanProfilePhone(profile.id, 'com.whatsapp')
                           : undefined
                       }
+                      onLaunch={() => void launchWaInProfile(profile.id, 'com.whatsapp')}
                       scanning={scanningProfile === `${profile.id}:com.whatsapp`}
+                      launching={launchingProfile === `${profile.id}:com.whatsapp`}
                     />
                     <ProfileWaSlot
                       label="WAB"
                       info={profile.whatsappBusiness}
+                      pkgState={profile.packages?.find((p) => p.package_name === 'com.whatsapp.w4b')}
                       onScan={
                         profile.whatsappBusiness.installed && !profile.whatsappBusiness.phone
                           ? () => void scanProfilePhone(profile.id, 'com.whatsapp.w4b')
                           : undefined
                       }
+                      onLaunch={() => void launchWaInProfile(profile.id, 'com.whatsapp.w4b')}
                       scanning={scanningProfile === `${profile.id}:com.whatsapp.w4b`}
+                      launching={launchingProfile === `${profile.id}:com.whatsapp.w4b`}
                     />
                   </div>
+                  {/* Setup-wizard bypass — destructive, root-only, requires confirmation */}
+                  {deviceRooted && !profile.running ? (
+                    <div className="pl-8 mt-2 flex items-center gap-2 flex-wrap">
+                      {bypassConfirm === profile.id ? (
+                        <>
+                          <span className="text-[10px] text-rose-300 inline-flex items-center gap-1">
+                            <AlertTriangle className="h-3 w-3" />
+                            Tem certeza? Esta ação desabilita pacotes do Setup Wizard.
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => void bypassSetupWizard(profile.id)}
+                            disabled={bypassingProfile === profile.id}
+                            className="inline-flex items-center gap-1 rounded-md bg-rose-600 hover:bg-rose-500 px-2 py-0.5 text-[10px] text-white disabled:opacity-50"
+                          >
+                            {bypassingProfile === profile.id ? 'Aplicando…' : 'Confirmar bypass'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setBypassConfirm(null)}
+                            className="inline-flex items-center gap-1 rounded-md bg-zinc-700 hover:bg-zinc-600 px-2 py-0.5 text-[10px] text-zinc-200"
+                          >
+                            Cancelar
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setBypassConfirm(profile.id)}
+                          title="Pula o Setup Wizard que está bloqueando o profile (root)"
+                          className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 px-1.5 py-0.5 text-[10px] text-amber-300"
+                        >
+                          <AlertTriangle className="h-3 w-3" />
+                          Forçar pular Setup Wizard (root)
+                        </button>
+                      )}
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -584,35 +732,111 @@ function ActionBtn({ icon: Icon, label, loading, onClick, danger }: { icon: type
   )
 }
 
+function StateBadge({ state }: { state: ProfilePackageState }) {
+  const map: Record<ProfilePackageState, { label: string; cls: string; title: string }> = {
+    not_installed: {
+      label: 'não instalado',
+      cls: 'bg-zinc-700/40 text-zinc-500 border-zinc-700/40',
+      title: 'Pacote não instalado para este profile',
+    },
+    installed_never_opened: {
+      label: 'nunca aberto',
+      cls: 'bg-zinc-700/40 text-zinc-300 border-zinc-600/40',
+      title: 'WhatsApp instalado mas nunca foi aberto neste profile',
+    },
+    opened_not_logged_in: {
+      label: 'aberto, sem login',
+      cls: 'bg-amber-500/10 text-amber-300 border-amber-500/30',
+      title: 'WhatsApp foi aberto mas operador ainda não fez login (sem QR)',
+    },
+    logged_in: {
+      label: 'logado',
+      cls: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30',
+      title: 'Conta WhatsApp ativa neste profile',
+    },
+    unknown: {
+      label: 'estado desconhecido',
+      cls: 'bg-zinc-700/40 text-zinc-400 border-zinc-700/40',
+      title: 'Sem root: não é possível distinguir entre "nunca aberto" e "aberto sem login"',
+    },
+  }
+  const info = map[state]
+  return (
+    <span
+      title={info.title}
+      className={`inline-flex items-center rounded px-1 py-0.5 text-[9px] font-medium border ${info.cls}`}
+    >
+      {info.label}
+    </span>
+  )
+}
+
 function ProfileWaSlot({
   label,
   info,
+  pkgState,
   onScan,
+  onLaunch,
   scanning,
+  launching,
 }: {
   label: string
   info: { installed: boolean; phone: string | null; active?: boolean }
+  /** Enriched per-package state from /profiles. Optional for backward-compat. */
+  pkgState?: ProfilePackageInfo
   /** When provided, an inline "Detectar número" button is rendered when phone is missing. */
   onScan?: () => void
+  /** When the package is installed-but-never-opened/logged-in we show "Abrir WA". */
+  onLaunch?: () => void
   scanning?: boolean
+  launching?: boolean
 }) {
   if (!info.installed) {
     return (
       <div className="flex items-center gap-1.5 text-xs text-zinc-600">
         <span className="font-medium">{label}</span>
         <span>—</span>
+        {pkgState ? <StateBadge state={pkgState.state} /> : null}
       </div>
     )
   }
+  // Show launch button for `installed_never_opened` / `opened_not_logged_in`.
+  // Also show for `unknown` (non-rooted) since that's our only signal that
+  // operator may need to log in.
+  const canLaunch =
+    onLaunch !== undefined &&
+    pkgState !== undefined &&
+    (pkgState.state === 'installed_never_opened' ||
+      pkgState.state === 'opened_not_logged_in' ||
+      (pkgState.state === 'unknown' && !pkgState.phone_number))
   return (
-    <div className="flex items-center gap-1.5 text-xs">
+    <div className="flex items-center gap-1.5 text-xs flex-wrap">
       <div className={`h-1.5 w-1.5 rounded-full flex-shrink-0 ${info.active ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
       <span className="font-medium text-zinc-400">{label}</span>
       {info.phone ? (
-        <span className="font-mono text-emerald-400">{info.phone}</span>
+        <>
+          <span className="font-mono text-emerald-400">{info.phone}</span>
+          {pkgState ? <StateBadge state={pkgState.state} /> : null}
+        </>
       ) : (
         <>
-          <span className="text-amber-400 italic">sem conta</span>
+          {pkgState ? (
+            <StateBadge state={pkgState.state} />
+          ) : (
+            <span className="text-amber-400 italic">sem conta</span>
+          )}
+          {canLaunch ? (
+            <button
+              type="button"
+              onClick={onLaunch}
+              disabled={launching}
+              title="Abre o WhatsApp no profile para o operador escanear o QR"
+              className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 px-1.5 py-0.5 text-[10px] text-emerald-300 disabled:opacity-50"
+            >
+              <Smartphone className="h-3 w-3" />
+              {launching ? 'Abrindo…' : 'Abrir WA no device'}
+            </button>
+          ) : null}
           {onScan ? (
             <button
               type="button"

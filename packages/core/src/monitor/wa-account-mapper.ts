@@ -65,6 +65,33 @@ export class WaAccountMapper {
     return rows.map(rowToAccount)
   }
 
+  /**
+   * Same as `getAccountsByDevice` but exposes the `updated_at` timestamp
+   * as `updatedAt`, used by `GET /devices/:serial/profiles` to surface
+   * `last_extracted_at` per (profile, package).
+   */
+  getAccountsRawByDevice(serial: string): Array<{
+    profileId: number
+    packageName: WhatsAppAccount['packageName']
+    phoneNumber: string | null
+    updatedAt: string
+  }> {
+    const rows = this.db
+      .prepare('SELECT profile_id, package_name, phone_number, updated_at FROM whatsapp_accounts WHERE device_serial = ?')
+      .all(serial) as Array<{
+        profile_id: number
+        package_name: WhatsAppAccount['packageName']
+        phone_number: string | null
+        updated_at: string
+      }>
+    return rows.map((r) => ({
+      profileId: r.profile_id,
+      packageName: r.package_name,
+      phoneNumber: r.phone_number,
+      updatedAt: r.updated_at,
+    }))
+  }
+
   getAccountByNumber(phoneNumber: string): WhatsAppAccount | null {
     const row = this.db
       .prepare('SELECT * FROM whatsapp_accounts WHERE phone_number = ?')

@@ -9,6 +9,7 @@ import {
   type WaAccountMapper,
 } from '../monitor/index.js'
 import type { ChipRegistry } from '../fleet/index.js'
+import type { AuditLogger } from '../config/audit-logger.js'
 
 const shellRateLimiter = new IpRateLimiter({ maxRequests: 10, windowMs: 60_000 })
 const shellSchema = z.object({ command: z.string().min(1).max(4096) })
@@ -95,6 +96,12 @@ export interface DeviceRoutesDeps {
    * the Frota → Chips tab reflects new numbers without a separate click.
    */
   chipRegistry?: ChipRegistry
+  /**
+   * Optional. When provided the launch-wa / bypass-setup-wizard endpoints
+   * record an audit_log entry per call. Profile cards in the UI rely on
+   * this trail to debug "why did the operator just open WA in P10?".
+   */
+  auditLogger?: AuditLogger
 }
 
 /**
@@ -870,6 +877,23 @@ export function registerDeviceRoutes(
   })
 
   // Device profiles — list Android users with WA account status per profile
+  //
+  // Response shape (backward-compatible — `whatsapp` / `whatsappBusiness` /
+  // `id` / `running` retained verbatim for legacy callers, plus new fields):
+  //
+  //   profiles: [{
+  //     id, name, running,                                   // legacy
+  //     profile_id, is_running,                              // new aliases
+  //     whatsapp:        { installed, phone, active },       // legacy
+  //     whatsappBusiness:{ installed, phone, active },       // legacy
+  //     packages: [{ package_name, state, phone_number, last_extracted_at }] // new
+  //   }]
+  //
+  // The `packages[]` array drives the new state-aware UI badges
+  // ("não instalado" / "nunca aberto" / "aberto, sem login" / "logado").
+  // Root-only states (installed_never_opened, opened_not_logged_in) require
+  // root access to disambiguate from `unknown`; non-rooted devices report
+  // `state: 'unknown'` for these intermediate cases.
   server.get('/api/v1/devices/:serial/profiles', async (request, reply) => {
     const { serial } = request.params as { serial: string }
 
@@ -883,23 +907,66 @@ export function registerDeviceRoutes(
 
     // Parse: UserInfo{0:Main Oralsin 2:4c13} running
     const profileRegex = /UserInfo\{(\d+):([^:]+):\w+\}\s*(running)?/g
-    const profiles: Array<{
-      id: number
-      name: string
-      running: boolean
-      whatsapp: { installed: boolean; phone: string | null; active: boolean }
-      whatsappBusiness: { installed: boolean; phone: string | null; active: boolean }
-    }> = []
+
+    // Probe root once per request — used to enrich state derivation. When
+    // the device is not rooted, intermediate states collapse to 'unknown'.
+    const rooted = await isDeviceRooted(adb, serial)
 
     // Fall back to whatsapp_accounts when content provider isolation prevents
     // ADB-side extraction (per-user provider isolation on secondary profiles).
     const dbAccounts = deps.waMapper?.getAccountsByDevice(serial) ?? []
+    // Pull updated_at directly from SQLite for `last_extracted_at` (the
+    // mapper API doesn't surface it).
+    const dbAccountsWithTs = (() => {
+      try {
+        // We can't directly access the db here; reuse a public helper if
+        // available, otherwise return [].
+        const q = (deps.waMapper as unknown as { getAccountsRawByDevice?: (s: string) => Array<{ profileId: number; packageName: string; phoneNumber: string | null; updatedAt: string }> })
+          .getAccountsRawByDevice
+        return typeof q === 'function' ? q(serial) : []
+      } catch {
+        return []
+      }
+    })()
     const phoneFromDb = (pid: number, pkg: 'com.whatsapp' | 'com.whatsapp.w4b'): string | null => {
       const row = dbAccounts.find(
         (a) => a.profileId === pid && a.packageName === pkg,
       )
       return row?.phoneNumber ?? null
     }
+    const lastExtractedFromDb = (pid: number, pkg: 'com.whatsapp' | 'com.whatsapp.w4b'): string | null => {
+      const row = dbAccountsWithTs.find(
+        (a) => a.profileId === pid && a.packageName === pkg && a.phoneNumber,
+      )
+      return row?.updatedAt ?? null
+    }
+
+    type PackageState =
+      | 'not_installed'
+      | 'installed_never_opened'
+      | 'opened_not_logged_in'
+      | 'logged_in'
+      | 'unknown'
+
+    type EnrichedPackage = {
+      package_name: 'com.whatsapp' | 'com.whatsapp.w4b'
+      state: PackageState
+      phone_number: string | null
+      last_extracted_at: string | null
+    }
+
+    type EnrichedProfile = {
+      id: number
+      name: string
+      running: boolean
+      profile_id: number
+      is_running: boolean
+      whatsapp: { installed: boolean; phone: string | null; active: boolean }
+      whatsappBusiness: { installed: boolean; phone: string | null; active: boolean }
+      packages: EnrichedPackage[]
+    }
+
+    const profiles: EnrichedProfile[] = []
 
     let match: RegExpExecArray | null
     while ((match = profileRegex.exec(usersOutput)) !== null) {
@@ -914,16 +981,285 @@ export function registerDeviceRoutes(
       const waPhone = waInfo.phone ?? phoneFromDb(profileId, 'com.whatsapp')
       const wabPhone = wabInfo.phone ?? phoneFromDb(profileId, 'com.whatsapp.w4b')
 
+      const waState = await derivePackageState(adb, serial, profileId, 'com.whatsapp', {
+        rooted,
+        installed: waInfo.installed,
+        phone: waPhone,
+      })
+      const wabState = await derivePackageState(adb, serial, profileId, 'com.whatsapp.w4b', {
+        rooted,
+        installed: wabInfo.installed,
+        phone: wabPhone,
+      })
+
       profiles.push({
         id: profileId,
         name,
         running,
+        profile_id: profileId,
+        is_running: running,
         whatsapp: { installed: waInfo.installed, phone: waPhone, active: waInfo.processRunning },
         whatsappBusiness: { installed: wabInfo.installed, phone: wabPhone, active: wabInfo.processRunning },
+        packages: [
+          {
+            package_name: 'com.whatsapp',
+            state: waState,
+            phone_number: waPhone,
+            last_extracted_at: lastExtractedFromDb(profileId, 'com.whatsapp'),
+          },
+          {
+            package_name: 'com.whatsapp.w4b',
+            state: wabState,
+            phone_number: wabPhone,
+            last_extracted_at: lastExtractedFromDb(profileId, 'com.whatsapp.w4b'),
+          },
+        ],
       })
     }
 
-    return reply.send({ serial, profiles })
+    return reply.send({ serial, rooted, profiles })
+  })
+
+  // ── Launch WhatsApp inside a specific Android user profile ─────────────────
+  //
+  // POST /api/v1/devices/:serial/profiles/:profileId/launch-wa
+  // Body: { package_name?: 'com.whatsapp' | 'com.whatsapp.w4b' }
+  //
+  // Operator clicks "Abrir WA" on a profile that has WA installed but never
+  // opened (or never logged in). We start the user (`am start-user N` if
+  // root, fallback `am switch-user N`), wake/unlock the screen, then launch
+  // the HomeActivity. The endpoint returns immediately — the operator
+  // scans the QR code on the physical device. The next root extraction
+  // run picks up the registered phone.
+  server.post('/api/v1/devices/:serial/profiles/:profileId/launch-wa', async (request, reply) => {
+    const { serial, profileId } = request.params as { serial: string; profileId: string }
+    const uid = Number(profileId)
+    if (!Number.isFinite(uid) || uid < 0) {
+      return reply.status(400).send({ error: 'Invalid profile id' })
+    }
+
+    const bodySchema = z.object({
+      package_name: z.enum(['com.whatsapp', 'com.whatsapp.w4b']).default('com.whatsapp'),
+    }).strict()
+    const parsed = bodySchema.safeParse(request.body ?? {})
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Validation failed', details: parsed.error.issues })
+    }
+    const pkg = parsed.data.package_name
+
+    // 1. Validate profile exists
+    let usersOutput: string
+    try {
+      usersOutput = await adb.shell(serial, 'pm list users')
+    } catch {
+      return reply.status(500).send({ error: 'Failed to list users' })
+    }
+    const profileMatch = new RegExp(`UserInfo\\{${uid}:`).test(usersOutput)
+    if (!profileMatch) {
+      return reply.status(404).send({ error: `Profile ${uid} not found on device ${serial}` })
+    }
+
+    const rooted = await isDeviceRooted(adb, serial)
+    const steps: Record<string, string> = {}
+
+    // 2. Start the profile (idempotent — `am start-user` is no-op when already running)
+    try {
+      if (rooted) {
+        steps.start_user = (await adb.shell(serial, `su -c "am start-user ${uid}"`)).trim() || 'ok'
+      } else {
+        steps.start_user = (await adb.shell(serial, `am start-user ${uid}`)).trim() || 'ok'
+      }
+    } catch (err) {
+      // Fallback: switch-user auto-starts but switches the foreground.
+      try {
+        steps.start_user = `start-user failed (${(err as Error).message}); fallback switch-user`
+        await adb.shell(serial, `am switch-user ${uid}`)
+      } catch (err2) {
+        return reply.status(500).send({
+          error: `Failed to start profile ${uid}: ${(err2 as Error).message}`,
+          steps,
+        })
+      }
+    }
+
+    // 3. Wait for the profile to be ready (Android boots the user lazily)
+    await new Promise(r => setTimeout(r, 3000))
+
+    // 4. Wake + unlock the screen so the operator can scan the QR.
+    //    We DO NOT switch foreground when start-user worked above — running
+    //    `am start --user N` opens the activity in user N's container even
+    //    when the foreground user is 0. But on locked screens nothing is
+    //    visible, so still wake the device.
+    try { await adb.shell(serial, 'input keyevent KEYCODE_WAKEUP') } catch { /* ignore */ }
+    try { await adb.shell(serial, 'locksettings set-disabled true') } catch { /* ignore */ }
+    try { await adb.shell(serial, 'input keyevent 82') } catch { /* ignore */ }
+    await new Promise(r => setTimeout(r, 1000))
+
+    // 5. Launch WA HomeActivity in the target user
+    const homeActivity = pkg === 'com.whatsapp'
+      ? 'com.whatsapp/com.whatsapp.home.ui.HomeActivity'
+      : 'com.whatsapp.w4b/com.whatsapp.home.ui.HomeActivity'
+    try {
+      steps.am_start = (
+        await adb.shell(serial, `am start --user ${uid} -n ${homeActivity}`)
+      ).trim() || 'ok'
+    } catch (err) {
+      return reply.status(500).send({
+        error: `Failed to launch ${pkg}: ${(err as Error).message}`,
+        steps,
+      })
+    }
+
+    deps.auditLogger?.log({
+      action: 'launch_wa',
+      resourceType: 'device_profile',
+      resourceId: `${serial}:${uid}:${pkg}`,
+      afterState: { serial, profile_id: uid, package_name: pkg, rooted, steps },
+    })
+
+    server.log.info({ serial, profileId: uid, pkg, rooted, steps }, 'launch-wa completed')
+    return reply.send({
+      ok: true,
+      serial,
+      profile_id: uid,
+      package_name: pkg,
+      rooted,
+      steps,
+      hint: 'Operator: scan QR on the physical device. Next root extraction will pick up the number automatically.',
+    })
+  })
+
+  // ── Bypass Setup Wizard for stopped profiles (root only) ───────────────────
+  //
+  // POST /api/v1/devices/:serial/profiles/:profileId/bypass-setup-wizard
+  // Body: { force?: boolean }
+  //
+  // Some MIUI profiles (10/11/12 on POCO C71) get stuck in Setup Wizard
+  // and refuse to start normally. We disable the wizard packages, mark
+  // setup-complete in `settings`, and re-launch the launcher in the target
+  // user. RISKY: a misconfigured profile becomes painful to recover. The
+  // endpoint refuses to run unless `force: true` is set.
+  server.post('/api/v1/devices/:serial/profiles/:profileId/bypass-setup-wizard', async (request, reply) => {
+    const { serial, profileId } = request.params as { serial: string; profileId: string }
+    const uid = Number(profileId)
+    if (!Number.isFinite(uid) || uid < 0) {
+      return reply.status(400).send({ error: 'Invalid profile id' })
+    }
+
+    const bodySchema = z.object({
+      force: z.boolean().default(false),
+    }).strict()
+    const parsed = bodySchema.safeParse(request.body ?? {})
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Validation failed', details: parsed.error.issues })
+    }
+    if (!parsed.data.force) {
+      return reply.status(400).send({
+        error: 'destructive_action_requires_force',
+        warning:
+          'This action disables Setup Wizard packages and marks setup-complete in settings. ' +
+          'A misconfigured profile may be hard to recover. Re-send with `{"force":true}` to proceed.',
+      })
+    }
+
+    // Root is mandatory for `pm disable --user N` and `settings put --user N`.
+    const rooted = await isDeviceRooted(adb, serial)
+    if (!rooted) {
+      return reply.status(409).send({
+        error: 'device_not_rooted',
+        detail: 'Setup Wizard bypass requires root (su -c).',
+      })
+    }
+
+    // Validate profile exists
+    try {
+      const usersOutput = await adb.shell(serial, 'pm list users')
+      if (!new RegExp(`UserInfo\\{${uid}:`).test(usersOutput)) {
+        return reply.status(404).send({ error: `Profile ${uid} not found on device ${serial}` })
+      }
+    } catch {
+      return reply.status(500).send({ error: 'Failed to list users' })
+    }
+
+    const steps: Record<string, string> = {}
+
+    // 1. Start the user (idempotent)
+    try {
+      steps.start_user = (await adb.shell(serial, `su -c "am start-user ${uid}"`)).trim() || 'ok'
+    } catch (err) {
+      steps.start_user = `error: ${(err as Error).message}`
+    }
+
+    // 2. Disable known Setup Wizard packages for this user (best-effort)
+    const wizardPackages = [
+      'com.google.android.setupwizard',
+      'com.android.provision',
+      'com.miui.cloudbackup',
+    ]
+    for (const wp of wizardPackages) {
+      try {
+        steps[`disable_${wp}`] = (
+          await adb.shell(serial, `su -c "pm disable --user ${uid} ${wp}"`)
+        ).trim() || 'ok'
+      } catch (err) {
+        steps[`disable_${wp}`] = `error: ${(err as Error).message}`
+      }
+    }
+
+    // 3. Mark wizard as done in settings
+    const settingsCmds: Array<{ key: string; cmd: string }> = [
+      { key: 'global_setup_wizard_has_run', cmd: `su -c "settings put --user ${uid} global setup_wizard_has_run 1"` },
+      { key: 'secure_user_setup_complete', cmd: `su -c "settings put --user ${uid} secure user_setup_complete 1"` },
+      { key: 'secure_device_provisioned', cmd: `su -c "settings put --user ${uid} global device_provisioned 1"` },
+    ]
+    for (const { key, cmd } of settingsCmds) {
+      try {
+        steps[key] = (await adb.shell(serial, cmd)).trim() || 'ok'
+      } catch (err) {
+        steps[key] = `error: ${(err as Error).message}`
+      }
+    }
+
+    // 4. Re-launch HOME in the target user so the launcher takes over
+    try {
+      steps.launch_home = (
+        await adb.shell(
+          serial,
+          `su -c "am start --user ${uid} -a android.intent.action.MAIN -c android.intent.category.HOME"`,
+        )
+      ).trim() || 'ok'
+    } catch (err) {
+      steps.launch_home = `error: ${(err as Error).message}`
+    }
+
+    // 5. Verify profile is now running
+    let nowRunning = false
+    try {
+      const usersOutput = await adb.shell(serial, 'pm list users')
+      const re = new RegExp(`UserInfo\\{${uid}:[^}]+\\}\\s*running`)
+      nowRunning = re.test(usersOutput)
+    } catch { /* ignore */ }
+
+    deps.auditLogger?.log({
+      action: 'bypass_setup_wizard',
+      resourceType: 'device_profile',
+      resourceId: `${serial}:${uid}`,
+      afterState: { serial, profile_id: uid, rooted, now_running: nowRunning, steps },
+    })
+
+    server.log.warn(
+      { serial, profileId: uid, nowRunning, steps },
+      'bypass-setup-wizard completed (destructive)',
+    )
+
+    return reply.send({
+      ok: true,
+      serial,
+      profile_id: uid,
+      now_running: nowRunning,
+      steps,
+      warning: 'Setup Wizard packages disabled and setup-complete flags set. Profile may need manual recovery if launcher fails.',
+    })
   })
 
   // ── Search endpoint for command palette autocomplete ──────────────────────
@@ -942,6 +1278,59 @@ export function registerDeviceRoutes(
       .map((d) => ({ serial: d.serial, status: d.type === 'device' ? 'online' : d.type }))
     return results
   })
+}
+
+/**
+ * Derive a per-(profile, package) lifecycle state.
+ *
+ * State machine (in order of precedence):
+ *   not_installed         — `pm list packages --user N` does NOT contain the pkg
+ *   logged_in             — phone number is known (root or DB)
+ *   installed_never_opened— [root] shared_prefs directory missing
+ *   opened_not_logged_in  — [root] shared_prefs exists but no `cc`/`ph` keys
+ *   unknown               — non-rooted device + intermediate state can't be probed
+ *
+ * Root-only states require `rooted=true`. Non-rooted devices collapse the
+ * intermediate states to 'unknown' since we can't read /data/user/* without su.
+ */
+async function derivePackageState(
+  adb: { shell: (serial: string, cmd: string) => Promise<string> },
+  serial: string,
+  profileId: number,
+  pkg: 'com.whatsapp' | 'com.whatsapp.w4b',
+  ctx: { rooted: boolean; installed: boolean; phone: string | null },
+): Promise<'not_installed' | 'installed_never_opened' | 'opened_not_logged_in' | 'logged_in' | 'unknown'> {
+  if (!ctx.installed) return 'not_installed'
+  if (ctx.phone) return 'logged_in'
+
+  // Without root we can't disambiguate "installed but never opened" vs
+  // "opened but never logged in" — both look the same from outside.
+  if (!ctx.rooted) return 'unknown'
+
+  const sharedPrefsDir = `/data/user/${profileId}/${pkg}/shared_prefs`
+  let dirExists = false
+  try {
+    const test = await adb.shell(serial, `su -c "test -d '${sharedPrefsDir}' && echo YES || echo NO"`)
+    dirExists = test.trim().endsWith('YES')
+  } catch {
+    return 'unknown'
+  }
+  if (!dirExists) return 'installed_never_opened'
+
+  // Directory exists — check for `cc` + `ph` keys in the prefs file. If
+  // present we'd already have a phone (handled above), so the absence
+  // means WA was opened but never registered.
+  const lightFile = `${sharedPrefsDir}/${pkg}_preferences_light.xml`
+  try {
+    const xml = await adb.shell(serial, `su -c "cat '${lightFile}' 2>/dev/null"`)
+    if (xml && /<string name="ph">/.test(xml) && /<string name="cc">/.test(xml)) {
+      // shared_prefs has both keys but extractor returned no phone — treat
+      // as logged_in (DB will catch up on next root-extract sweep).
+      return 'logged_in'
+    }
+  } catch { /* fall through */ }
+
+  return 'opened_not_logged_in'
 }
 
 async function getWaProfileInfo(
