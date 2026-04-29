@@ -54,6 +54,13 @@ export function normalizeBrPhone(
     return { phone: upgraded, alreadyCanonical: false, upgraded: true }
   }
 
+  if (digits.length === 11 && digits[2] === '9') {
+    // BR mobile WITHOUT country code (DDD + 9 + subscriber). Prepend `55`.
+    // Catches the bug-induced "43996835100" pattern that the v1 of the root
+    // extractor produced before cc + ph composition was wired in.
+    return { phone: `55${digits}`, alreadyCanonical: false, upgraded: true }
+  }
+
   // Unrecognized shape — log and return the digits we managed to extract,
   // or the original raw input if there were none.
   logger?.warn(

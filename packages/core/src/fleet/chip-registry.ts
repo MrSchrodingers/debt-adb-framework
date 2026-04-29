@@ -235,13 +235,28 @@ export class ChipRegistry {
     const update = this.db.prepare('UPDATE chips SET phone_number = ? WHERE id = ?')
     const findExisting = this.db.prepare('SELECT id FROM chips WHERE phone_number = ?')
     const del = this.db.prepare('DELETE FROM chips WHERE id = ?')
+    // Reparent child rows to the canonical chip before deletion to avoid FK
+    // violations. INSERT OR IGNORE on the unique-constrained tables drops
+    // duplicates that would otherwise collide on (chip_id, period) etc.
+    const reparentEvents = this.db.prepare('UPDATE chip_events SET chip_id = ? WHERE chip_id = ?')
+    const reparentMessages = this.db.prepare('UPDATE chip_messages SET chip_id = ? WHERE chip_id = ?')
+    const reparentPayments = this.db.prepare(
+      `UPDATE OR IGNORE chip_payments SET chip_id = ? WHERE chip_id = ?`,
+    )
+    const deleteOrphanPayments = this.db.prepare('DELETE FROM chip_payments WHERE chip_id = ?')
     const txn = this.db.transaction(() => {
       for (const row of rows) {
         const norm = normalizeBrPhone(row.phone_number, logger).phone
         if (!norm || norm === row.phone_number) continue
         const conflict = findExisting.get(norm) as { id: string } | undefined
         if (conflict && conflict.id !== row.id) {
-          // Canonical row already exists — drop the orphan.
+          // Canonical row already exists — reparent children, then drop the orphan.
+          reparentEvents.run(conflict.id, row.id)
+          reparentMessages.run(conflict.id, row.id)
+          reparentPayments.run(conflict.id, row.id)
+          // Any payments that collided on UNIQUE (chip_id, period) stayed on
+          // the orphan — clear them so the FK delete can complete.
+          deleteOrphanPayments.run(row.id)
           del.run(row.id)
           changes.push({ id: row.id, before: row.phone_number, after: norm, action: 'deleted_duplicate' })
         } else {

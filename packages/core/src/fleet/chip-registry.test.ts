@@ -341,6 +341,33 @@ describe('ChipRegistry — normalizeStoredPhones', () => {
     expect(reg.listChips()[0]!.id).toBe('canonical')
   })
 
+  it('reparents child rows (chip_events) to the canonical chip when deleting orphan', () => {
+    const { db, reg } = buildRegistry()
+    db.prepare(
+      `INSERT INTO chips (id, phone_number, carrier, plan_name, plan_type,
+         acquisition_date, acquisition_cost_brl, monthly_cost_brl,
+         payment_due_day, paid_by_operator, status)
+       VALUES (?, ?, 'vivo', 'P', 'postpago', '2026-01-01', 0, 0, 15, 'op', 'active')`,
+    ).run('canonical', '5543991938235')
+    db.prepare(
+      `INSERT INTO chips (id, phone_number, carrier, plan_name, plan_type,
+         acquisition_date, acquisition_cost_brl, monthly_cost_brl,
+         payment_due_day, paid_by_operator, status)
+       VALUES (?, ?, 'vivo', 'P', 'postpago', '2026-01-01', 0, 0, 15, 'op', 'active')`,
+    ).run('orphan', '554391938235')
+    db.prepare(
+      `INSERT INTO chip_events (id, chip_id, event_type, occurred_at)
+       VALUES ('e1', 'orphan', 'created', '2026-01-01')`,
+    ).run()
+
+    reg.normalizeStoredPhones()
+
+    const event = db.prepare('SELECT chip_id FROM chip_events WHERE id = ?').get('e1') as { chip_id: string }
+    expect(event.chip_id).toBe('canonical')
+    expect(reg.listChips()).toHaveLength(1)
+    expect(reg.listChips()[0]!.id).toBe('canonical')
+  })
+
   it('is idempotent — re-running over canonical rows is a no-op', () => {
     const { reg } = buildRegistry()
     reg.createChip({

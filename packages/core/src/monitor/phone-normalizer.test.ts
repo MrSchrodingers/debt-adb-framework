@@ -57,11 +57,27 @@ describe('normalizeBrPhone', () => {
     expect(normalizeBrPhone('').phone).toBe('')
   })
 
-  it('does not auto-prefix country code (out of scope: keeps short numbers as-is)', () => {
-    // 991938235 → 9 digits, no country code → return as-is, log warn
+  it('does not auto-prefix country code on 9-digit input (insufficient context)', () => {
+    // 991938235 → 9 digits, no country code, no DDD → return as-is, log warn
     const logger = { warn: vi.fn() }
     const r = normalizeBrPhone('991938235', logger)
     expect(r.phone).toBe('991938235')
+    expect(r.upgraded).toBe(false)
+    expect(logger.warn).toHaveBeenCalledOnce()
+  })
+
+  it('upgrades a bare 11-digit BR mobile (DDD+9+subscriber) by prepending 55', () => {
+    // The v1 buggy extractor produced raw `ph` values like `43996835100`
+    // (11 digits = DDD+9+subscriber, no cc). Promote to canonical 13-digit.
+    expect(normalizeBrPhone('43996835100').phone).toBe('5543996835100')
+    expect(normalizeBrPhone('43996835100').upgraded).toBe(true)
+  })
+
+  it('does not auto-prefix 11-digit input lacking the mandatory 9-prefix', () => {
+    // 43196835100 → DDD=43, third digit=1, NOT mobile pattern → leave as-is
+    const logger = { warn: vi.fn() }
+    const r = normalizeBrPhone('43196835100', logger)
+    expect(r.phone).toBe('43196835100')
     expect(r.upgraded).toBe(false)
     expect(logger.warn).toHaveBeenCalledOnce()
   })
