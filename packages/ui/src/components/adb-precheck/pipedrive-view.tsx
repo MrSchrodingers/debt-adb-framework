@@ -43,7 +43,7 @@ const PIPEDRIVE_BASE = `${CORE_URL}/api/v1/plugins/adb-precheck/pipedrive`
 // for audit, but Manual-trigger no longer accepts the scenario.
 type Scenario = 'phone_fail' | 'deal_all_fail' | 'pasta_summary'
 type ActiveScenario = 'deal_all_fail' | 'pasta_summary'
-type Status = 'success' | 'failed' | 'retrying'
+type Status = 'success' | 'failed' | 'retrying' | 'deleted'
 
 interface ActivityRow {
   id: string
@@ -112,10 +112,13 @@ const STATUS_BADGE: Record<Status, { label: string; cls: string }> = {
   success: { label: 'Success', cls: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' },
   failed: { label: 'Failed', cls: 'bg-red-500/15 text-red-300 border-red-500/30' },
   retrying: { label: 'Retrying', cls: 'bg-zinc-700/40 text-zinc-300 border-zinc-600/40' },
+  deleted: { label: 'Deletado', cls: 'bg-zinc-800/40 text-zinc-500 border-zinc-700/40 line-through' },
 }
 
-function ScenarioBadge({ scenario }: { scenario: Scenario }) {
-  const cfg = SCENARIO_BADGE[scenario]
+const UNKNOWN_BADGE = { label: '—', cls: 'bg-zinc-800/40 text-zinc-500 border-zinc-700/40' } as const
+
+function ScenarioBadge({ scenario }: { scenario: string }) {
+  const cfg = SCENARIO_BADGE[scenario as Scenario] ?? { ...UNKNOWN_BADGE, label: scenario || '—' }
   return (
     <span className={`rounded border px-2 py-0.5 text-[11px] font-medium ${cfg.cls}`}>
       {cfg.label}
@@ -123,8 +126,8 @@ function ScenarioBadge({ scenario }: { scenario: Scenario }) {
   )
 }
 
-function StatusBadge({ status }: { status: Status }) {
-  const cfg = STATUS_BADGE[status]
+function StatusBadge({ status }: { status: string }) {
+  const cfg = STATUS_BADGE[status as Status] ?? { ...UNKNOWN_BADGE, label: status || '—' }
   return (
     <span className={`rounded border px-2 py-0.5 text-[11px] font-medium ${cfg.cls}`}>
       {cfg.label}
@@ -218,6 +221,7 @@ function FiltersBar({
         <option value="success">Sucesso</option>
         <option value="failed">Falhou</option>
         <option value="retrying">Retrying</option>
+        <option value="deleted">Deletado</option>
       </select>
       <input
         type="number"
