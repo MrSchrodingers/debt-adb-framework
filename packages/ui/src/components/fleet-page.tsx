@@ -16,6 +16,7 @@ import {
   ChevronRight,
   Pencil,
   ScanLine,
+  Wrench,
 } from 'lucide-react'
 import { CORE_URL, authHeaders } from '../config'
 import {
@@ -218,6 +219,8 @@ function ChipsPanel() {
   const [autoImporting, setAutoImporting] = useState(false)
   const [autoImportMsg, setAutoImportMsg] = useState<string | null>(null)
   const [scanAllOpen, setScanAllOpen] = useState(false)
+  const [rootExtracting, setRootExtracting] = useState(false)
+  const [rootExtractMsg, setRootExtractMsg] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [editingChip, setEditingChip] = useState<Chip | null>(null)
 
@@ -350,6 +353,64 @@ function ChipsPanel() {
         </AccentButton>
         <AccentButton
           accent={ACCENT}
+          disabled={rootExtracting}
+          onClick={async () => {
+            setRootExtracting(true)
+            setRootExtractMsg(null)
+            try {
+              const dr = await fetch(`${CORE_URL}/api/v1/devices`, { headers: authHeaders() })
+              const list = (dr.ok ? ((await dr.json()) as Array<{ serial: string; type: string }>) : [])
+                .filter((d) => d.type === 'device')
+                .map((d) => d.serial)
+              if (list.length === 0) {
+                setRootExtractMsg('Nenhum device online encontrado')
+                return
+              }
+              let totalPersisted = 0
+              let totalChips = 0
+              let totalIncomplete = 0
+              for (const serial of list) {
+                try {
+                  const r = await fetch(
+                    `${CORE_URL}/api/v1/devices/${serial}/extract-phones-root`,
+                    { method: 'POST', headers: authHeaders() },
+                  )
+                  if (!r.ok) continue
+                  const data = (await r.json()) as {
+                    counts: {
+                      with_phone: number
+                      persisted: number
+                      wa_not_initialized: number
+                      chips_created: number
+                    }
+                  }
+                  totalPersisted += data.counts.persisted
+                  totalChips += data.counts.chips_created
+                  totalIncomplete += data.counts.wa_not_initialized
+                } catch {
+                  // continue with next device
+                }
+              }
+              setRootExtractMsg(
+                `Extraídos ${totalPersisted} número(s), ${totalChips} chip(s) novo(s)` +
+                  (totalIncomplete > 0
+                    ? ` · ${totalIncomplete} profile(s) com WA não inicializado (Setup Wizard pendente).`
+                    : '.'),
+              )
+              void load()
+            } catch (e) {
+              setRootExtractMsg(`Falhou: ${e instanceof Error ? e.message : String(e)}`)
+            } finally {
+              setRootExtracting(false)
+            }
+          }}
+          icon={Wrench}
+          variant="ghost"
+        >
+          {rootExtracting ? 'Extraindo…' : 'Extrair via root (rápido)'}
+        </AccentButton>
+        <AccentButton
+          accent={ACCENT}
           onClick={() => setScanAllOpen(true)}
           icon={ScanLine}
           variant="ghost"
@@ -367,6 +428,12 @@ function ChipsPanel() {
       {autoImportMsg ? (
         <div className="rounded-md border border-emerald-700/40 bg-emerald-950/30 px-3 py-2 text-sm text-emerald-200">
           {autoImportMsg}
+        </div>
+      ) : null}
+
+      {rootExtractMsg ? (
+        <div className="rounded-md border border-emerald-700/40 bg-emerald-950/30 px-3 py-2 text-sm text-emerald-200">
+          {rootExtractMsg}
         </div>
       ) : null}
 

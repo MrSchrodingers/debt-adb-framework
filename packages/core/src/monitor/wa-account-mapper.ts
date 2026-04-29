@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import type { WhatsAppAccount, AdbShellAdapter } from './types.js'
+import { normalizeBrPhone, type PhoneNormalizerLogger } from './phone-normalizer.js'
 
 const PROFILES = [0, 10, 11, 12]
 const WA_PACKAGES = ['com.whatsapp', 'com.whatsapp.w4b'] as const
@@ -88,7 +89,13 @@ export class WaAccountMapper {
     profileId: number,
     packageName: WhatsAppAccount['packageName'],
     phoneNumber: string | null,
+    logger?: PhoneNormalizerLogger,
   ): void {
+    // Canonicalize on every write — root extractor, UIAutomator, and manual
+    // PUT all funnel here, so legacy 12-digit numbers can never sneak past.
+    const normalized = phoneNumber === null
+      ? null
+      : (normalizeBrPhone(phoneNumber, logger).phone || phoneNumber)
     this.db
       .prepare(
         `INSERT INTO whatsapp_accounts (device_serial, profile_id, package_name, phone_number, updated_at)
@@ -97,7 +104,63 @@ export class WaAccountMapper {
            phone_number = excluded.phone_number,
            updated_at = excluded.updated_at`,
       )
-      .run(deviceSerial, profileId, packageName, phoneNumber)
+      .run(deviceSerial, profileId, packageName, normalized)
+  }
+
+  /**
+   * One-shot migration sweep: re-normalize every persisted phone number.
+   *
+   * Idempotent — no-op when the stored value is already canonical. Returns
+   * the per-row diff so the caller can log how many legacy numbers were
+   * upgraded. Designed to run once at boot (after table init) so legacy
+   * 12-digit rows from earlier scans get the missing 9-prefix.
+   */
+  normalizeStoredPhones(logger?: PhoneNormalizerLogger): Array<{
+    device_serial: string
+    profile_id: number
+    package_name: string
+    before: string
+    after: string
+  }> {
+    const rows = this.db
+      .prepare(
+        'SELECT device_serial, profile_id, package_name, phone_number FROM whatsapp_accounts WHERE phone_number IS NOT NULL AND phone_number != ""',
+      )
+      .all() as Array<{
+        device_serial: string
+        profile_id: number
+        package_name: string
+        phone_number: string
+      }>
+    const changes: Array<{
+      device_serial: string
+      profile_id: number
+      package_name: string
+      before: string
+      after: string
+    }> = []
+    const update = this.db.prepare(
+      `UPDATE whatsapp_accounts
+         SET phone_number = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE device_serial = ? AND profile_id = ? AND package_name = ?`,
+    )
+    const txn = this.db.transaction(() => {
+      for (const row of rows) {
+        const normalized = normalizeBrPhone(row.phone_number, logger).phone
+        if (normalized && normalized !== row.phone_number) {
+          update.run(normalized, row.device_serial, row.profile_id, row.package_name)
+          changes.push({
+            device_serial: row.device_serial,
+            profile_id: row.profile_id,
+            package_name: row.package_name,
+            before: row.phone_number,
+            after: normalized,
+          })
+        }
+      }
+    })
+    txn()
+    return changes
   }
 
   private async extractPhoneNumbers(
@@ -178,7 +241,10 @@ export class WaAccountMapper {
       `)
 
       for (const acc of accounts) {
-        upsert.run(acc.deviceSerial, acc.profileId, acc.packageName, acc.phoneNumber)
+        const normalized = acc.phoneNumber
+          ? (normalizeBrPhone(acc.phoneNumber).phone || acc.phoneNumber)
+          : null
+        upsert.run(acc.deviceSerial, acc.profileId, acc.packageName, normalized)
       }
     })
     txn()

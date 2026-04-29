@@ -3,7 +3,11 @@ import { z } from 'zod'
 import type { AdbBridge } from '../adb/index.js'
 import { IpRateLimiter } from './rate-limiter.js'
 import { hygienizeDevice, type HygieneLog, type AutoHygiene } from '../devices/index.js'
-import type { WaAccountMapper } from '../monitor/index.js'
+import {
+  extractPhonesViaRoot,
+  isDeviceRooted,
+  type WaAccountMapper,
+} from '../monitor/index.js'
 import type { ChipRegistry } from '../fleet/index.js'
 
 const shellRateLimiter = new IpRateLimiter({ maxRequests: 10, windowMs: 60_000 })
@@ -465,6 +469,103 @@ export function registerDeviceRoutes(
     }
   })
 
+  // ── Root-based phone extraction (FAST — sub-second per profile) ───────────
+  //
+  // Reads `/data/user/{uid}/{pkg}/shared_prefs/{pkg}_preferences_light.xml`
+  // directly via `su -c cat …` and parses `<string name="ph">…</string>`.
+  // Bypasses both UIAutomator (broken on Setup-Wizard-incomplete profiles)
+  // and the per-user content-provider trick (broken by isolation on
+  // secondary users). See `monitor/wa-phone-extractor-root.ts` for the
+  // full fallback ladder + diagnostics.
+  //
+  // Idempotent — already-correct phones are upserted with the same value.
+  // Triggers a single `chipRegistry.importFromDevices()` sweep at the end
+  // so the Frota → Chips tab reflects the new mapping in one round-trip.
+  server.post('/api/v1/devices/:serial/extract-phones-root', async (request, reply) => {
+    const { serial } = request.params as { serial: string }
+    const startedAt = Date.now()
+
+    const rooted = await isDeviceRooted(adb, serial)
+    if (!rooted) {
+      return reply.status(409).send({
+        serial,
+        error: 'device_not_rooted',
+        detail: 'Use /scan-all-numbers (UIAutomator fallback) for non-rooted devices.',
+      })
+    }
+
+    const log: typeof server.log = server.log
+    const results = await extractPhonesViaRoot(adb, serial, {
+      logger: { warn: (payload, msg) => log.warn(payload, msg) },
+    })
+
+    let persisted = 0
+    let withPhone = 0
+    let waNotInitialized = 0
+    let notInstalled = 0
+
+    for (const r of results) {
+      if (r.phone) {
+        withPhone++
+        if (deps.waMapper) {
+          try {
+            deps.waMapper.setPhoneNumber(serial, r.profile_id, r.package_name, r.phone, {
+              warn: (payload, msg) => log.warn(payload, msg),
+            })
+            persisted++
+          } catch (err) {
+            log.error({ serial, profile: r.profile_id, package: r.package_name, err }, 'setPhoneNumber failed (root)')
+          }
+        }
+      } else if (r.error === 'wa_not_initialized') {
+        waNotInitialized++
+      } else if (r.error === 'not_installed') {
+        notInstalled++
+      }
+    }
+
+    let chipsCreated = 0
+    if (persisted > 0 && deps.chipRegistry) {
+      try {
+        const before = deps.chipRegistry.listChips({}).length
+        deps.chipRegistry.importFromDevices()
+        const after = deps.chipRegistry.listChips({}).length
+        chipsCreated = Math.max(0, after - before)
+      } catch (err) {
+        log.warn({ serial, err }, 'chipRegistry import failed after root extract')
+      }
+    }
+
+    const elapsedMs = Date.now() - startedAt
+    log.info(
+      {
+        serial,
+        results_count: results.length,
+        with_phone: withPhone,
+        persisted,
+        wa_not_initialized: waNotInitialized,
+        not_installed: notInstalled,
+        chips_created: chipsCreated,
+        elapsed_ms: elapsedMs,
+      },
+      'Root phone extraction complete',
+    )
+    return reply.send({
+      serial,
+      method: 'root',
+      results,
+      counts: {
+        total: results.length,
+        with_phone: withPhone,
+        persisted,
+        wa_not_initialized: waNotInitialized,
+        not_installed: notInstalled,
+        chips_created: chipsCreated,
+      },
+      elapsed_ms: elapsedMs,
+    })
+  })
+
   // Scan ALL profiles on a device — iterates `pm list users`, for each profile
   // that doesn't yet have a phone in `whatsapp_accounts` (com.whatsapp), runs
   // the same UIAutomator scrape used by the per-profile endpoint, persists,
@@ -473,9 +574,75 @@ export function registerDeviceRoutes(
   // SLOW: ~30s per profile (switch-user + unlock + UIAutomator). 4 profiles
   // = ~2 minutes total. UI must show progress indication and use a long
   // request timeout. Always returns to user 0 in success and failure paths.
+  // PREFERS ROOT: when the device is rooted we delegate to the root extractor
+  // (sub-second, works on Setup-Wizard-incomplete profiles); UIAutomator is
+  // only used as a fallback for non-rooted devices.
   server.post('/api/v1/devices/:serial/scan-all-numbers', async (request, reply) => {
     const { serial } = request.params as { serial: string }
     const startedAt = Date.now()
+
+    // Fast path: when the device is rooted, delegate to the root extractor.
+    // Returns the SAME response shape as the legacy UIAutomator path so the
+    // UI doesn't need to branch on `method`.
+    try {
+      const rooted = await isDeviceRooted(adb, serial)
+      if (rooted) {
+        const rootResults = await extractPhonesViaRoot(adb, serial, {
+          logger: { warn: (payload, msg) => server.log.warn(payload, msg) },
+        })
+        // Filter to com.whatsapp only to match scan-all-numbers semantics,
+        // but persist results for both packages.
+        const seenProfiles = new Map<number, { phone: string | null; persisted: boolean; error?: string }>()
+        for (const r of rootResults) {
+          if (r.phone && deps.waMapper) {
+            try {
+              deps.waMapper.setPhoneNumber(serial, r.profile_id, r.package_name, r.phone)
+            } catch (err) {
+              server.log.error({ serial, err }, 'setPhoneNumber failed (root fast-path)')
+            }
+          }
+          if (r.package_name === 'com.whatsapp') {
+            seenProfiles.set(r.profile_id, {
+              phone: r.phone,
+              persisted: Boolean(r.phone),
+              error: r.error,
+            })
+          }
+        }
+        const results = [...seenProfiles.entries()].map(([profile_id, v]) => ({
+          profile_id,
+          phone: v.phone,
+          persisted: v.persisted,
+          ...(v.error ? { error: v.error } : {}),
+        }))
+        let chipsCreated = 0
+        if (deps.chipRegistry) {
+          try {
+            const before = deps.chipRegistry.listChips({}).length
+            deps.chipRegistry.importFromDevices()
+            const after = deps.chipRegistry.listChips({}).length
+            chipsCreated = Math.max(0, after - before)
+          } catch (err) {
+            server.log.warn({ serial, err }, 'chipRegistry import failed after scan-all-numbers (root)')
+          }
+        }
+        const elapsedMs = Date.now() - startedAt
+        server.log.info(
+          {
+            serial,
+            method: 'root',
+            profiles_scanned: results.length,
+            phones_found: results.filter((r) => r.phone).length,
+            chips_created: chipsCreated,
+            elapsed_ms: elapsedMs,
+          },
+          'Scanned all WA numbers (root fast-path)',
+        )
+        return reply.send({ serial, method: 'root', results, chips_created: chipsCreated, elapsed_ms: elapsedMs })
+      }
+    } catch (err) {
+      server.log.warn({ serial, err }, 'scan-all-numbers: root fast-path failed, falling back to UIAutomator')
+    }
 
     // Discover profiles via `pm list users`. Fall back to [0] on parse failure.
     let profileIds: number[] = [0]

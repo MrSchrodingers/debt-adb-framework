@@ -17,7 +17,7 @@ import { registerAnomalyRoutes, registerChanged24hRoutes } from './insights/inde
 import { verifyJwt } from './api/jwt.js'
 import { ContactRegistry } from './contacts/index.js'
 import { HygieneJobService } from './hygiene/index.js'
-import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem } from './monitor/index.js'
+import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem, extractPhonesViaRoot, isDeviceRooted } from './monitor/index.js'
 import { SessionManager, WebhookHandler, MessageHistory, AckHistory } from './waha/index.js'
 import { createWahaHttpClient } from './waha/waha-http-client.js'
 import { createChatwootHttpClient, ManagedSessions, InboxAutomation } from './chatwoot/index.js'
@@ -237,6 +237,23 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   healthCollector.initialize()
   const waMapper = new WaAccountMapper(db, adb)
   waMapper.initialize()
+
+  // One-shot boot migration: re-normalize every persisted phone number
+  // (12-digit legacy → 13-digit canonical with 9-prefix). Idempotent — already
+  // canonical rows are skipped silently. Logs each change for diagnostics.
+  try {
+    const phoneNormChanges = waMapper.normalizeStoredPhones({
+      warn: (payload, msg) => server.log.warn(payload, msg),
+    })
+    if (phoneNormChanges.length > 0) {
+      server.log.info(
+        { changes: phoneNormChanges, count: phoneNormChanges.length },
+        'Boot migration: normalized whatsapp_accounts.phone_number to canonical 13-digit',
+      )
+    }
+  } catch (err) {
+    server.log.warn({ err }, 'Phone normalization migration failed (non-fatal)')
+  }
   const alertSystem = new AlertSystem(db, emitter)
   alertSystem.initialize()
 
@@ -1222,6 +1239,63 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       'Boot chip auto-import failed (non-fatal)',
     )
   }
+
+  // Boot-time root extraction: 30s after start, sweep every online rooted
+  // device once. Idempotent — `setPhoneNumber` upserts; `importFromDevices`
+  // is no-op for chips that already exist. Logs `wa_not_initialized` /
+  // `not_installed` profiles so operators can spot Setup-Wizard gaps.
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const online = deviceManager.getDevices().filter((d) => d.status === 'online')
+        for (const device of online) {
+          try {
+            if (!(await isDeviceRooted(adb, device.serial))) {
+              server.log.info({ serial: device.serial }, 'Boot root-extract: skipped — device not rooted')
+              continue
+            }
+            const results = await extractPhonesViaRoot(adb, device.serial, {
+              logger: { warn: (payload, msg) => server.log.warn(payload, msg) },
+            })
+            let persisted = 0
+            for (const r of results) {
+              if (r.phone) {
+                try {
+                  waMapper.setPhoneNumber(device.serial, r.profile_id, r.package_name, r.phone)
+                  persisted++
+                } catch (err) {
+                  server.log.error({ serial: device.serial, profile: r.profile_id, err }, 'Boot root-extract setPhoneNumber failed')
+                }
+              }
+            }
+            const incomplete = results.filter((r) => r.error === 'wa_not_initialized').length
+            const notInstalled = results.filter((r) => r.error === 'not_installed').length
+            server.log.info(
+              {
+                serial: device.serial,
+                total: results.length,
+                persisted,
+                wa_not_initialized: incomplete,
+                not_installed: notInstalled,
+              },
+              'Boot root-extract: phone numbers extracted via filesystem',
+            )
+          } catch (err) {
+            server.log.warn({ serial: device.serial, err }, 'Boot root-extract failed for device')
+          }
+        }
+        if (online.length > 0) {
+          try {
+            chipRegistry.importFromDevices()
+          } catch (err) {
+            server.log.warn({ err }, 'Boot root-extract: chip auto-import after sweep failed')
+          }
+        }
+      } catch (err) {
+        server.log.warn({ err }, 'Boot root-extract sweep failed (non-fatal)')
+      }
+    })()
+  }, 30_000)
 
   // In-memory health map for WorkerOrchestrator (populated by health interval)
   const latestHealthMap = new Map<string, import('./monitor/types.js').HealthSnapshot>()
