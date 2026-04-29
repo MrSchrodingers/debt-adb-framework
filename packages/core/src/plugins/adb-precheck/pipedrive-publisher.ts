@@ -152,11 +152,15 @@ export class PipedrivePublisher {
       try {
         const r = await this.client.dispatch(next.intent)
         if (this.store && next.rowId) {
-          // Try to extract the response_id from a successful response — the
-          // dispatch result doesn't surface it directly, so we keep null when
-          // unknown (still mark row as success/failed appropriately).
+          // Persist the freshly-minted Pipedrive entity id (`data.id` from
+          // the response) when present — required so future repairs / updates
+          // can target the row directly without re-walking the deal's
+          // activity list. `responseId` is undefined for legacy callers and
+          // null when the response body could not be parsed; both map to the
+          // store's "leave as-is" path via COALESCE.
           this.store.updateResult(next.rowId, {
             status: r.ok ? 'success' : 'failed',
+            pipedrive_response_id: r.ok ? (r.responseId ?? null) : null,
             http_status: r.status,
             error_msg: r.ok ? null : (r.error ?? null),
             attempts: r.attempts,

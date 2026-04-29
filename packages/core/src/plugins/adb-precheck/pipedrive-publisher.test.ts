@@ -22,7 +22,15 @@ function fakeLogger() {
   }
 }
 
-function fakeClient(impl?: (intent: unknown) => Promise<{ ok: boolean; attempts: number; status: number | null }>): { client: PipedriveClient; dispatch: ReturnType<typeof vi.fn> } {
+function fakeClient(
+  impl?: (intent: unknown) => Promise<{
+    ok: boolean
+    attempts: number
+    status: number | null
+    error?: string
+    responseId?: number | null
+  }>,
+): { client: PipedriveClient; dispatch: ReturnType<typeof vi.fn> } {
   const dispatch = vi.fn(impl ?? (async () => ({ ok: true, attempts: 1, status: 200 })))
   return {
     client: { dispatch } as unknown as PipedriveClient,
@@ -230,6 +238,36 @@ describe('PipedrivePublisher — persistence (with store)', () => {
     const row = store.list({ scenario: 'phone_fail' }).items[0]
     expect(row.manual).toBe(1)
     expect(row.triggered_by).toBe('alice')
+    db.close()
+  })
+
+  it('persists pipedrive_response_id (data.id) on successful dispatch', async () => {
+    const db = new Database(':memory:')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    // Client returns a freshly-minted entity id, mimicking POST /v1/activities
+    // which responds 201 with {success:true, data:{id: 987654, ...}}.
+    const { client } = fakeClient(async () => ({ ok: true, attempts: 1, status: 201, responseId: 987654 }))
+    const pub = new PipedrivePublisher(client, fakeLogger(), store)
+    pub.enqueuePhoneFail(phoneFail)
+    await pub.flush()
+    const row = store.list({ scenario: 'phone_fail' }).items[0]
+    expect(row.pipedrive_response_status).toBe('success')
+    expect(row.pipedrive_response_id).toBe(987654)
+    db.close()
+  })
+
+  it('leaves pipedrive_response_id null when client returns no responseId (legacy path)', async () => {
+    const db = new Database(':memory:')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    const { client } = fakeClient(async () => ({ ok: true, attempts: 1, status: 201 }))
+    const pub = new PipedrivePublisher(client, fakeLogger(), store)
+    pub.enqueuePhoneFail(phoneFail)
+    await pub.flush()
+    const row = store.list({ scenario: 'phone_fail' }).items[0]
+    expect(row.pipedrive_response_status).toBe('success')
+    expect(row.pipedrive_response_id).toBeNull()
     db.close()
   })
 })

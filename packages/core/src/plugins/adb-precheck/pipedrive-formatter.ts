@@ -13,14 +13,16 @@ import type {
  * snapshot-friendly. NEVER calls into IO. The publisher composes these into
  * full intents (with dedup keys) before handing them to the client.
  *
- * IMPORTANT — output format split:
- *   - `phone_fail`     → HTML (Pipedrive Activity `note` field renders HTML
- *                        from a constrained safelist; Markdown is shown raw).
- *   - `deal_all_fail`  → HTML (same reason).
- *   - `pasta_summary`  → Markdown (Pipedrive Note `content` renders Markdown
- *                        beautifully — confirmed visually).
+ * IMPORTANT — output format: ALL THREE scenarios emit HTML.
+ *   - `phone_fail`     → HTML Activity `note` (Pipedrive renders the safelist;
+ *                        Markdown is shown raw).
+ *   - `deal_all_fail`  → HTML Activity `note` (same reason).
+ *   - `pasta_summary`  → HTML Note `content` (the /v1/notes endpoint
+ *                        ALSO renders raw Markdown when posted — visually
+ *                        broken. Migrated to HTML 2026-04-29.)
  *
- * Pipedrive Activity HTML safelist (per docs / observed behavior):
+ * Pipedrive HTML safelist (per docs / observed behavior, identical for
+ * Activity.note and Note.content):
  *   <p> <br> <strong> <em> <u> <ul> <ol> <li> <a> <table> <tr> <td> <th>
  *   <thead> <tbody>
  * Tags outside this list are stripped (notably <h1>..<h6>, <code>). We only
@@ -232,10 +234,12 @@ export function buildDealAllFailActivity(
   }
 }
 
-// ── Scenario C — pasta sweep Note (Markdown — UNCHANGED) ────────────────
+// ── Scenario C — pasta sweep Note (HTML) ────────────────────────────────
 //
-// Pipedrive Note `content` field renders Markdown correctly — headings, tables,
-// lists all show as expected. Do NOT migrate this to HTML.
+// Pipedrive's POST /v1/notes endpoint renders the same constrained HTML
+// safelist as Activity.note when content is sent verbatim — Markdown shipped
+// in `content` is shown as raw source on the deal timeline. Migrated to HTML
+// on 2026-04-29 (mirroring the Activities migration done on the same day).
 
 function pct(numerator: number, denominator: number): string {
   if (denominator <= 0) return '0.0'
@@ -250,37 +254,55 @@ export function buildPastaSummaryNote(
   const archivedPct = pct(intent.archived_deals, intent.total_deals)
   const okPhonesPct = pct(intent.ok_phones, intent.total_phones_checked)
   const dealUrl = buildDealUrl(intent.first_deal_id, companyDomain)
-  const lines: string[] = []
+
+  // All user-facing values get escaped before HTML interpolation.
+  const pastaEsc = escapeHtml(intent.pasta)
+  const jobIdEsc = escapeHtml(intent.job_id)
+  const startedEsc = escapeHtml(intent.job_started ?? 'n/a')
+  const endedEsc = escapeHtml(intent.job_ended ?? 'n/a')
+
+  const parts: string[] = []
   if (dealUrl) {
-    lines.push(`**Primeiro deal da pasta**: [#${intent.first_deal_id}](${dealUrl})`, '')
+    // dealUrl is built from sanitized inputs (dealId integer, domain regex)
+    // but we still escape for defense-in-depth. <a> is on the safelist.
+    parts.push(
+      `<p><strong>Primeiro deal da pasta:</strong> <a href="${escapeHtml(dealUrl)}">#${intent.first_deal_id}</a></p>`,
+    )
   }
-  lines.push(
-    `# 📋 Resumo de varredura — Pasta \`${intent.pasta}\``,
-    '',
-    `**Período**: ${intent.job_started ?? 'n/a'} → ${intent.job_ended ?? 'n/a'}`,
-    `**Job ID**: \`${intent.job_id}\``,
-    '',
-    '## Métricas',
-    '',
-    '| Métrica | Valor |',
-    '|---|---|',
-    `| Deals na pasta | ${intent.total_deals} |`,
-    `| Deals com ≥ 1 telefone válido | ${intent.ok_deals} (${okPct}%) |`,
-    `| Deals 100% inválidos (arquivados) | ${intent.archived_deals} (${archivedPct}%) |`,
-    `| Total fones verificados | ${intent.total_phones_checked} |`,
-    `| Fones existentes no WhatsApp | ${intent.ok_phones} (${okPhonesPct}%) |`,
-    '',
-    '## Distribuição por estratégia de validação',
-    '',
-    '| Estratégia | Verificações |',
-    '|---|---|',
-    `| ADB direto | ${intent.strategy_counts.adb} |`,
-    `| WAHA fallback | ${intent.strategy_counts.waha} |`,
-    `| Cache hit (recente) | ${intent.strategy_counts.cache} |`,
-    '',
-    '_Gerado automaticamente por **dispatch-core** — `adb-precheck` plugin._',
+  // No <h1>/<h2> — not in the safelist; use <p><strong> visual emphasis instead.
+  parts.push(`<p><strong>📋 Resumo de varredura</strong> &middot; Pasta <strong>${pastaEsc}</strong></p>`)
+  parts.push(
+    '<p>'
+      + `<strong>Período</strong>: ${startedEsc} → ${endedEsc}<br>`
+      + `<strong>Job ID</strong>: ${jobIdEsc}`
+      + '</p>',
   )
-  const content = lines.join('\n')
+  parts.push('<p><strong>Métricas</strong></p>')
+  parts.push(
+    '<table>'
+      + '<thead><tr><th>Métrica</th><th>Valor</th></tr></thead>'
+      + '<tbody>'
+      + `<tr><td>Deals na pasta</td><td>${intent.total_deals}</td></tr>`
+      + `<tr><td>Deals com ≥ 1 telefone válido</td><td>${intent.ok_deals} (${okPct}%)</td></tr>`
+      + `<tr><td>Deals 100% inválidos (arquivados)</td><td>${intent.archived_deals} (${archivedPct}%)</td></tr>`
+      + `<tr><td>Total fones verificados</td><td>${intent.total_phones_checked}</td></tr>`
+      + `<tr><td>Fones existentes no WhatsApp</td><td>${intent.ok_phones} (${okPhonesPct}%)</td></tr>`
+      + '</tbody>'
+      + '</table>',
+  )
+  parts.push('<p><strong>Distribuição por estratégia de validação</strong></p>')
+  parts.push(
+    '<table>'
+      + '<thead><tr><th>Estratégia</th><th>Verificações</th></tr></thead>'
+      + '<tbody>'
+      + `<tr><td>ADB direto</td><td>${intent.strategy_counts.adb}</td></tr>`
+      + `<tr><td>WAHA fallback</td><td>${intent.strategy_counts.waha}</td></tr>`
+      + `<tr><td>Cache hit (recente)</td><td>${intent.strategy_counts.cache}</td></tr>`
+      + '</tbody>'
+      + '</table>',
+  )
+  parts.push('<p><em>Gerado automaticamente por <strong>dispatch-core</strong> &middot; adb-precheck plugin.</em></p>')
+  const content = parts.join('')
 
   return {
     kind: 'note',

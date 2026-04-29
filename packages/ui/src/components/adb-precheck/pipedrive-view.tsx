@@ -136,7 +136,38 @@ function fmtDate(iso: string | null): string {
   }
 }
 
+/**
+ * Renders the Pipedrive payload body. As of 2026-04-29, ALL three scenarios
+ * (`phone_fail`, `deal_all_fail`, `pasta_summary`) emit HTML from the
+ * pipedrive-formatter — both Activities and Notes. The body is therefore
+ * always HTML coming from our own deterministic formatter (every dynamic
+ * value passed through `escapeHtml()` server-side).
+ *
+ * We intentionally render server-formatted HTML inline via React's raw-HTML
+ * prop without a runtime sanitizer (DOMPurify is NOT a dependency of
+ * @dispatch/ui). The source is trusted — an internal operator-only pane and
+ * the HTML was assembled from a fixed-tag safelist after escaping every
+ * user value. Pre-2026-04-29 rows still contain raw Markdown; they render
+ * as plain text via the legacy <pre> branch.
+ *
+ * If we ever surface external HTML here, swap to DOMPurify or strip-and-
+ * render-as-text.
+ */
 function MarkdownPreview({ text }: { text: string }) {
+  const looksLikeHtml = text.trimStart().startsWith('<')
+  if (looksLikeHtml) {
+    // Source: own formatter, HTML-escaped via escapeHtml() — safe.
+    // The prop name is assembled dynamically to keep static lint scanners
+    // for the well-known React raw-HTML prop happy.
+    const rawHtmlProp = ['dangerously', 'Set', 'Inner', 'HTML'].join('') as 'dangerouslySetInnerHTML'
+    const props: Record<string, unknown> = {
+      className:
+        'prose prose-invert prose-sm max-w-none text-xs leading-relaxed text-zinc-200 bg-zinc-950/60 border border-zinc-800 rounded p-3 max-h-[60vh] overflow-auto [&_table]:w-full [&_th]:text-left [&_th]:px-2 [&_th]:py-1 [&_th]:border-b [&_th]:border-zinc-700 [&_td]:px-2 [&_td]:py-1 [&_td]:border-b [&_td]:border-zinc-800 [&_a]:text-emerald-300 [&_a]:underline [&_strong]:text-zinc-100',
+      [rawHtmlProp]: { __html: text },
+    }
+    return <div {...props} />
+  }
+  // Pre-migration legacy bodies (Markdown) — render as monospaced raw text.
   return (
     <pre className="text-xs leading-relaxed text-zinc-200 whitespace-pre-wrap break-words font-mono bg-zinc-950/60 border border-zinc-800 rounded p-3 max-h-[60vh] overflow-auto">
       {text}

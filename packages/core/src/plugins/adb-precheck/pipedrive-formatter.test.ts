@@ -198,11 +198,38 @@ describe('buildPastaSummaryNote', () => {
     expect(n.payload.content).toContain('140 (70.0%)')
   })
 
-  it('includes strategy breakdown', () => {
+  it('includes strategy breakdown as HTML rows', () => {
     const n = buildPastaSummaryNote(intent)
-    expect(n.payload.content).toContain('| ADB direto | 120 |')
-    expect(n.payload.content).toContain('| WAHA fallback | 30 |')
-    expect(n.payload.content).toContain('| Cache hit (recente) | 50 |')
+    expect(n.payload.content).toContain('<td>ADB direto</td><td>120</td>')
+    expect(n.payload.content).toContain('<td>WAHA fallback</td><td>30</td>')
+    expect(n.payload.content).toContain('<td>Cache hit (recente)</td><td>50</td>')
+  })
+
+  it('emits HTML (not Markdown) — Pipedrive Notes endpoint also renders HTML, not raw Markdown', () => {
+    const n = buildPastaSummaryNote(intent, 'debt-5188cf')
+    // Must be HTML.
+    expect(n.payload.content).toContain('<table>')
+    expect(n.payload.content).toContain('<thead>')
+    expect(n.payload.content).toContain('<tbody>')
+    expect(n.payload.content).toContain('<th>Métrica</th>')
+    expect(n.payload.content).toContain('<th>Valor</th>')
+    expect(n.payload.content).toContain('<p>')
+    expect(n.payload.content).toContain('<strong>')
+    expect(n.payload.content).toContain('<em>')
+    expect(n.payload.content).toContain('&middot;')
+    // Must NOT contain Markdown markers.
+    expect(n.payload.content).not.toMatch(/^# /m)
+    expect(n.payload.content).not.toMatch(/^## /m)
+    expect(n.payload.content).not.toContain('|---|')
+    expect(n.payload.content).not.toContain('| Métrica | Valor |')
+    expect(n.payload.content).not.toMatch(/\*\*[^*]+\*\*/)
+    // Must NOT contain disallowed safelist tags.
+    expect(n.payload.content).not.toContain('<h1>')
+    expect(n.payload.content).not.toContain('<h2>')
+    expect(n.payload.content).not.toContain('<code>')
+    // Domain-specific data still present.
+    expect(n.payload.content).toContain('PASTA-042')
+    expect(n.payload.content).toContain('job-final')
   })
 
   it('handles 0/0 gracefully (no NaN%)', () => {
@@ -216,6 +243,18 @@ describe('buildPastaSummaryNote', () => {
     })
     expect(n.payload.content).not.toContain('NaN')
     expect(n.payload.content).toContain('0 (0.0%)')
+  })
+
+  it('escapes pasta containing html-special chars (defense vs injection)', () => {
+    const n = buildPastaSummaryNote({
+      ...intent,
+      pasta: 'Brown & <Co>',
+      job_id: '<script>alert(1)</script>',
+    })
+    expect(n.payload.content).toContain('Brown &amp; &lt;Co&gt;')
+    expect(n.payload.content).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
+    expect(n.payload.content).not.toContain('Brown & <Co>')
+    expect(n.payload.content).not.toContain('<script>alert(1)</script>')
   })
 })
 
@@ -292,7 +331,7 @@ describe('formatter — dealUrl interpolation', () => {
     expect(a.payload.note).toContain('<a href="https://debt-5188cf.pipedrive.com/deal/143611">#143611</a>')
   })
 
-  it('pasta summary (still Markdown) includes link to first deal', () => {
+  it('pasta summary (HTML) includes deal link as <a href> at top when domain is set', () => {
     const n = buildPastaSummaryNote({
       scenario: 'pasta_summary',
       pasta: 'P-001', first_deal_id: 143611, job_id: 'job-1',
@@ -301,11 +340,14 @@ describe('formatter — dealUrl interpolation', () => {
       total_phones_checked: 1, ok_phones: 1,
       strategy_counts: { adb: 1, waha: 0, cache: 0 },
     }, 'debt-5188cf')
-    // Notes still use Markdown — Pipedrive Note endpoint renders it correctly.
-    expect(n.payload.content).toContain('[#143611](https://debt-5188cf.pipedrive.com/deal/143611)')
+    expect(n.payload.content).toContain('<a href="https://debt-5188cf.pipedrive.com/deal/143611">#143611</a>')
+    // The deal link must appear before the header block (first <p>).
+    expect(n.payload.content.startsWith('<p>')).toBe(true)
+    // Must NOT contain Markdown link syntax.
+    expect(n.payload.content).not.toContain('](https://debt-5188cf')
   })
 
-  it('pasta summary still uses Markdown (Notes endpoint renders MD correctly)', () => {
+  it('pasta summary omits deal link when domain is unset', () => {
     const n = buildPastaSummaryNote({
       scenario: 'pasta_summary',
       pasta: 'P-001', first_deal_id: 1, job_id: 'j',
@@ -314,9 +356,11 @@ describe('formatter — dealUrl interpolation', () => {
       total_phones_checked: 1, ok_phones: 1,
       strategy_counts: { adb: 1, waha: 0, cache: 0 },
     })
-    expect(n.payload.content).toContain('# 📋 Resumo')
-    expect(n.payload.content).toContain('| Métrica | Valor |')
-    expect(n.payload.content).not.toContain('<table>')
+    expect(n.payload.content).not.toContain('pipedrive.com/deal')
+    // Still HTML, even without domain.
+    expect(n.payload.content).toContain('<table>')
+    expect(n.payload.content).not.toContain('# 📋')
+    expect(n.payload.content).not.toContain('| Métrica | Valor |')
   })
 })
 

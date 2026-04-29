@@ -97,6 +97,39 @@ describe('PipedriveClient — happy path', () => {
     expect(url).toContain('/v1/notes')
   })
 
+  it('extracts data.id from a successful response and surfaces it as responseId', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ success: true, data: { id: 4242, deal_id: 12345, note: 'x' } }),
+        { status: 201, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+    const client = new PipedriveClient({
+      apiToken: 'tok',
+      fetchImpl: fetchSpy as unknown as typeof fetch,
+      sleep: async () => {},
+    })
+    const r = await client.dispatch(sampleActivity)
+    expect(r.ok).toBe(true)
+    expect(r.responseId).toBe(4242)
+  })
+
+  it('returns responseId:null when data.id is missing/malformed (legacy/edge endpoints)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true, data: null }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    const client = new PipedriveClient({
+      apiToken: 'tok',
+      fetchImpl: fetchSpy as unknown as typeof fetch,
+      sleep: async () => {},
+    })
+    const r = await client.dispatch(sampleActivity)
+    expect(r.ok).toBe(true)
+    expect(r.responseId).toBeNull()
+  })
+
   it('treats success:false JSON as a non-retryable failure', async () => {
     const fetchSpy = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: false, error: 'bad deal' }), {

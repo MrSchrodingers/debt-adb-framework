@@ -66,6 +66,17 @@ const pipedriveOkSchema = z.object({
   data: z.unknown().nullable().optional(),
 })
 
+/**
+ * Subset of the Pipedrive success response we care about — the numeric `id`
+ * of the freshly-created activity/note, surfaced so callers can persist it as
+ * a foreign key for later edits. We only parse `data.id` defensively (number);
+ * everything else stays a non-blocking convenience.
+ */
+const pipedriveOkWithIdSchema = z.object({
+  success: z.literal(true),
+  data: z.object({ id: z.number().int().positive() }).passthrough(),
+})
+
 const pipedriveErrSchema = z.object({
   success: z.literal(false),
   error: z.string().optional(),
@@ -102,6 +113,14 @@ export interface PipedriveDispatchResult {
   status: number | null
   attempts: number
   error?: string
+  /**
+   * The numeric `data.id` returned by Pipedrive on success — i.e. the
+   * activity-id (for `/v1/activities`) or note-id (for `/v1/notes`).
+   * Required to update / repair the entity later without re-walking the
+   * deal's activity list. `null` when the response body could not be parsed
+   * or the call failed.
+   */
+  responseId?: number | null
 }
 
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504])
@@ -225,9 +244,22 @@ export class PipedriveClient {
             parsed = null
           }
           if (parsed && typeof parsed === 'object') {
+            // Try the strict id-bearing schema first so we capture the
+            // freshly-created entity id; fall back to the legacy "any data"
+            // schema for endpoints that don't return data.id (none today,
+            // but keeps the contract resilient).
+            const okWithId = pipedriveOkWithIdSchema.safeParse(parsed)
+            if (okWithId.success) {
+              return {
+                ok: true,
+                status: res.status,
+                attempts: attempt,
+                responseId: okWithId.data.data.id,
+              }
+            }
             const ok = pipedriveOkSchema.safeParse(parsed)
             if (ok.success) {
-              return { ok: true, status: res.status, attempts: attempt }
+              return { ok: true, status: res.status, attempts: attempt, responseId: null }
             }
             const err = pipedriveErrSchema.safeParse(parsed)
             if (err.success) {
@@ -237,7 +269,7 @@ export class PipedriveClient {
             }
           }
           // Couldn't parse but HTTP says ok — accept it.
-          return { ok: true, status: res.status, attempts: attempt }
+          return { ok: true, status: res.status, attempts: attempt, responseId: null }
         }
 
         const text = await res.text().catch(() => '')
