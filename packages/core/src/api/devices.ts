@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type { AdbBridge } from '../adb/index.js'
 import { IpRateLimiter } from './rate-limiter.js'
 import { hygienizeDevice, type HygieneLog, type AutoHygiene } from '../devices/index.js'
+import type { WaAccountMapper } from '../monitor/index.js'
 
 const shellRateLimiter = new IpRateLimiter({ maxRequests: 10, windowMs: 60_000 })
 const shellSchema = z.object({ command: z.string().min(1).max(4096) })
@@ -82,6 +83,7 @@ async function switchAndUnlock(adb: AdbShell, serial: string, targetUid: number)
 export interface DeviceRoutesDeps {
   hygieneLog?: HygieneLog
   autoHygiene?: AutoHygiene
+  waMapper?: WaAccountMapper
 }
 
 export function registerDeviceRoutes(
@@ -404,19 +406,40 @@ export function registerDeviceRoutes(
     }
   })
 
-  // Set phone number manually for a profile
+  // Set phone number manually for a profile (com.whatsapp by default; pass
+  // ?package=com.whatsapp.w4b to pin the WAB number instead). Persists into
+  // `whatsapp_accounts` so the Devices UI + chip auto-import can read it.
   server.put('/api/v1/devices/:serial/profiles/:profileId/phone', async (request, reply) => {
     const { serial, profileId } = request.params as { serial: string; profileId: string }
-    const body = request.body as { phone: string }
-    if (!body?.phone || typeof body.phone !== 'string') {
+    const body = request.body as { phone?: string; package?: string } | null
+    const query = (request.query ?? {}) as { package?: string }
+    const phone = typeof body?.phone === 'string' ? body.phone.trim() : ''
+    const pkgRaw = (body?.package ?? query.package ?? 'com.whatsapp').trim()
+    if (!phone) {
       return reply.status(400).send({ error: 'phone is required' })
     }
-    // Store in whatsapp_accounts table
-    const db = (request.server as unknown as { db?: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } }).db
-    // Fallback: use the monitor's DB via the server context
-    // For now, just log and return success — the WaAccountMapper handles persistence
-    server.log.info({ serial, profileId, phone: body.phone }, 'Manual phone mapping set')
-    return reply.send({ serial, profileId: Number(profileId), phone: body.phone })
+    if (!/^\d{10,15}$/.test(phone.replace(/\D/g, ''))) {
+      return reply.status(400).send({ error: 'phone must be 10-15 digits' })
+    }
+    if (pkgRaw !== 'com.whatsapp' && pkgRaw !== 'com.whatsapp.w4b') {
+      return reply.status(400).send({ error: 'package must be com.whatsapp or com.whatsapp.w4b' })
+    }
+    const pid = Number(profileId)
+    if (!Number.isInteger(pid) || pid < 0) {
+      return reply.status(400).send({ error: 'profileId must be a non-negative integer' })
+    }
+    const normalized = phone.replace(/\D/g, '')
+
+    if (deps.waMapper) {
+      try {
+        deps.waMapper.setPhoneNumber(serial, pid, pkgRaw as 'com.whatsapp' | 'com.whatsapp.w4b', normalized)
+      } catch (err) {
+        server.log.error({ serial, profileId: pid, err }, 'setPhoneNumber failed')
+        return reply.status(500).send({ error: 'failed to persist phone mapping' })
+      }
+    }
+    server.log.info({ serial, profileId: pid, package: pkgRaw, phone: normalized }, 'Manual phone mapping set')
+    return reply.send({ serial, profileId: pid, package: pkgRaw, phone: normalized })
   })
 
   // Live screen — screenshot as base64 for embedding
@@ -523,6 +546,16 @@ export function registerDeviceRoutes(
       whatsappBusiness: { installed: boolean; phone: string | null; active: boolean }
     }> = []
 
+    // Fall back to whatsapp_accounts when content provider isolation prevents
+    // ADB-side extraction (per-user provider isolation on secondary profiles).
+    const dbAccounts = deps.waMapper?.getAccountsByDevice(serial) ?? []
+    const phoneFromDb = (pid: number, pkg: 'com.whatsapp' | 'com.whatsapp.w4b'): string | null => {
+      const row = dbAccounts.find(
+        (a) => a.profileId === pid && a.packageName === pkg,
+      )
+      return row?.phoneNumber ?? null
+    }
+
     let match: RegExpExecArray | null
     while ((match = profileRegex.exec(usersOutput)) !== null) {
       const profileId = Number(match[1])
@@ -533,12 +566,15 @@ export function registerDeviceRoutes(
       const waInfo = await getWaProfileInfo(adb, serial, profileId, 'com.whatsapp')
       const wabInfo = await getWaProfileInfo(adb, serial, profileId, 'com.whatsapp.w4b')
 
+      const waPhone = waInfo.phone ?? phoneFromDb(profileId, 'com.whatsapp')
+      const wabPhone = wabInfo.phone ?? phoneFromDb(profileId, 'com.whatsapp.w4b')
+
       profiles.push({
         id: profileId,
         name,
         running,
-        whatsapp: { installed: waInfo.installed, phone: waInfo.phone, active: waInfo.processRunning },
-        whatsappBusiness: { installed: wabInfo.installed, phone: wabInfo.phone, active: wabInfo.processRunning },
+        whatsapp: { installed: waInfo.installed, phone: waPhone, active: waInfo.processRunning },
+        whatsappBusiness: { installed: wabInfo.installed, phone: wabPhone, active: wabInfo.processRunning },
       })
     }
 

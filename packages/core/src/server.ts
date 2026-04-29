@@ -351,7 +351,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   })
 
   registerMessageRoutes(server, queue, emitter)
-  registerDeviceRoutes(server, adb, { hygieneLog, autoHygiene })
+  registerDeviceRoutes(server, adb, { hygieneLog, autoHygiene, waMapper })
   registerMonitorRoutes(server, { adb, engine, deviceManager, healthCollector, waMapper, alertSystem })
 
   // WAHA routes always registered (webhook receiver works without WAHA client)

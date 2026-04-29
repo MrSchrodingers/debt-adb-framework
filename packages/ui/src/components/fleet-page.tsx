@@ -14,6 +14,7 @@ import {
   X,
   FileSpreadsheet,
   ChevronRight,
+  Pencil,
 } from 'lucide-react'
 import { CORE_URL, authHeaders } from '../config'
 import {
@@ -115,6 +116,50 @@ const fmtDate = (s: string): string => {
   }
 }
 
+/**
+ * Compute the next occurrence of a recurring monthly due day (1..31).
+ *
+ * Mirrors `nextDueDate()` in `chip-registry.ts` (UTC, clamps short months
+ * Feb 30 → Feb 28/29, Apr 31 → Apr 30). Returns the date together with the
+ * whole-day delta from `now`.
+ */
+function computeNextDue(dueDay: number, now: Date = new Date()): { dueDate: Date; daysUntil: number } {
+  const year = now.getUTCFullYear()
+  const month = now.getUTCMonth()
+  const today = now.getUTCDate()
+  const tryMonth = (y: number, m: number): Date => {
+    const lastDay = new Date(Date.UTC(y, m + 1, 0)).getUTCDate()
+    const day = Math.min(dueDay, lastDay)
+    return new Date(Date.UTC(y, m, day))
+  }
+  const thisMonth = tryMonth(year, month)
+  let dueDate: Date
+  if (thisMonth.getUTCDate() >= today) {
+    dueDate = thisMonth
+  } else {
+    const nm = month === 11 ? 0 : month + 1
+    const ny = month === 11 ? year + 1 : year
+    dueDate = tryMonth(ny, nm)
+  }
+  const a = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+  const b = Date.UTC(dueDate.getUTCFullYear(), dueDate.getUTCMonth(), dueDate.getUTCDate())
+  const daysUntil = Math.round((b - a) / 86_400_000)
+  return { dueDate, daysUntil }
+}
+
+/** Format the next due date for display in card/calendar contexts. */
+function formatDueLabel(dueDay: number, now: Date = new Date()): {
+  text: string
+  tone: 'emerald' | 'amber' | 'rose'
+} {
+  const { dueDate, daysUntil } = computeNextDue(dueDay, now)
+  const ds = dueDate.toLocaleDateString('pt-BR')
+  if (daysUntil === 0) return { text: `vence hoje (${ds})`, tone: 'amber' }
+  if (daysUntil < 0) return { text: `atrasado ${Math.abs(daysUntil)}d (${ds})`, tone: 'rose' }
+  if (daysUntil <= 7) return { text: `em ${daysUntil}d (${ds})`, tone: 'amber' }
+  return { text: `em ${daysUntil}d (${ds})`, tone: 'emerald' }
+}
+
 export function FleetPage() {
   const [activeTab, setActiveTab] = useState<SubTab>('chips')
   const [reloadKey, setReloadKey] = useState(0)
@@ -172,6 +217,7 @@ function ChipsPanel() {
   const [autoImporting, setAutoImporting] = useState(false)
   const [autoImportMsg, setAutoImportMsg] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [editingChip, setEditingChip] = useState<Chip | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true); setErr(null)
@@ -306,10 +352,26 @@ function ChipsPanel() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
           {filtered.map((c) => (
-            <ChipCard key={c.id} chip={c} onClick={() => setSelectedId(c.id)} />
+            <ChipCard
+              key={c.id}
+              chip={c}
+              onClick={() => setSelectedId(c.id)}
+              onEdit={() => setEditingChip(c)}
+            />
           ))}
         </div>
       )}
+
+      {editingChip ? (
+        <EditChipModal
+          chip={editingChip}
+          onClose={() => setEditingChip(null)}
+          onSaved={() => {
+            setEditingChip(null)
+            void load()
+          }}
+        />
+      ) : null}
 
       {creating ? (
         <CreateChipModal
@@ -342,52 +404,86 @@ function ChipsPanel() {
   )
 }
 
-function ChipCard({ chip, onClick }: { chip: Chip; onClick: () => void }) {
-  const statusColor =
-    chip.status === 'active' ? 'emerald' :
-    chip.status === 'banned' ? 'rose' :
-    chip.status === 'retired' ? 'zinc' :
-    'amber'
+const STATUS_BADGE: Record<Chip['status'], string> = {
+  active: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20',
+  banned: 'bg-rose-500/10 text-rose-300 border-rose-500/20',
+  retired: 'bg-zinc-500/10 text-zinc-300 border-zinc-500/20',
+  inactive: 'bg-amber-500/10 text-amber-300 border-amber-500/20',
+}
+
+const DUE_BADGE: Record<'emerald' | 'amber' | 'rose', string> = {
+  emerald: 'text-emerald-300',
+  amber: 'text-amber-300',
+  rose: 'text-rose-300',
+}
+
+function ChipCard({
+  chip,
+  onClick,
+  onEdit,
+}: {
+  chip: Chip
+  onClick: () => void
+  onEdit: () => void
+}) {
+  const due = formatDueLabel(chip.payment_due_day)
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="text-left rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 hover:border-emerald-500/30 transition"
-    >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="text-sm font-mono text-zinc-100 truncate">{chip.phone_number}</div>
-          <div className="text-xs text-zinc-500 mt-0.5 truncate">
-            {chip.carrier.toUpperCase()} · {chip.plan_name}
+    <div className="relative rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 hover:border-emerald-500/30 transition">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          onEdit()
+        }}
+        title="Editar chip"
+        className="absolute top-2 right-2 rounded-md p-1 text-zinc-500 hover:text-emerald-300 hover:bg-emerald-500/10 transition"
+      >
+        <Pencil className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        onClick={onClick}
+        className="text-left w-full"
+      >
+        <div className="flex items-start justify-between gap-2 pr-6">
+          <div className="min-w-0">
+            <div className="text-sm font-mono text-zinc-100 truncate">{chip.phone_number}</div>
+            <div className="text-xs text-zinc-500 mt-0.5 truncate">
+              {chip.carrier.toUpperCase()} · {chip.plan_name}
+            </div>
+          </div>
+          <span
+            className={`shrink-0 rounded-full text-[10px] uppercase tracking-wider px-2 py-0.5 border ${STATUS_BADGE[chip.status]}`}
+          >
+            {chip.status}
+          </span>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+          <div>
+            <div className="text-zinc-500">Mensal</div>
+            <div className="text-zinc-200 font-medium">{fmtBrl(chip.monthly_cost_brl)}</div>
+          </div>
+          <div>
+            <div className="text-zinc-500">Próximo venc.</div>
+            <div className={`font-medium ${DUE_BADGE[due.tone]}`} title={`Recorrente todo dia ${chip.payment_due_day}`}>
+              {due.text}
+            </div>
           </div>
         </div>
-        <span className={`shrink-0 rounded-full text-[10px] uppercase tracking-wider px-2 py-0.5 bg-${statusColor}-500/10 text-${statusColor}-300 border border-${statusColor}-500/20`}>
-          {chip.status}
-        </span>
-      </div>
-      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-        <div>
-          <div className="text-zinc-500">Mensal</div>
-          <div className="text-zinc-200 font-medium">{fmtBrl(chip.monthly_cost_brl)}</div>
+        {chip.device_serial ? (
+          <div className="mt-2 text-xs text-zinc-500 flex items-center gap-1">
+            <Smartphone className="h-3 w-3" />
+            <span className="truncate font-mono">{chip.device_serial}</span>
+          </div>
+        ) : null}
+        {chip.acquired_for_purpose ? (
+          <div className="mt-1 text-xs text-zinc-500 truncate">{chip.acquired_for_purpose}</div>
+        ) : null}
+        <div className="mt-2 text-xs text-zinc-600 flex items-center justify-end gap-1">
+          Detalhes <ChevronRight className="h-3 w-3" />
         </div>
-        <div>
-          <div className="text-zinc-500">Vence dia</div>
-          <div className="text-zinc-200 font-medium">{chip.payment_due_day}</div>
-        </div>
-      </div>
-      {chip.device_serial ? (
-        <div className="mt-2 text-xs text-zinc-500 flex items-center gap-1">
-          <Smartphone className="h-3 w-3" />
-          <span className="truncate font-mono">{chip.device_serial}</span>
-        </div>
-      ) : null}
-      {chip.acquired_for_purpose ? (
-        <div className="mt-1 text-xs text-zinc-500 truncate">📌 {chip.acquired_for_purpose}</div>
-      ) : null}
-      <div className="mt-2 text-xs text-zinc-600 flex items-center justify-end gap-1">
-        Detalhes <ChevronRight className="h-3 w-3" />
-      </div>
-    </button>
+      </button>
+    </div>
   )
 }
 
@@ -603,6 +699,250 @@ function CreateChipModal({ onClose, onCreated }: { onClose: () => void; onCreate
   )
 }
 
+// ── Edit Chip Modal ───────────────────────────────────────────────────────
+//
+// Allows full edit of an existing chip. Mutable fields match the server-side
+// `updateChipSchema` (Zod) — phone_number, acquisition_date and
+// acquisition_cost_brl are immutable in PATCH so we render them read-only.
+//
+// The modal is intentionally a stand-alone component (not a CreateChipModal
+// fork) so the user can never accidentally hit the unique constraint by
+// renaming the phone, and so optimistic updates can be re-fetched per-chip.
+
+function EditChipModal({
+  chip,
+  onClose,
+  onSaved,
+}: {
+  chip: Chip
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [form, setForm] = useState({
+    carrier: chip.carrier,
+    plan_name: chip.plan_name,
+    plan_type: chip.plan_type,
+    monthly_cost_brl: String(chip.monthly_cost_brl),
+    payment_due_day: String(chip.payment_due_day),
+    payment_method: chip.payment_method ?? '',
+    paid_by_operator: chip.paid_by_operator,
+    device_serial: chip.device_serial ?? '',
+    status: chip.status,
+    acquired_for_purpose: chip.acquired_for_purpose ?? '',
+    notes: chip.notes ?? '',
+  })
+  const [submitting, setSubmitting] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const submit = async () => {
+    setSubmitting(true); setErr(null)
+    try {
+      // Build PATCH body — only fields the user changed (mirrors updateChipSchema).
+      const body: Record<string, unknown> = {
+        carrier: form.carrier.trim().toLowerCase(),
+        plan_name: form.plan_name.trim(),
+        plan_type: form.plan_type,
+        monthly_cost_brl: Number(form.monthly_cost_brl) || 0,
+        payment_due_day: Number(form.payment_due_day) || 1,
+        payment_method: form.payment_method.trim() || null,
+        paid_by_operator: form.paid_by_operator.trim(),
+        device_serial: form.device_serial.trim() || null,
+        status: form.status,
+        acquired_for_purpose: form.acquired_for_purpose.trim() || null,
+        notes: form.notes.trim() || null,
+      }
+      const r = await fetch(`${FLEET_BASE}/chips/${chip.id}`, {
+        method: 'PATCH',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(body),
+      })
+      if (!r.ok) {
+        const j = (await r.json().catch(() => ({}))) as { error?: string }
+        throw new Error(j.error || `HTTP ${r.status}`)
+      }
+      onSaved()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4">
+      <div className="w-full max-w-2xl rounded-xl border border-emerald-500/30 bg-zinc-950 p-5 shadow-xl shadow-black/50 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-start justify-between mb-4">
+          <h3 className="text-base font-semibold text-zinc-100">
+            Editar chip <span className="font-mono text-emerald-300">{chip.phone_number}</span>
+          </h3>
+          <button onClick={onClose} className="text-zinc-500 hover:text-zinc-200">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <FormField label="Telefone" hint="imutável">
+            <input
+              value={chip.phone_number}
+              readOnly
+              className="w-full rounded-md bg-zinc-900/60 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-400 font-mono"
+            />
+          </FormField>
+          <FormField label="Operadora *">
+            <select
+              value={form.carrier}
+              onChange={(e) => setForm({ ...form, carrier: e.target.value })}
+              className="w-full rounded-md bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100"
+            >
+              {['vivo', 'claro', 'tim', 'oi', 'surf', 'outro'].map((c) => (
+                <option key={c} value={c}>{c.toUpperCase()}</option>
+              ))}
+            </select>
+          </FormField>
+          <FormField label="Nome do plano *">
+            <input
+              type="text"
+              value={form.plan_name}
+              onChange={(e) => setForm({ ...form, plan_name: e.target.value })}
+              maxLength={120}
+              className="w-full rounded-md bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100"
+            />
+          </FormField>
+          <FormField label="Tipo de plano">
+            <select
+              value={form.plan_type}
+              onChange={(e) => setForm({ ...form, plan_type: e.target.value })}
+              className="w-full rounded-md bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100"
+            >
+              <option value="postpago">Pós-pago</option>
+              <option value="controle">Controle</option>
+              <option value="prepago">Pré-pago</option>
+            </select>
+          </FormField>
+          <FormField label="Aquisição" hint="imutável">
+            <input
+              value={fmtDate(chip.acquisition_date)}
+              readOnly
+              className="w-full rounded-md bg-zinc-900/60 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-400"
+            />
+          </FormField>
+          <FormField label="Custo aquisição" hint="imutável">
+            <input
+              value={fmtBrl(chip.acquisition_cost_brl)}
+              readOnly
+              className="w-full rounded-md bg-zinc-900/60 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-400"
+            />
+          </FormField>
+          <FormField label="Custo mensal (R$) *">
+            <input
+              type="number"
+              step="0.01"
+              value={form.monthly_cost_brl}
+              onChange={(e) => setForm({ ...form, monthly_cost_brl: e.target.value })}
+              className="w-full rounded-md bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100"
+            />
+          </FormField>
+          <FormField label="Dia de vencimento *" hint="1–31, recorrente">
+            <input
+              type="number"
+              min={1}
+              max={31}
+              value={form.payment_due_day}
+              onChange={(e) => setForm({ ...form, payment_due_day: e.target.value })}
+              className="w-full rounded-md bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100"
+            />
+          </FormField>
+          <FormField label="Método de pagamento">
+            <input
+              type="text"
+              value={form.payment_method}
+              onChange={(e) => setForm({ ...form, payment_method: e.target.value })}
+              maxLength={120}
+              placeholder="Cartão Inter / Pix / Boleto…"
+              className="w-full rounded-md bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100"
+            />
+          </FormField>
+          <FormField label="Pago por *">
+            <input
+              type="text"
+              value={form.paid_by_operator}
+              onChange={(e) => setForm({ ...form, paid_by_operator: e.target.value })}
+              maxLength={80}
+              className="w-full rounded-md bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100"
+            />
+          </FormField>
+          <FormField label="Device serial">
+            <input
+              type="text"
+              value={form.device_serial}
+              onChange={(e) => setForm({ ...form, device_serial: e.target.value })}
+              maxLength={80}
+              placeholder="POCO_C71_001"
+              className="w-full rounded-md bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100 font-mono"
+            />
+          </FormField>
+          <FormField label="Status *">
+            <select
+              value={form.status}
+              onChange={(e) => setForm({ ...form, status: e.target.value as Chip['status'] })}
+              className="w-full rounded-md bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100"
+            >
+              <option value="active">Ativo</option>
+              <option value="inactive">Inativo</option>
+              <option value="banned">Banido</option>
+              <option value="retired">Retirado</option>
+            </select>
+          </FormField>
+          <div className="md:col-span-2">
+            <FormField label="Finalidade">
+              <input
+                type="text"
+                value={form.acquired_for_purpose}
+                onChange={(e) => setForm({ ...form, acquired_for_purpose: e.target.value })}
+                maxLength={200}
+                placeholder="Oralsin SP / frota geral"
+                className="w-full rounded-md bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100"
+              />
+            </FormField>
+          </div>
+          <div className="md:col-span-2">
+            <FormField label="Observações" hint="max 2000 caracteres">
+              <textarea
+                value={form.notes}
+                onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                maxLength={2000}
+                rows={3}
+                className="w-full rounded-md bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100"
+              />
+            </FormField>
+          </div>
+        </div>
+
+        {err ? <div className="mt-3 text-xs text-rose-300">Erro: {err}</div> : null}
+
+        <div className="mt-5 flex items-center justify-end gap-2">
+          <button onClick={onClose} className="rounded-md px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800">
+            Cancelar
+          </button>
+          <AccentButton
+            accent={ACCENT}
+            onClick={submit}
+            disabled={
+              submitting ||
+              !form.plan_name ||
+              !form.paid_by_operator ||
+              !form.monthly_cost_brl ||
+              Number(form.payment_due_day) < 1 ||
+              Number(form.payment_due_day) > 31
+            }
+          >
+            {submitting ? 'Salvando…' : 'Salvar'}
+          </AccentButton>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function FormField({
   label,
   hint,
@@ -792,6 +1132,7 @@ function ChipDetailModal({
   const [err, setErr] = useState<string | null>(null)
   const [recordingPayment, setRecordingPayment] = useState(false)
   const [recordingMessage, setRecordingMessage] = useState(false)
+  const [editing, setEditing] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -841,7 +1182,10 @@ function ChipDetailModal({
                 <DetailField label="Aquisição" value={fmtDate(data.chip.acquisition_date)} />
                 <DetailField label="Custo aquis." value={fmtBrl(data.chip.acquisition_cost_brl)} />
                 <DetailField label="Mensal" value={fmtBrl(data.chip.monthly_cost_brl)} />
-                <DetailField label="Vence dia" value={String(data.chip.payment_due_day)} />
+                <DetailField
+                  label={`Vence dia ${data.chip.payment_due_day}`}
+                  value={formatDueLabel(data.chip.payment_due_day).text}
+                />
                 <DetailField label="Pago por" value={data.chip.paid_by_operator} />
                 <DetailField label="Pagamento" value={data.chip.payment_method ?? '—'} />
                 <DetailField label="Device" value={data.chip.device_serial ?? '—'} />
@@ -851,7 +1195,13 @@ function ChipDetailModal({
                 <div className="mt-3 rounded-md bg-zinc-950 p-2 text-xs text-zinc-400 whitespace-pre-wrap">{data.chip.notes}</div>
               ) : null}
               {data.chip.status !== 'retired' ? (
-                <div className="mt-3 flex justify-end">
+                <div className="mt-3 flex justify-end items-center gap-3">
+                  <button
+                    onClick={() => setEditing(true)}
+                    className="flex items-center gap-1.5 text-xs text-emerald-300 hover:text-emerald-200"
+                  >
+                    <Pencil className="h-3 w-3" /> Editar
+                  </button>
                   <button onClick={retire} className="text-xs text-rose-300 hover:text-rose-200 underline">
                     Aposentar chip
                   </button>
@@ -944,6 +1294,17 @@ function ChipDetailModal({
             onClose={() => setRecordingMessage(false)}
             onSaved={() => {
               setRecordingMessage(false)
+              void load()
+              onChange()
+            }}
+          />
+        ) : null}
+        {editing && data ? (
+          <EditChipModal
+            chip={data.chip}
+            onClose={() => setEditing(false)}
+            onSaved={() => {
+              setEditing(false)
               void load()
               onChange()
             }}
@@ -1276,17 +1637,39 @@ function CalendarPanel() {
   )
 }
 
+const CAL_TONE: Record<'rose' | 'amber' | 'emerald', { row: string; circle: string; icon: string; label: string }> = {
+  rose: {
+    row: 'border-rose-500/20',
+    circle: 'bg-rose-500/10 border-rose-500/30',
+    icon: 'text-rose-300',
+    label: 'text-rose-300',
+  },
+  amber: {
+    row: 'border-amber-500/20',
+    circle: 'bg-amber-500/10 border-amber-500/30',
+    icon: 'text-amber-300',
+    label: 'text-amber-300',
+  },
+  emerald: {
+    row: 'border-emerald-500/20',
+    circle: 'bg-emerald-500/10 border-emerald-500/30',
+    icon: 'text-emerald-300',
+    label: 'text-emerald-300',
+  },
+}
+
 function CalendarRow({ entry }: { entry: RenewalCalendarEntry }) {
-  const tone =
+  const tone: 'rose' | 'amber' | 'emerald' =
     entry.status === 'overdue' ? 'rose' :
     entry.status === 'due_today' ? 'amber' :
     'emerald'
+  const t = CAL_TONE[tone]
   return (
-    <li className={`flex items-center gap-3 rounded-lg border bg-zinc-900/40 px-3 py-2 border-${tone}-500/20`}>
-      <div className={`h-8 w-8 shrink-0 rounded-full bg-${tone}-500/10 border border-${tone}-500/30 flex items-center justify-center`}>
-        {entry.status === 'overdue' ? <AlertTriangle className={`h-4 w-4 text-${tone}-300`} /> :
-         entry.status === 'due_today' ? <Calendar className={`h-4 w-4 text-${tone}-300`} /> :
-         <CheckCircle2 className={`h-4 w-4 text-${tone}-300`} />}
+    <li className={`flex items-center gap-3 rounded-lg border bg-zinc-900/40 px-3 py-2 ${t.row}`}>
+      <div className={`h-8 w-8 shrink-0 rounded-full border flex items-center justify-center ${t.circle}`}>
+        {entry.status === 'overdue' ? <AlertTriangle className={`h-4 w-4 ${t.icon}`} /> :
+         entry.status === 'due_today' ? <Calendar className={`h-4 w-4 ${t.icon}`} /> :
+         <CheckCircle2 className={`h-4 w-4 ${t.icon}`} />}
       </div>
       <div className="flex-1 min-w-0">
         <div className="text-sm font-mono text-zinc-100">{entry.phone_number}</div>
@@ -1294,9 +1677,9 @@ function CalendarRow({ entry }: { entry: RenewalCalendarEntry }) {
       </div>
       <div className="text-right text-xs">
         <div className="text-zinc-200">{fmtDate(entry.next_due_date)}</div>
-        <div className={`text-${tone}-300 font-medium`}>
+        <div className={`font-medium ${t.label}`} title={`Recorrente todo dia ${entry.payment_due_day}`}>
           {entry.days_until_due === 0
-            ? 'hoje'
+            ? 'vence hoje'
             : entry.days_until_due > 0
               ? `em ${entry.days_until_due}d`
               : `${Math.abs(entry.days_until_due)}d atrasado`}

@@ -301,4 +301,46 @@ describe('WaAccountMapper', () => {
       expect(account).toBeNull()
     })
   })
+
+  describe('setPhoneNumber', () => {
+    it('inserts a new mapping when none exists', () => {
+      mapper.setPhoneNumber('ABC123', 10, 'com.whatsapp', '5543991938235')
+
+      const accounts = mapper.getAccountsByDevice('ABC123')
+      expect(accounts).toHaveLength(1)
+      expect(accounts[0].profileId).toBe(10)
+      expect(accounts[0].packageName).toBe('com.whatsapp')
+      expect(accounts[0].phoneNumber).toBe('5543991938235')
+    })
+
+    it('overwrites an existing phone number for the same tuple', () => {
+      mapper.setPhoneNumber('ABC123', 0, 'com.whatsapp', '5543000000001')
+      mapper.setPhoneNumber('ABC123', 0, 'com.whatsapp', '5543000000002')
+
+      const accounts = mapper.getAccountsByDevice('ABC123')
+      expect(accounts).toHaveLength(1)
+      expect(accounts[0].phoneNumber).toBe('5543000000002')
+    })
+
+    it('keeps WA and WAB mappings on the same profile independent', () => {
+      mapper.setPhoneNumber('ABC123', 11, 'com.whatsapp', '5543000000001')
+      mapper.setPhoneNumber('ABC123', 11, 'com.whatsapp.w4b', '5543000000002')
+
+      const accounts = mapper.getAccountsByDevice('ABC123').sort(
+        (a, b) => a.packageName.localeCompare(b.packageName),
+      )
+      expect(accounts).toHaveLength(2)
+      expect(accounts[0].phoneNumber).toBe('5543000000001')
+      expect(accounts[1].phoneNumber).toBe('5543000000002')
+    })
+
+    it('accepts null to clear an existing mapping', () => {
+      mapper.setPhoneNumber('ABC123', 0, 'com.whatsapp', '5543000000001')
+      mapper.setPhoneNumber('ABC123', 0, 'com.whatsapp', null)
+
+      const accounts = mapper.getAccountsByDevice('ABC123')
+      expect(accounts).toHaveLength(1)
+      expect(accounts[0].phoneNumber).toBeNull()
+    })
+  })
 })

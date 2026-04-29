@@ -71,6 +71,35 @@ export class WaAccountMapper {
     return row ? rowToAccount(row) : null
   }
 
+  /**
+   * Manually persist a phone number for a (device, profile, package) tuple.
+   *
+   * Used by `PUT /api/v1/devices/:serial/profiles/:profileId/phone` so that
+   * operators can pin numbers that the content-provider extraction cannot
+   * read (per-user provider isolation on secondary Android profiles). The
+   * stored value then powers the Devices page profile cards and the chip
+   * auto-import.
+   *
+   * Idempotent: re-running with the same phone is a no-op apart from
+   * `updated_at`. Pass `null` to clear the mapping.
+   */
+  setPhoneNumber(
+    deviceSerial: string,
+    profileId: number,
+    packageName: WhatsAppAccount['packageName'],
+    phoneNumber: string | null,
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO whatsapp_accounts (device_serial, profile_id, package_name, phone_number, updated_at)
+         VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+         ON CONFLICT(device_serial, profile_id, package_name) DO UPDATE SET
+           phone_number = excluded.phone_number,
+           updated_at = excluded.updated_at`,
+      )
+      .run(deviceSerial, profileId, packageName, phoneNumber)
+  }
+
   private async extractPhoneNumbers(
     serial: string,
     profileId: number,
