@@ -170,10 +170,18 @@ export function registerFleetRoutes(server: FastifyInstance, deps: FleetRoutesDe
   server.post('/api/v1/fleet/chips/import-from-devices', async (_req, reply) => {
     const result = registry.importFromDevices()
     const totalInserted = result.whatsapp_accounts.inserted + result.sender_mapping.inserted
-    const totalSkipped = result.whatsapp_accounts.skipped + result.sender_mapping.skipped
+    // already_exists = phone already present in `chips` (operator preserved).
+    const totalAlreadyExists =
+      result.whatsapp_accounts.already_exists + result.sender_mapping.already_exists
+    // skipped_no_phone = source rows still waiting for a UIAutomator scrape.
+    const totalAwaitingPhone =
+      result.whatsapp_accounts.skipped_no_phone + result.sender_mapping.skipped_no_phone
     return reply.status(200).send({
       total_inserted: totalInserted,
-      total_skipped: totalSkipped,
+      total_already_exists: totalAlreadyExists,
+      total_awaiting_phone: totalAwaitingPhone,
+      // Backwards-compat: old UI clients still read `total_skipped`.
+      total_skipped: totalAlreadyExists,
       sources: result,
     })
   })

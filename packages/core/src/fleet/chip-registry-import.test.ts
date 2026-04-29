@@ -108,6 +108,46 @@ describe('ChipRegistry - importFromWhatsappAccounts', () => {
     expect(reg.listChips()).toHaveLength(1)
   })
 
+  it('reports skipped_no_phone count for placeholder rows in whatsapp_accounts', () => {
+    const { db, reg } = buildEnv()
+    db.prepare(
+      "INSERT INTO whatsapp_accounts (device_serial, profile_id, package_name, phone_number) VALUES (?,?,?,?)",
+    ).run('SN1', 0, 'com.whatsapp', '5543991938235')
+    db.prepare(
+      "INSERT INTO whatsapp_accounts (device_serial, profile_id, package_name, phone_number) VALUES (?,?,?,?)",
+    ).run('SN1', 10, 'com.whatsapp', null)
+    db.prepare(
+      "INSERT INTO whatsapp_accounts (device_serial, profile_id, package_name, phone_number) VALUES (?,?,?,?)",
+    ).run('SN1', 11, 'com.whatsapp', null)
+    db.prepare(
+      "INSERT INTO whatsapp_accounts (device_serial, profile_id, package_name, phone_number) VALUES (?,?,?,?)",
+    ).run('SN1', 12, 'com.whatsapp', '')
+
+    const result = reg.importFromWhatsappAccounts()
+    expect(result.inserted).toBe(1)
+    expect(result.already_exists).toBe(0)
+    // Three rows had NULL/empty phone_number — surfaced for UI nag.
+    expect(result.skipped_no_phone).toBe(3)
+  })
+
+  it('separates already_exists from skipped_no_phone on idempotent re-run', () => {
+    const { db, reg } = buildEnv()
+    db.prepare(
+      "INSERT INTO whatsapp_accounts (device_serial, profile_id, package_name, phone_number) VALUES (?,?,?,?)",
+    ).run('SN1', 0, 'com.whatsapp', '5543991938235')
+    db.prepare(
+      "INSERT INTO whatsapp_accounts (device_serial, profile_id, package_name, phone_number) VALUES (?,?,?,?)",
+    ).run('SN1', 10, 'com.whatsapp', null)
+
+    reg.importFromWhatsappAccounts() // first run: inserts the one with phone
+    const r2 = reg.importFromWhatsappAccounts()
+    expect(r2.inserted).toBe(0)
+    expect(r2.already_exists).toBe(1) // the existing chip is now "already_exists"
+    expect(r2.skipped_no_phone).toBe(1) // the NULL row remains
+    // Backwards-compat field still mirrors already_exists
+    expect(r2.skipped).toBe(r2.already_exists)
+  })
+
   it('records an "acquired" event for each newly imported chip', () => {
     const { db, reg } = buildEnv()
     db.prepare(
@@ -134,6 +174,8 @@ describe('ChipRegistry - importFromWhatsappAccounts', () => {
       source: 'whatsapp_accounts',
       inserted: 0,
       skipped: 0,
+      already_exists: 0,
+      skipped_no_phone: 0,
       errors: [],
     })
   })

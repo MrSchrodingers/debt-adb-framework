@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts'
-import { X, Camera, RotateCcw, RefreshCw, Battery, Thermometer, MemoryStick, HardDrive, Phone, Sun, Sparkles } from 'lucide-react'
+import { X, Camera, RotateCcw, RefreshCw, Battery, Thermometer, MemoryStick, HardDrive, Phone, Sun, Sparkles, ScanLine } from 'lucide-react'
 import { CORE_URL, authHeaders } from '../config'
 import type { Alert, DeviceRecord, HealthSnapshot, WhatsAppAccount } from '../types'
 
@@ -31,6 +31,7 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose, onProf
     whatsappBusiness: { installed: boolean; phone: string | null; active?: boolean }
   }
   const [profiles, setProfiles] = useState<ProfileInfo[]>([])
+  const [scanningProfile, setScanningProfile] = useState<string | null>(null)
 
   interface HygieneLogEntry {
     id: string
@@ -48,6 +49,49 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose, onProf
       .then(data => { if (data?.profiles) setProfiles(data.profiles) })
       .catch(() => {})
   }, [device.serial])
+
+  const scanProfilePhone = useCallback(
+    async (profileId: number, pkg: 'com.whatsapp' | 'com.whatsapp.w4b') => {
+      const key = `${profileId}:${pkg}`
+      setScanningProfile(key)
+      setActionResult(null)
+      try {
+        const res = await fetch(
+          `${CORE_URL}/api/v1/devices/${device.serial}/profiles/${profileId}/scan-number?package=${pkg}`,
+          { method: 'POST', headers: authHeaders() },
+        )
+        if (!res.ok) {
+          setActionResult({ type: 'error', message: `Scan P${profileId} falhou (HTTP ${res.status})` })
+          return
+        }
+        const data = (await res.json()) as { phone: string | null; persisted?: boolean; chip_created?: boolean }
+        if (data.phone) {
+          const tag = data.chip_created ? ' (chip novo criado)' : ''
+          setActionResult({
+            type: 'success',
+            message: `P${profileId}: ${data.phone}${tag}`,
+          })
+          fetch(`${CORE_URL}/api/v1/devices/${device.serial}/profiles`, { headers: authHeaders() })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((d) => {
+              if (d?.profiles) setProfiles(d.profiles)
+            })
+            .catch(() => {})
+        } else {
+          setActionResult({ type: 'error', message: `P${profileId}: número não encontrado` })
+        }
+      } catch (e) {
+        setActionResult({
+          type: 'error',
+          message: `Scan falhou: ${e instanceof Error ? e.message : String(e)}`,
+        })
+      } finally {
+        setScanningProfile(null)
+        setTimeout(() => setActionResult(null), 8000)
+      }
+    },
+    [device.serial],
+  )
 
   const fetchHygieneLog = useCallback(() => {
     fetch(`${CORE_URL}/api/v1/devices/${device.serial}/hygienize/log`, { headers: authHeaders() })
@@ -264,8 +308,26 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose, onProf
                     </span>
                   </div>
                   <div className="grid grid-cols-2 gap-1.5 pl-8">
-                    <ProfileWaSlot label="WA" info={profile.whatsapp} />
-                    <ProfileWaSlot label="WAB" info={profile.whatsappBusiness} />
+                    <ProfileWaSlot
+                      label="WA"
+                      info={profile.whatsapp}
+                      onScan={
+                        profile.whatsapp.installed && !profile.whatsapp.phone
+                          ? () => void scanProfilePhone(profile.id, 'com.whatsapp')
+                          : undefined
+                      }
+                      scanning={scanningProfile === `${profile.id}:com.whatsapp`}
+                    />
+                    <ProfileWaSlot
+                      label="WAB"
+                      info={profile.whatsappBusiness}
+                      onScan={
+                        profile.whatsappBusiness.installed && !profile.whatsappBusiness.phone
+                          ? () => void scanProfilePhone(profile.id, 'com.whatsapp.w4b')
+                          : undefined
+                      }
+                      scanning={scanningProfile === `${profile.id}:com.whatsapp.w4b`}
+                    />
                   </div>
                 </div>
               ))}
@@ -522,7 +584,18 @@ function ActionBtn({ icon: Icon, label, loading, onClick, danger }: { icon: type
   )
 }
 
-function ProfileWaSlot({ label, info }: { label: string; info: { installed: boolean; phone: string | null; active?: boolean } }) {
+function ProfileWaSlot({
+  label,
+  info,
+  onScan,
+  scanning,
+}: {
+  label: string
+  info: { installed: boolean; phone: string | null; active?: boolean }
+  /** When provided, an inline "Detectar número" button is rendered when phone is missing. */
+  onScan?: () => void
+  scanning?: boolean
+}) {
   if (!info.installed) {
     return (
       <div className="flex items-center gap-1.5 text-xs text-zinc-600">
@@ -538,7 +611,21 @@ function ProfileWaSlot({ label, info }: { label: string; info: { installed: bool
       {info.phone ? (
         <span className="font-mono text-emerald-400">{info.phone}</span>
       ) : (
-        <span className="text-amber-400 italic">sem conta</span>
+        <>
+          <span className="text-amber-400 italic">sem conta</span>
+          {onScan ? (
+            <button
+              type="button"
+              onClick={onScan}
+              disabled={scanning}
+              title="Detectar número via UIAutomator (~30s)"
+              className="inline-flex items-center gap-1 rounded-md bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 px-1.5 py-0.5 text-[10px] text-blue-300 disabled:opacity-50"
+            >
+              <ScanLine className="h-3 w-3" />
+              {scanning ? 'Detectando…' : 'Detectar'}
+            </button>
+          ) : null}
+        </>
       )}
     </div>
   )

@@ -15,6 +15,7 @@ import {
   FileSpreadsheet,
   ChevronRight,
   Pencil,
+  ScanLine,
 } from 'lucide-react'
 import { CORE_URL, authHeaders } from '../config'
 import {
@@ -216,6 +217,7 @@ function ChipsPanel() {
   const [importing, setImporting] = useState(false)
   const [autoImporting, setAutoImporting] = useState(false)
   const [autoImportMsg, setAutoImportMsg] = useState<string | null>(null)
+  const [scanAllOpen, setScanAllOpen] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [editingChip, setEditingChip] = useState<Chip | null>(null)
 
@@ -239,16 +241,35 @@ function ChipsPanel() {
   useEffect(() => { void load() }, [load])
 
   const filtered = useMemo(() => {
-    if (!search.trim()) return chips
-    const term = search.trim().toLowerCase()
-    return chips.filter(
-      (c) =>
-        c.phone_number.includes(term) ||
-        c.plan_name.toLowerCase().includes(term) ||
-        c.carrier.toLowerCase().includes(term) ||
-        (c.notes && c.notes.toLowerCase().includes(term)),
-    )
+    const base = !search.trim()
+      ? chips
+      : (() => {
+          const term = search.trim().toLowerCase()
+          return chips.filter(
+            (c) =>
+              c.phone_number.includes(term) ||
+              c.plan_name.toLowerCase().includes(term) ||
+              c.carrier.toLowerCase().includes(term) ||
+              (c.notes && c.notes.toLowerCase().includes(term)),
+          )
+        })()
+    // Surface incomplete chips first so the operator notices them.
+    // A chip is "incomplete" when its carrier is the placeholder used by
+    // the device auto-import (`unknown`) — Edit modal lets the operator
+    // promote it to a real carrier/plan/cost.
+    const isIncomplete = (c: Chip): boolean =>
+      c.carrier === 'unknown' || c.plan_name === 'A definir'
+    return [...base].sort((a, b) => {
+      const ai = isIncomplete(a) ? 0 : 1
+      const bi = isIncomplete(b) ? 0 : 1
+      return ai - bi
+    })
   }, [chips, search])
+
+  const incompleteCount = useMemo(
+    () => chips.filter((c) => c.carrier === 'unknown' || c.plan_name === 'A definir').length,
+    [chips],
+  )
 
   return (
     <div className="space-y-3">
@@ -298,12 +319,23 @@ function ChipsPanel() {
               if (!r.ok) throw new Error(`HTTP ${r.status}`)
               const data = (await r.json()) as {
                 total_inserted: number
-                total_skipped: number
+                // New shape (preferred). Fall back to legacy fields when the
+                // backend hasn't been redeployed yet.
+                total_already_exists?: number
+                total_awaiting_phone?: number
+                total_skipped?: number
               }
-              setAutoImportMsg(
-                `Importado ${data.total_inserted} chip(s) de devices. ` +
-                  `${data.total_skipped} já existia(m).`,
-              )
+              const inserted = data.total_inserted
+              const alreadyExists = data.total_already_exists ?? data.total_skipped ?? 0
+              const awaiting = data.total_awaiting_phone ?? 0
+              const parts = [
+                `${inserted} chip(s) criado(s)`,
+                `${alreadyExists} já existia(m)`,
+              ]
+              if (awaiting > 0) {
+                parts.push(`${awaiting} aguardando phone (rodar Auto-detectar números)`)
+              }
+              setAutoImportMsg(parts.join(' · '))
               void load()
             } catch (e) {
               setAutoImportMsg(`Falhou: ${e instanceof Error ? e.message : String(e)}`)
@@ -316,6 +348,14 @@ function ChipsPanel() {
         >
           {autoImporting ? 'Importando…' : 'Importar de devices'}
         </AccentButton>
+        <AccentButton
+          accent={ACCENT}
+          onClick={() => setScanAllOpen(true)}
+          icon={ScanLine}
+          variant="ghost"
+        >
+          Auto-detectar números
+        </AccentButton>
         <AccentButton accent={ACCENT} onClick={() => setImporting(true)} icon={FileSpreadsheet} variant="ghost">
           Importar CSV
         </AccentButton>
@@ -327,6 +367,16 @@ function ChipsPanel() {
       {autoImportMsg ? (
         <div className="rounded-md border border-emerald-700/40 bg-emerald-950/30 px-3 py-2 text-sm text-emerald-200">
           {autoImportMsg}
+        </div>
+      ) : null}
+
+      {incompleteCount > 0 ? (
+        <div className="rounded-md border border-amber-700/40 bg-amber-950/30 px-3 py-2 text-sm text-amber-200 flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          <span>
+            {incompleteCount} chip(s) com dados incompletos (carrier=unknown / plano "A definir").
+            Clique no lápis em cada card para preencher operadora, custo e vencimento reais.
+          </span>
         </div>
       ) : null}
 
@@ -393,6 +443,17 @@ function ChipsPanel() {
         />
       ) : null}
 
+      {scanAllOpen ? (
+        <ScanAllNumbersModal
+          onClose={() => setScanAllOpen(false)}
+          onDone={(msg) => {
+            setScanAllOpen(false)
+            setAutoImportMsg(msg)
+            void load()
+          }}
+        />
+      ) : null}
+
       {selectedId ? (
         <ChipDetailModal
           chipId={selectedId}
@@ -427,8 +488,21 @@ function ChipCard({
   onEdit: () => void
 }) {
   const due = formatDueLabel(chip.payment_due_day)
+  const isIncomplete = chip.carrier === 'unknown' || chip.plan_name === 'A definir'
   return (
-    <div className="relative rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 hover:border-emerald-500/30 transition">
+    <div
+      className={`relative rounded-lg border bg-zinc-900/40 p-4 transition ${
+        isIncomplete
+          ? 'border-amber-600/40 hover:border-amber-500/60'
+          : 'border-zinc-800 hover:border-emerald-500/30'
+      }`}
+    >
+      {isIncomplete ? (
+        <div className="mb-2 -mt-1 rounded-md bg-amber-900/30 border border-amber-700/40 px-2 py-1 text-[11px] text-amber-200 flex items-center gap-1.5">
+          <AlertTriangle className="h-3 w-3" />
+          <span>Dados incompletos — clique em Editar</span>
+        </div>
+      ) : null}
       <button
         type="button"
         onClick={(e) => {
@@ -436,7 +510,11 @@ function ChipCard({
           onEdit()
         }}
         title="Editar chip"
-        className="absolute top-2 right-2 rounded-md p-1 text-zinc-500 hover:text-emerald-300 hover:bg-emerald-500/10 transition"
+        className={`absolute top-2 right-2 rounded-md p-1 transition ${
+          isIncomplete
+            ? 'text-amber-300 hover:text-amber-200 hover:bg-amber-500/10'
+            : 'text-zinc-500 hover:text-emerald-300 hover:bg-emerald-500/10'
+        }`}
       >
         <Pencil className="h-3.5 w-3.5" />
       </button>
@@ -1082,6 +1160,199 @@ function ImportCsvModal({ onClose, onDone }: { onClose: () => void; onDone: () =
               {submitting ? 'Importando…' : 'Importar'}
             </AccentButton>
           )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Scan All Numbers Modal ────────────────────────────────────────────────
+//
+// Iterates one or more devices and for each profile that doesn't yet have a
+// phone in `whatsapp_accounts` runs the UIAutomator scrape (~30s each).
+// 4 profiles per device = ~2min. We sequence devices to avoid contention.
+
+interface ScanDeviceOption {
+  serial: string
+  status: string
+}
+
+interface ScanResult {
+  serial: string
+  results: Array<{
+    profile_id: number
+    phone: string | null
+    persisted: boolean
+    skipped?: 'already_mapped'
+    error?: string
+  }>
+  chips_created: number
+  elapsed_ms: number
+}
+
+function ScanAllNumbersModal({
+  onClose,
+  onDone,
+}: {
+  onClose: () => void
+  onDone: (msg: string) => void
+}) {
+  const [devices, setDevices] = useState<ScanDeviceOption[]>([])
+  const [selected, setSelected] = useState<string>('all')
+  const [scanning, setScanning] = useState(false)
+  const [progress, setProgress] = useState<string | null>(null)
+  const [results, setResults] = useState<ScanResult[]>([])
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    fetch(`${CORE_URL}/api/v1/devices`, { headers: authHeaders() })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data: Array<{ serial: string; type: string }>) => {
+        setDevices(
+          data
+            .filter((d) => d.type === 'device')
+            .map((d) => ({ serial: d.serial, status: d.type })),
+        )
+      })
+      .catch(() => setDevices([]))
+  }, [])
+
+  const start = async (): Promise<void> => {
+    setScanning(true)
+    setErr(null)
+    setResults([])
+    const targets =
+      selected === 'all' ? devices.map((d) => d.serial) : [selected]
+    if (targets.length === 0) {
+      setErr('Nenhum device online encontrado')
+      setScanning(false)
+      return
+    }
+    const collected: ScanResult[] = []
+    let totalPhones = 0
+    let totalChips = 0
+    try {
+      for (let i = 0; i < targets.length; i++) {
+        const serial = targets[i]
+        setProgress(
+          `Escaneando ${serial.slice(0, 8)}… (${i + 1}/${targets.length}) — pode levar até 2min`,
+        )
+        try {
+          const r = await fetch(
+            `${CORE_URL}/api/v1/devices/${serial}/scan-all-numbers`,
+            { method: 'POST', headers: authHeaders() },
+          )
+          if (!r.ok) {
+            collected.push({
+              serial,
+              results: [],
+              chips_created: 0,
+              elapsed_ms: 0,
+            })
+            continue
+          }
+          const data = (await r.json()) as ScanResult
+          collected.push(data)
+          totalPhones += data.results.filter((res) => res.phone).length
+          totalChips += data.chips_created
+          setResults([...collected])
+        } catch (e) {
+          setErr(`Falhou em ${serial}: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+      setProgress(null)
+      onDone(
+        `Auto-detectar concluído: ${totalPhones} número(s) encontrado(s), ${totalChips} chip(s) novo(s).`,
+      )
+    } finally {
+      setScanning(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-2xl rounded-lg border border-zinc-800 bg-zinc-950 p-5">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <div className="text-base font-medium text-zinc-100">
+              Auto-detectar números (UIAutomator)
+            </div>
+            <div className="text-xs text-zinc-500 mt-0.5">
+              Itera cada profile do device e abre WhatsApp → Configurações →
+              Avatar para extrair o número. Ignora profiles que já têm phone
+              salvo. ~30s por profile (até 2min por device).
+            </div>
+          </div>
+          <button onClick={onClose} className="text-zinc-500 hover:text-zinc-300" disabled={scanning}>
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs text-zinc-400 mb-1">Device</label>
+            <select
+              value={selected}
+              onChange={(e) => setSelected(e.target.value)}
+              disabled={scanning}
+              className="w-full rounded-md bg-zinc-900 border border-zinc-800 px-2.5 py-2 text-sm text-zinc-100"
+            >
+              <option value="all">Todos os devices online ({devices.length})</option>
+              {devices.map((d) => (
+                <option key={d.serial} value={d.serial}>
+                  {d.serial}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {progress ? (
+            <div className="rounded-md border border-emerald-700/40 bg-emerald-950/30 px-3 py-2 text-sm text-emerald-200 flex items-center gap-2">
+              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+              {progress}
+            </div>
+          ) : null}
+
+          {err ? <InlineError message={err} /> : null}
+
+          {results.length > 0 ? (
+            <div className="rounded-md border border-zinc-800 bg-zinc-900/40 p-3 max-h-80 overflow-y-auto text-xs">
+              {results.map((r) => (
+                <div key={r.serial} className="mb-2">
+                  <div className="font-mono text-zinc-300">{r.serial}</div>
+                  <div className="pl-3 text-zinc-500">
+                    {r.results.map((res) => (
+                      <div key={res.profile_id}>
+                        P{res.profile_id}: {res.skipped === 'already_mapped' ? (
+                          <span className="text-zinc-500">já mapeado ({res.phone})</span>
+                        ) : res.phone ? (
+                          <span className="text-emerald-400 font-mono">{res.phone}</span>
+                        ) : (
+                          <span className="text-rose-300">{res.error ?? 'não encontrado'}</span>
+                        )}
+                      </div>
+                    ))}
+                    <div className="text-emerald-400 mt-1">
+                      → {r.chips_created} chip(s) novo(s) · {Math.round(r.elapsed_ms / 1000)}s
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button
+            onClick={onClose}
+            disabled={scanning}
+            className="rounded-md px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+          >
+            {scanning ? 'Aguarde…' : 'Fechar'}
+          </button>
+          <AccentButton accent={ACCENT} onClick={start} disabled={scanning || devices.length === 0}>
+            {scanning ? 'Escaneando…' : 'Iniciar scan'}
+          </AccentButton>
         </div>
       </div>
     </div>

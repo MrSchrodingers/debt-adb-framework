@@ -4,6 +4,7 @@ import type { AdbBridge } from '../adb/index.js'
 import { IpRateLimiter } from './rate-limiter.js'
 import { hygienizeDevice, type HygieneLog, type AutoHygiene } from '../devices/index.js'
 import type { WaAccountMapper } from '../monitor/index.js'
+import type { ChipRegistry } from '../fleet/index.js'
 
 const shellRateLimiter = new IpRateLimiter({ maxRequests: 10, windowMs: 60_000 })
 const shellSchema = z.object({ command: z.string().min(1).max(4096) })
@@ -84,6 +85,89 @@ export interface DeviceRoutesDeps {
   hygieneLog?: HygieneLog
   autoHygiene?: AutoHygiene
   waMapper?: WaAccountMapper
+  /**
+   * Optional. When provided the scan-number / scan-all-numbers endpoints
+   * trigger an idempotent chip auto-import after persisting the phone, so
+   * the Frota → Chips tab reflects new numbers without a separate click.
+   */
+  chipRegistry?: ChipRegistry
+}
+
+/**
+ * UIAutomator-driven scrape of the WhatsApp "Profile" screen for the current
+ * Android user. Caller is responsible for switching/unlocking the user
+ * BEFORE invoking and for returning to user 0 AFTER. Returns the registered
+ * phone (digits only) or `null` when the avatar/profile screen could not be
+ * reached (locked screen, first-time setup, ANR, etc).
+ *
+ * Extracted so `POST /:serial/profiles/:profileId/scan-number` and
+ * `POST /:serial/scan-all-numbers` share one implementation. Keeping it
+ * private to this module — the only callers are the two route handlers.
+ */
+async function extractWaPhoneViaUiAutomator(
+  adb: AdbBridge,
+  serial: string,
+  profileId: number,
+): Promise<string | null> {
+  // Helper: dump UI, find element by pattern, return center coords.
+  async function findElement(pattern: RegExp): Promise<{ x: number; y: number } | null> {
+    await adb.shell(serial, 'uiautomator dump /sdcard/_scan.xml')
+    const xml = await adb.shell(serial, 'cat /sdcard/_scan.xml')
+    const match = xml.match(pattern)
+    if (!match) return null
+    const boundsMatch = match[0].match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/)
+    if (!boundsMatch) return null
+    return {
+      x: Math.round((Number(boundsMatch[1]) + Number(boundsMatch[3])) / 2),
+      y: Math.round((Number(boundsMatch[2]) + Number(boundsMatch[4])) / 2),
+    }
+  }
+
+  // Open WA on the requested user.
+  await adb.shell(serial, `am start --user ${profileId} -n com.whatsapp/com.whatsapp.home.ui.HomeActivity`)
+  await new Promise((r) => setTimeout(r, 3000))
+
+  // Step 1: overflow menu.
+  const menuBtn = await findElement(/menuitem_overflow[^>]*bounds="[^"]*"/)
+  if (menuBtn) {
+    await adb.shell(serial, `input tap ${menuBtn.x} ${menuBtn.y}`)
+  } else {
+    await adb.shell(serial, 'input tap 680 124')
+  }
+  await new Promise((r) => setTimeout(r, 2000))
+
+  // Step 2: Configurações.
+  const configBtn = await findElement(/text="Configura[^"]*"[^>]*bounds="[^"]*"/)
+  if (configBtn) {
+    await adb.shell(serial, `input tap ${configBtn.x} ${configBtn.y}`)
+  } else {
+    await adb.shell(serial, 'input tap 500 916')
+  }
+  await new Promise((r) => setTimeout(r, 2000))
+
+  // Step 3: tap avatar PHOTO (opens Profile screen with phone number).
+  const avatarBtn = await findElement(/profile_info_photo[^>]*bounds="[^"]*"/)
+  if (avatarBtn) {
+    await adb.shell(serial, `input tap ${avatarBtn.x} ${avatarBtn.y}`)
+  } else {
+    await adb.shell(serial, 'input tap 96 276')
+  }
+  await new Promise((r) => setTimeout(r, 2000))
+
+  // Step 4: extract phone from Profile screen.
+  await adb.shell(serial, 'uiautomator dump /sdcard/_scan.xml')
+  const profileXml = await adb.shell(serial, 'cat /sdcard/_scan.xml')
+  const phoneMatch = profileXml.match(/text="\+(\d[\d \-]+)"/)
+  const phone = phoneMatch ? phoneMatch[1].replace(/[\s-]/g, '') : null
+
+  // Try to leave the WA app on home — best-effort, ignore errors.
+  for (let i = 0; i < 4; i++) {
+    await adb.shell(serial, 'input keyevent KEYCODE_BACK').catch(() => {})
+    await new Promise((r) => setTimeout(r, 200))
+  }
+  await adb.shell(serial, 'input keyevent KEYCODE_HOME').catch(() => {})
+
+  return phone
 }
 
 export function registerDeviceRoutes(
@@ -316,11 +400,20 @@ export function registerDeviceRoutes(
     return reply.send({ serial, profileId: uid, currentUser, verified: currentUser === uid, unlocked })
   })
 
-  // Scan WA number — switches user, opens WA Settings > Profile, reads via UIAutomator
-  // STANDARDIZED: starts from current user, switches, scans, returns to P0
+  // Scan WA number — switches user, opens WA Settings > Profile, reads via UIAutomator.
+  // STANDARDIZED: starts from current user, switches, scans, returns to P0.
+  // When `chipRegistry` is wired we ALSO persist the phone into
+  // `whatsapp_accounts` (so the Devices page reflects it) and trigger an
+  // idempotent chip auto-import (so the Frota → Chips tab gets a row
+  // without a second operator click).
   server.post('/api/v1/devices/:serial/profiles/:profileId/scan-number', async (request, reply) => {
     const { serial, profileId } = request.params as { serial: string; profileId: string }
     const uid = Number(profileId)
+    const query = (request.query ?? {}) as { package?: string }
+    const pkgRaw = (query.package ?? 'com.whatsapp').trim()
+    if (pkgRaw !== 'com.whatsapp' && pkgRaw !== 'com.whatsapp.w4b') {
+      return reply.status(400).send({ error: 'package must be com.whatsapp or com.whatsapp.w4b' })
+    }
 
     try {
       // Switch to target user + unlock (UIAutomator needs screen unlocked)
@@ -333,70 +426,36 @@ export function registerDeviceRoutes(
         return reply.status(500).send({ error: `Nao conseguiu destravar tela do P${uid}` })
       }
 
-      // Helper: dump UI, find element by pattern, return center coords
-      async function findElement(pattern: RegExp): Promise<{ x: number; y: number } | null> {
-        await adb.shell(serial, 'uiautomator dump /sdcard/_scan.xml')
-        const xml = await adb.shell(serial, 'cat /sdcard/_scan.xml')
-        const match = xml.match(pattern)
-        if (!match) return null
-        // Extract bounds [x1,y1][x2,y2]
-        const boundsMatch = match[0].match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/)
-        if (!boundsMatch) return null
-        return {
-          x: Math.round((Number(boundsMatch[1]) + Number(boundsMatch[3])) / 2),
-          y: Math.round((Number(boundsMatch[2]) + Number(boundsMatch[4])) / 2),
-        }
-      }
-
-      // Open WA
-      await adb.shell(serial, `am start --user ${uid} -n com.whatsapp/com.whatsapp.home.ui.HomeActivity`)
-      await new Promise(r => setTimeout(r, 3000))
-
-      // Step 1: Find and tap overflow menu (resource-id: menuitem_overflow)
-      const menuBtn = await findElement(/menuitem_overflow[^>]*bounds="[^"]*"/)
-      if (menuBtn) {
-        await adb.shell(serial, `input tap ${menuBtn.x} ${menuBtn.y}`)
-      } else {
-        await adb.shell(serial, 'input tap 680 124') // fallback
-      }
-      await new Promise(r => setTimeout(r, 2000))
-
-      // Step 2: Find and tap "Configurações"
-      const configBtn = await findElement(/text="Configura[^"]*"[^>]*bounds="[^"]*"/)
-      if (configBtn) {
-        await adb.shell(serial, `input tap ${configBtn.x} ${configBtn.y}`)
-      } else {
-        await adb.shell(serial, 'input tap 500 916') // fallback
-      }
-      await new Promise(r => setTimeout(r, 2000))
-
-      // Step 3: Find and tap avatar PHOTO (not name/about — photo opens Profile with phone)
-      const avatarBtn = await findElement(/profile_info_photo[^>]*bounds="[^"]*"/)
-      if (avatarBtn) {
-        await adb.shell(serial, `input tap ${avatarBtn.x} ${avatarBtn.y}`)
-      } else {
-        await adb.shell(serial, 'input tap 96 276') // fallback
-      }
-      await new Promise(r => setTimeout(r, 2000))
-
-      // Step 4: Extract phone number from Profile screen
-      await adb.shell(serial, 'uiautomator dump /sdcard/_scan.xml')
-      const profileXml = await adb.shell(serial, 'cat /sdcard/_scan.xml')
-      const phoneMatch = profileXml.match(/text="\+(\d[\d \-]+)"/)
-      const phone = phoneMatch ? phoneMatch[1].replace(/[\s-]/g, '') : null
-
-      // Go home
-      for (let i = 0; i < 4; i++) {
-        await adb.shell(serial, 'input keyevent KEYCODE_BACK').catch(() => {})
-        await new Promise(r => setTimeout(r, 200))
-      }
-      await adb.shell(serial, 'input keyevent KEYCODE_HOME').catch(() => {})
+      const phone = await extractWaPhoneViaUiAutomator(adb, serial, uid)
 
       // Return to user 0 (standardized exit)
       await ensureUserZero(adb, serial)
 
-      server.log.info({ serial, profileId: uid, phone }, 'Scanned WA number')
-      return reply.send({ serial, profileId: uid, phone })
+      // Persist + auto-create chip when phone was successfully extracted.
+      let persisted = false
+      let chipCreated = false
+      if (phone && deps.waMapper) {
+        try {
+          deps.waMapper.setPhoneNumber(serial, uid, pkgRaw as 'com.whatsapp' | 'com.whatsapp.w4b', phone)
+          persisted = true
+        } catch (err) {
+          server.log.error({ serial, profileId: uid, err }, 'setPhoneNumber failed (scan-number)')
+        }
+      }
+      if (persisted && deps.chipRegistry) {
+        try {
+          const before = deps.chipRegistry.getChipByPhone(phone!)
+          if (!before) {
+            deps.chipRegistry.importFromDevices()
+            chipCreated = Boolean(deps.chipRegistry.getChipByPhone(phone!))
+          }
+        } catch (err) {
+          server.log.warn({ serial, profileId: uid, err }, 'chipRegistry import failed after scan')
+        }
+      }
+
+      server.log.info({ serial, profileId: uid, phone, persisted, chipCreated }, 'Scanned WA number')
+      return reply.send({ serial, profileId: uid, phone, persisted, chip_created: chipCreated })
     } catch (err) {
       // Always try to recover to user 0
       await ensureUserZero(adb, serial).catch(() => {})
@@ -404,6 +463,125 @@ export function registerDeviceRoutes(
         error: `Scan falhou: ${err instanceof Error ? err.message : String(err)}`,
       })
     }
+  })
+
+  // Scan ALL profiles on a device — iterates `pm list users`, for each profile
+  // that doesn't yet have a phone in `whatsapp_accounts` (com.whatsapp), runs
+  // the same UIAutomator scrape used by the per-profile endpoint, persists,
+  // and triggers a single chip auto-import at the end.
+  //
+  // SLOW: ~30s per profile (switch-user + unlock + UIAutomator). 4 profiles
+  // = ~2 minutes total. UI must show progress indication and use a long
+  // request timeout. Always returns to user 0 in success and failure paths.
+  server.post('/api/v1/devices/:serial/scan-all-numbers', async (request, reply) => {
+    const { serial } = request.params as { serial: string }
+    const startedAt = Date.now()
+
+    // Discover profiles via `pm list users`. Fall back to [0] on parse failure.
+    let profileIds: number[] = [0]
+    try {
+      const out = await adb.shell(serial, 'pm list users')
+      const ids = [...out.matchAll(/UserInfo\{(\d+):/g)].map((m) => Number(m[1]))
+      if (ids.length > 0) profileIds = ids
+    } catch (err) {
+      server.log.warn({ serial, err }, 'scan-all-numbers: pm list users failed, defaulting to [0]')
+    }
+
+    // Read existing phones so we can skip already-mapped (device, profile,
+    // com.whatsapp) tuples — keeps the operation idempotent across retries.
+    const existing = new Map<number, string>()
+    if (deps.waMapper) {
+      for (const acc of deps.waMapper.getAccountsByDevice(serial)) {
+        if (acc.packageName === 'com.whatsapp' && acc.phoneNumber) {
+          existing.set(acc.profileId, acc.phoneNumber)
+        }
+      }
+    }
+
+    const results: Array<{
+      profile_id: number
+      phone: string | null
+      persisted: boolean
+      skipped?: 'already_mapped'
+      error?: string
+    }> = []
+
+    try {
+      for (const uid of profileIds) {
+        const cached = existing.get(uid)
+        if (cached) {
+          results.push({ profile_id: uid, phone: cached, persisted: false, skipped: 'already_mapped' })
+          continue
+        }
+
+        try {
+          const { switched, unlocked } = await switchAndUnlock(adb, serial, uid)
+          if (!switched) {
+            results.push({ profile_id: uid, phone: null, persisted: false, error: 'switch-user timeout' })
+            continue
+          }
+          if (!unlocked) {
+            results.push({ profile_id: uid, phone: null, persisted: false, error: 'tela travada' })
+            continue
+          }
+
+          const phone = await extractWaPhoneViaUiAutomator(adb, serial, uid)
+          let persisted = false
+          if (phone && deps.waMapper) {
+            try {
+              deps.waMapper.setPhoneNumber(serial, uid, 'com.whatsapp', phone)
+              persisted = true
+            } catch (err) {
+              results.push({
+                profile_id: uid,
+                phone,
+                persisted: false,
+                error: `persist failed: ${err instanceof Error ? err.message : String(err)}`,
+              })
+              continue
+            }
+          }
+          results.push({ profile_id: uid, phone, persisted })
+        } catch (err) {
+          results.push({
+            profile_id: uid,
+            phone: null,
+            persisted: false,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+    } finally {
+      // Always return to user 0 — even when a single profile blew up.
+      await ensureUserZero(adb, serial).catch(() => {})
+    }
+
+    // Single chip-import sweep after the per-profile loop: idempotent and
+    // captures every newly-persisted phone in one shot.
+    let chipsCreated = 0
+    if (deps.chipRegistry) {
+      try {
+        const before = deps.chipRegistry.listChips({}).length
+        deps.chipRegistry.importFromDevices()
+        const after = deps.chipRegistry.listChips({}).length
+        chipsCreated = Math.max(0, after - before)
+      } catch (err) {
+        server.log.warn({ serial, err }, 'chipRegistry import failed after scan-all')
+      }
+    }
+
+    const elapsedMs = Date.now() - startedAt
+    server.log.info(
+      {
+        serial,
+        profiles_scanned: results.length,
+        phones_found: results.filter((r) => r.phone).length,
+        chips_created: chipsCreated,
+        elapsed_ms: elapsedMs,
+      },
+      'Scanned all WA numbers',
+    )
+    return reply.send({ serial, results, chips_created: chipsCreated, elapsed_ms: elapsedMs })
   })
 
   // Set phone number manually for a profile (com.whatsapp by default; pass

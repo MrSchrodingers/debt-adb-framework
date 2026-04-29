@@ -716,6 +716,8 @@ export class ChipRegistry {
       query: `SELECT device_serial, profile_id, package_name, phone_number
               FROM whatsapp_accounts
               WHERE phone_number IS NOT NULL AND phone_number != ''`,
+      countAllRowsQuery: `SELECT COUNT(*) AS c FROM whatsapp_accounts
+                          WHERE phone_number IS NULL OR phone_number = ''`,
       buildNotes: (row) =>
         `Auto-importado de whatsapp_accounts: device ${row.device_serial} ` +
         `profile ${row.profile_id} package ${row.package_name}. ` +
@@ -741,13 +743,22 @@ export class ChipRegistry {
       )
       .get() as { name: string } | undefined
     if (!tableExists) {
-      return { source: 'sender_mapping', inserted: 0, skipped: 0, errors: [] }
+      return {
+        source: 'sender_mapping',
+        inserted: 0,
+        skipped: 0,
+        already_exists: 0,
+        skipped_no_phone: 0,
+        errors: [],
+      }
     }
     return this.importFromTable({
       sourceTable: 'sender_mapping',
       query: `SELECT phone_number, device_serial, profile_id, app_package
               FROM sender_mapping
               WHERE active = 1 AND phone_number IS NOT NULL AND phone_number != ''`,
+      countAllRowsQuery: `SELECT COUNT(*) AS c FROM sender_mapping
+                          WHERE active = 1 AND (phone_number IS NULL OR phone_number = '')`,
       buildNotes: (row) =>
         `Auto-importado de sender_mapping: device ${row.device_serial} ` +
         `profile ${row.profile_id} package ${row.app_package}. ` +
@@ -778,18 +789,37 @@ export class ChipRegistry {
     buildNotes: (row: ImportSourceRow) => string
     buildMetadata: (row: ImportSourceRow) => Record<string, unknown>
     now: Date
+    /**
+     * Optional: when provided, total count of source rows including those
+     * skipped due to NULL/empty `phone_number`. The dedicated counter is
+     * surfaced as `skipped_no_phone` so the UI can nudge the operator
+     * toward UIAutomator scan when rows exist but have no number yet.
+     */
+    countAllRowsQuery?: string
   }): ChipImportResult {
-    const { sourceTable, query, buildNotes, buildMetadata, now } = args
+    const { sourceTable, query, buildNotes, buildMetadata, now, countAllRowsQuery } = args
     let rows: ImportSourceRow[]
     try {
       rows = this.db.prepare(query).all() as ImportSourceRow[]
     } catch {
       // Table doesn't exist yet (e.g. fresh DB before WaAccountMapper init).
-      return { source: sourceTable, inserted: 0, skipped: 0, errors: [] }
+      return { source: sourceTable, inserted: 0, skipped: 0, already_exists: 0, skipped_no_phone: 0, errors: [] }
+    }
+
+    // Count rows in source that have NULL / empty phone — surface so UI can
+    // nudge operator toward UIAutomator scan.
+    let skippedNoPhone = 0
+    if (countAllRowsQuery) {
+      try {
+        const r = this.db.prepare(countAllRowsQuery).get() as { c: number } | undefined
+        skippedNoPhone = Number(r?.c ?? 0)
+      } catch {
+        skippedNoPhone = 0
+      }
     }
 
     let inserted = 0
-    let skipped = 0
+    let alreadyExists = 0
     const errors: Array<{ phone_number: string; error: string }> = []
     const acquisitionDate = now.toISOString().slice(0, 10)
 
@@ -851,7 +881,7 @@ export class ChipRegistry {
             // Safe to ignore — the chip insert was the source of truth.
           }
         } else {
-          skipped += 1
+          alreadyExists += 1
         }
       } catch (e) {
         errors.push({
@@ -860,7 +890,16 @@ export class ChipRegistry {
         })
       }
     }
-    return { source: sourceTable, inserted, skipped, errors }
+    return {
+      source: sourceTable,
+      inserted,
+      // `skipped` retained for backwards-compatibility (= already_exists).
+      // New code should use `already_exists` and `skipped_no_phone` directly.
+      skipped: alreadyExists,
+      already_exists: alreadyExists,
+      skipped_no_phone: skippedNoPhone,
+      errors,
+    }
   }
 }
 
@@ -876,8 +915,22 @@ interface ImportSourceRow {
 
 export interface ChipImportResult {
   source: string
+  /** New chips inserted. */
   inserted: number
+  /**
+   * Backwards-compatible alias for `already_exists`. Pre-existing callers
+   * (and the `chip-registry-import.test.ts` suite) read this field; we keep
+   * it identical to `already_exists` so removing it would be a breaking change.
+   */
   skipped: number
+  /** Source rows whose phone is already registered in `chips`. */
+  already_exists: number
+  /**
+   * Source rows present in the table but with `phone_number IS NULL` (i.e.
+   * placeholders awaiting UIAutomator scrape). Surfaced so the UI can nudge
+   * the operator toward "Auto-detectar números".
+   */
+  skipped_no_phone: number
   errors: Array<{ phone_number: string; error: string }>
 }
 

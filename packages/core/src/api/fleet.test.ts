@@ -228,10 +228,21 @@ describe('Fleet API', () => {
     const body = res.json() as {
       total_inserted: number
       total_skipped: number
-      sources: { whatsapp_accounts: { inserted: number }; sender_mapping: { inserted: number } }
+      total_already_exists: number
+      total_awaiting_phone: number
+      sources: {
+        whatsapp_accounts: { inserted: number; already_exists: number; skipped_no_phone: number }
+        sender_mapping: { inserted: number }
+      }
     }
     expect(body.total_inserted).toBe(2)
     expect(body.sources.whatsapp_accounts.inserted).toBe(2)
+    // The fixture inserts a 3rd row with phone_number=NULL — surfaced for
+    // UI nag toward "Auto-detectar números".
+    expect(body.total_awaiting_phone).toBe(1)
+    expect(body.sources.whatsapp_accounts.skipped_no_phone).toBe(1)
+    // Re-running the import would land here as already_exists, not skipped_no_phone.
+    expect(body.total_already_exists).toBe(0)
   })
 
   it('POST /api/v1/fleet/chips/import bulk-inserts and reports per-row outcome', async () => {
