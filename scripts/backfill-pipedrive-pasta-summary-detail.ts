@@ -88,6 +88,11 @@ const companyDomain = process.env.PIPEDRIVE_COMPANY_DOMAIN ?? null
 const baseUrl = (process.env.PIPEDRIVE_BASE_URL ?? 'https://api.pipedrive.com/v1/').replace(/\/+$/, '/')
 const ratePerSec = Number(process.env.PIPEDRIVE_RATE_PER_SEC ?? 10)
 const dryRun = process.env.DRY_RUN === '1'
+// FORCE=1 bypasses the v2 idempotency check — used when an earlier run
+// migrated content with a structural bug (e.g. wrong deal scoping) and
+// we need to re-render every Note even though the v2 marker is already
+// present.
+const force = process.env.FORCE === '1'
 
 if (!apiToken) {
   console.error('[backfill-detail] FATAL: PIPEDRIVE_API_TOKEN is not set in env. Aborting.')
@@ -290,12 +295,21 @@ function rebuildIntentFromLocal(
   pickRowsByPasta: (pasta: string) => DealCacheRow[],
   parsedJobBoundaries: { started: string | null; ended: string | null },
 ): RebuildOutcome {
-  // Primary lookup: rows whose last_job_id matches.
+  // Primary lookup: rows whose last_job_id matches AND belong to the same
+  // pasta as this Note. The publisher emits one Note per pasta within a job,
+  // so a job with N pastas writes N rows that all share the same job_id —
+  // filtering by pasta is mandatory or every Note ends up rendering ALL
+  // deals of the job (cross-pasta pollution).
   let cacheRows: DealCacheRow[] = []
-  if (row.job_id) cacheRows = pickRowsByJob(row.job_id)
+  if (row.job_id && row.pasta) {
+    cacheRows = pickRowsByJob(row.job_id).filter((d) => d.pasta === row.pasta)
+  } else if (row.job_id) {
+    // No pasta on the row — best-effort, still scoped by job.
+    cacheRows = pickRowsByJob(row.job_id)
+  }
   // Fallback: when last_job_id was overwritten by a later job, look up by
-  // pasta. We deduplicate by (deal_id, contato_tipo, contato_id) so re-scans
-  // do not double-count.
+  // pasta only. The deal cache uses (pasta, deal_id, contato_tipo, contato_id)
+  // as primary key so duplicates here are impossible.
   if (cacheRows.length === 0 && row.pasta) {
     cacheRows = pickRowsByPasta(row.pasta)
   }
@@ -496,7 +510,7 @@ async function main(): Promise<void> {
     } catch {
       payload = null
     }
-    if (payload?.content && payload.content.includes(PASTA_SUMMARY_V2_MARKER)) {
+    if (!force && payload?.content && payload.content.includes(PASTA_SUMMARY_V2_MARKER)) {
       counts.skippedIdempotent++
       console.log(`${tag} -> skipped(idempotent_local)`)
       continue
@@ -543,19 +557,21 @@ async function main(): Promise<void> {
     }
 
     // Defensive remote idempotency check — saves a redundant PUT when the
-    // persisted payload was older than reality.
-    const remote = await fetchSingleNote(noteId)
-    if (remote.ok && remote.content && remote.content.includes(PASTA_SUMMARY_V2_MARKER)) {
-      counts.skippedIdempotent++
-      // Heal local state so future runs short-circuit cheaply.
-      try {
-        const synced = JSON.stringify({ ...(payload ?? {}), content: remote.content })
-        updateLocalPayload.run(synced, row.id)
-      } catch {
-        // best-effort, never block the main path
+    // persisted payload was older than reality. Bypassed under FORCE.
+    if (!force) {
+      const remote = await fetchSingleNote(noteId)
+      if (remote.ok && remote.content && remote.content.includes(PASTA_SUMMARY_V2_MARKER)) {
+        counts.skippedIdempotent++
+        // Heal local state so future runs short-circuit cheaply.
+        try {
+          const synced = JSON.stringify({ ...(payload ?? {}), content: remote.content })
+          updateLocalPayload.run(synced, row.id)
+        } catch {
+          // best-effort, never block the main path
+        }
+        console.log(`${tag} -> skipped(idempotent_remote, note=${noteId})`)
+        continue
       }
-      console.log(`${tag} -> skipped(idempotent_remote, note=${noteId})`)
-      continue
     }
 
     if (!firstSampleLogged) {
