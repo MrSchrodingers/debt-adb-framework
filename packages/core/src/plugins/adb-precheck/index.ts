@@ -24,6 +24,11 @@ export {
   formatBrPhonePretty,
   strategyLabel,
 } from './pipedrive-formatter.js'
+export {
+  buildPipedriveRoutes,
+  registerPipedrivePluginRoutes,
+} from './pipedrive-api.js'
+export type { PipedrivePluginApiDeps } from './pipedrive-api.js'
 export type {
   ProvConsultaRow,
   DealKey,

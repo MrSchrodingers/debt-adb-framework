@@ -34,11 +34,12 @@ import {
   InlineError,
   SubTabBar,
 } from './plugin-ui'
+import { PipedriveView } from './adb-precheck/pipedrive-view'
 
 const PLUGIN_BASE = `${CORE_URL}/api/v1/plugins/adb-precheck`
 const ACCENT = 'sky' as const
 
-type SubTab = 'overview' | 'scan' | 'deals' | 'jobs'
+type SubTab = 'overview' | 'scan' | 'deals' | 'jobs' | 'pipedrive'
 type PluginStatus = 'active' | 'inactive' | 'checking' | 'error'
 
 interface AggregateStats {
@@ -147,6 +148,7 @@ export function AdbPrecheckTab() {
           { id: 'scan', label: 'Novo Scan' },
           { id: 'deals', label: 'Consultas', count: totalDeals },
           { id: 'jobs', label: 'Jobs', count: activeJobs },
+          { id: 'pipedrive', label: 'Pipedrive' },
         ]}
       />
 
@@ -157,7 +159,8 @@ export function AdbPrecheckTab() {
       {activeSubTab === 'overview' ? <OverviewPanel onStartScan={() => setActiveSubTab('scan')} />
       : activeSubTab === 'scan' ? <NewScanPanel onDone={() => setActiveSubTab('jobs')} />
       : activeSubTab === 'deals' ? <DealsPanel />
-      : <JobsPanel />}
+      : activeSubTab === 'jobs' ? <JobsPanel />
+      : <PipedriveView />}
     </div>
   )
 }
@@ -283,6 +286,9 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
   const [pipelineNome, setPipelineNome] = useState('')
   const [writebackInvalid, setWritebackInvalid] = useState(false)
   const [writebackLocalizado, setWritebackLocalizado] = useState(false)
+  // Per-job Pipedrive opt-in. Default ON — operators can flip it OFF for
+  // dry-run scans that should not pollute the CRM.
+  const [pipedriveEnabled, setPipedriveEnabled] = useState(true)
   const [confirming, setConfirming] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -298,6 +304,7 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
         pipeline_nome: pipelineNome || undefined,
         writeback_invalid: writebackInvalid,
         writeback_localizado: writebackLocalizado,
+        pipedrive_enabled: pipedriveEnabled,
       }
       const r = await fetch(`${PLUGIN_BASE}/scan`, {
         method: 'POST',
@@ -379,6 +386,18 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
                 </div>
               </div>
             ) : null}
+          </div>
+        </Section>
+
+        <Section title="Pipedrive" description="Atividades / notas no CRM por scan. Quando o token nao esta configurado o flag eh ignorado silenciosamente.">
+          <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
+            <Toggle
+              checked={pipedriveEnabled}
+              onChange={setPipedriveEnabled}
+              label="Criar atividades no Pipedrive"
+              hint="cobre os 3 cenarios — phone fail, deal all-fail, pasta summary; desligue para scans dry-run"
+              icon={<svg className="h-4 w-4 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>}
+            />
           </div>
         </Section>
 

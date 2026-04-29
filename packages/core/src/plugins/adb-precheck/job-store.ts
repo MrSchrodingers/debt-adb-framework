@@ -35,7 +35,8 @@ const SCHEMA_SQL = `
     error_phones INTEGER NOT NULL DEFAULT 0,
     cache_hits INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    pipedrive_enabled INTEGER NOT NULL DEFAULT 1
   );
   CREATE INDEX IF NOT EXISTS idx_adb_precheck_jobs_status
     ON adb_precheck_jobs(status, created_at DESC);
@@ -64,9 +65,23 @@ export class PrecheckJobStore {
 
   initialize(): void {
     this.db.exec(SCHEMA_SQL)
+    // Idempotent column add for pre-existing databases. SQLite does not
+    // support `ADD COLUMN IF NOT EXISTS`, so we probe pragma table_info first.
+    const cols = this.db
+      .prepare("PRAGMA table_info('adb_precheck_jobs')")
+      .all() as Array<{ name: string }>
+    if (!cols.some((c) => c.name === 'pipedrive_enabled')) {
+      this.db.exec(
+        "ALTER TABLE adb_precheck_jobs ADD COLUMN pipedrive_enabled INTEGER NOT NULL DEFAULT 1",
+      )
+    }
   }
 
-  createJob(params: PrecheckScanParams, externalRef?: string): PrecheckJob {
+  createJob(
+    params: PrecheckScanParams,
+    externalRef?: string,
+    opts?: { pipedriveEnabled?: boolean },
+  ): PrecheckJob {
     if (externalRef) {
       const existing = this.db
         .prepare('SELECT * FROM adb_precheck_jobs WHERE external_ref = ?')
@@ -75,12 +90,13 @@ export class PrecheckJobStore {
     }
     const id = nanoid()
     const created_at = new Date().toISOString()
+    const pipedriveEnabled = opts?.pipedriveEnabled === false ? 0 : 1
     this.db
       .prepare(
-        `INSERT INTO adb_precheck_jobs (id, external_ref, status, params_json, created_at)
-         VALUES (?, ?, 'queued', ?, ?)`,
+        `INSERT INTO adb_precheck_jobs (id, external_ref, status, params_json, created_at, pipedrive_enabled)
+         VALUES (?, ?, 'queued', ?, ?, ?)`,
       )
-      .run(id, externalRef ?? null, JSON.stringify(params), created_at)
+      .run(id, externalRef ?? null, JSON.stringify(params), created_at, pipedriveEnabled)
     return this.getJob(id)!
   }
 

@@ -78,7 +78,11 @@ export class PrecheckScanner {
   constructor(private deps: ScannerDeps) {}
 
   async runJob(jobId: string, params: PrecheckScanParams): Promise<void> {
-    const { pg, store, logger, shouldCancel, onJobFinished, pipedrive } = this.deps
+    const { pg, store, logger, shouldCancel, onJobFinished } = this.deps
+    // Per-job opt-out: even when the integration is wired we honour the
+    // `pipedrive_enabled === false` flag and skip all 3 scenarios for this
+    // job. This lets operators run a quick scan without polluting Pipedrive.
+    const pipedrive = params.pipedrive_enabled === false ? undefined : this.deps.pipedrive
     let finalStatus: 'completed' | 'cancelled' | 'failed' = 'completed'
     const pastaAgg: Map<string, PastaAggregate> = new Map()
     const startedAt = new Date().toISOString()

@@ -82,6 +82,12 @@ export interface PrecheckJob {
   cache_hits: number
   last_error: string | null
   created_at: string
+  /**
+   * Whether Pipedrive activity creation is enabled for this job.
+   * 1 = enabled, 0 = disabled. Persisted alongside the params snapshot so
+   * audit trails remain accurate even if the env flag flips later.
+   */
+  pipedrive_enabled: number
 }
 
 /** Params for a new scan run. */
@@ -98,6 +104,14 @@ export interface PrecheckScanParams {
   writeback_invalid?: boolean
   /** If true, update prov_consultas.telefone_localizado / localizado. */
   writeback_localizado?: boolean
+  /**
+   * Per-job opt-in for Pipedrive activity creation. When false the scanner
+   * never produces Pipedrive intents for this job, even if the integration
+   * is otherwise wired (PIPEDRIVE_API_TOKEN present). When undefined the
+   * server falls back to "enabled if token is set" — preserving the old
+   * env-only feature flag for compatibility.
+   */
+  pipedrive_enabled?: boolean
 }
 
 // ── Pipedrive integration intents ─────────────────────────────────────────

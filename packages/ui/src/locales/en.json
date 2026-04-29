@@ -58,8 +58,7 @@
     "resume": "Resume",
     "pauseReasonRequired": "Reason is required",
     "pauseKeyRequired": "Key is required for non-global scopes",
-    "ackRateTab": "Ack-rate calibration",
-    "pipedriveTab": "Pipedrive"
+    "ackRateTab": "Ack-rate calibration"
   },
   "header": {
     "title": "Dispatch",

@@ -23,7 +23,18 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { CORE_URL, authHeaders } from '../config'
+import { CORE_URL, authHeaders } from '../../config'
+
+/**
+ * Pipedrive operator view, scoped under the ADB Pre-check plugin.
+ *
+ * All endpoints live under `/api/v1/plugins/adb-precheck/pipedrive/*` —
+ * plugin-namespaced so they auth through the same X-API-Key/Bearer gate as
+ * every other adb-precheck route. The component is rendered inside
+ * `adb-precheck-tab.tsx` as a sibling to Overview/Scan/Deals/Jobs.
+ */
+
+const PIPEDRIVE_BASE = `${CORE_URL}/api/v1/plugins/adb-precheck/pipedrive`
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -124,12 +135,6 @@ function fmtDate(iso: string | null): string {
     return iso
   }
 }
-
-// ── Markdown renderer ─────────────────────────────────────────────────────
-// We do NOT add a new dependency (react-markdown) just for a preview pane.
-// Instead we render the raw Markdown inside a styled <pre> so the reviewer
-// can see exactly what Pipedrive will receive. Pipedrive itself parses the
-// Markdown server-side when rendering the activity/note in its UI.
 
 function MarkdownPreview({ text }: { text: string }) {
   return (
@@ -268,7 +273,7 @@ function ActivitiesView() {
       if (filters.search) params.set('pasta', filters.search)
       params.set('limit', String(pageSize))
       params.set('offset', String(page * pageSize))
-      const res = await fetch(`${CORE_URL}/api/v1/pipedrive/activities?${params.toString()}`, {
+      const res = await fetch(`${PIPEDRIVE_BASE}/activities?${params.toString()}`, {
         headers: authHeaders(),
       })
       if (!res.ok) {
@@ -291,7 +296,7 @@ function ActivitiesView() {
   const handleRetry = async (row: ActivityRow) => {
     setRetrying((prev) => new Set(prev).add(row.id))
     try {
-      const res = await fetch(`${CORE_URL}/api/v1/pipedrive/activities/${row.id}/retry`, {
+      const res = await fetch(`${PIPEDRIVE_BASE}/activities/${row.id}/retry`, {
         method: 'POST', headers: authHeaders(),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`)
@@ -446,7 +451,7 @@ function StatsView() {
   const fetchStats = useCallback(async () => {
     setLoading(true); setError(null)
     try {
-      const res = await fetch(`${CORE_URL}/api/v1/pipedrive/stats?period=${period}`, {
+      const res = await fetch(`${PIPEDRIVE_BASE}/stats?period=${period}`, {
         headers: authHeaders(),
       })
       if (!res.ok) {
@@ -648,7 +653,7 @@ function ManualTriggerView() {
   const handlePreview = async () => {
     setError(null); setResult(null)
     try {
-      const res = await fetch(`${CORE_URL}/api/v1/pipedrive/preview`, {
+      const res = await fetch(`${PIPEDRIVE_BASE}/preview`, {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify(buildBody()),
@@ -664,7 +669,7 @@ function ManualTriggerView() {
   const handleSend = async () => {
     setSubmitting(true); setError(null); setResult(null)
     try {
-      const res = await fetch(`${CORE_URL}/api/v1/pipedrive/manual-trigger`, {
+      const res = await fetch(`${PIPEDRIVE_BASE}/manual-trigger`, {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify(buildBody()),
@@ -903,7 +908,7 @@ function ManualTriggerView() {
 function HealthBanner() {
   const [health, setHealth] = useState<HealthResponse | null>(null)
   useEffect(() => {
-    void fetch(`${CORE_URL}/api/v1/pipedrive/health`, { headers: authHeaders() })
+    void fetch(`${PIPEDRIVE_BASE}/health`, { headers: authHeaders() })
       .then((r) => r.json())
       .then((b) => setHealth(b as HealthResponse))
       .catch(() => setHealth(null))
@@ -929,19 +934,15 @@ function HealthBanner() {
   )
 }
 
-// ── Main page ─────────────────────────────────────────────────────────────
+// ── Main view ─────────────────────────────────────────────────────────────
 
 type SubTab = 'activities' | 'stats' | 'manual'
 
-export function PipedrivePage() {
+export function PipedriveView() {
   const [tab, setTab] = useState<SubTab>('activities')
 
   return (
-    <div className="space-y-4 p-4">
-      <div className="flex items-center gap-2 border-b border-zinc-800 pb-3">
-        <Link2 className="h-5 w-5 text-emerald-400" />
-        <h2 className="text-base font-semibold text-zinc-100">Pipedrive</h2>
-      </div>
+    <div className="space-y-4">
       <HealthBanner />
       <div className="flex gap-2 border-b border-zinc-800 flex-wrap">
         {(['activities', 'stats', 'manual'] as SubTab[]).map((id) => (
@@ -950,7 +951,7 @@ export function PipedrivePage() {
             onClick={() => setTab(id)}
             className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition ${
               tab === id
-                ? 'border-emerald-400 text-zinc-100'
+                ? 'border-sky-400 text-zinc-100'
                 : 'border-transparent text-zinc-500 hover:text-zinc-300'
             }`}
           >

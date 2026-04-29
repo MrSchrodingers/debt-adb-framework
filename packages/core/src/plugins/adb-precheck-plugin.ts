@@ -20,6 +20,7 @@ import {
   PipedriveClient,
   PipedriveActivityStore,
   PipedrivePublisher,
+  registerPipedrivePluginRoutes,
 } from './adb-precheck/index.js'
 
 const scanParamsSchema = z
@@ -31,6 +32,12 @@ const scanParamsSchema = z
     writeback_invalid: z.boolean().default(false),
     writeback_localizado: z.boolean().default(false),
     external_ref: z.string().min(1).max(128).optional(),
+    /**
+     * Per-job Pipedrive opt-in. Undefined → default to `true` if integration
+     * is wired (token + client present), else `false`. Operator can force
+     * `false` to skip even when wired (e.g. dry-run scans).
+     */
+    pipedrive_enabled: z.boolean().optional(),
   })
   .strict()
 
@@ -202,32 +209,20 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     ctx.registerRoute('GET',  '/deals/:pasta/:deal_id/:contato_tipo/:contato_id', this.handleGetDeal.bind(this))
     ctx.registerRoute('POST', '/probe',      this.handleProbePhone.bind(this))
 
+    // Plugin-scoped Pipedrive operator API. Routes mount under
+    // /api/v1/plugins/adb-precheck/pipedrive/* (the loader prefixes the
+    // plugin namespace automatically). Health endpoint always works so the
+    // UI can render a "disabled" empty state when the token is absent.
+    registerPipedrivePluginRoutes(ctx, {
+      store: this.pipedriveActivityStore,
+      client: this.pipedriveClient,
+      publisher: this.pipedrivePublisher,
+      companyDomain: this.pipedriveCompanyDomain,
+      cacheTtlDays: this.pipedriveCacheTtlDays,
+      baseUrl: process.env.PIPEDRIVE_BASE_URL,
+    })
+
     ctx.logger.info('ADB pre-check plugin initialized')
-  }
-
-  /** Exposes the Pipedrive activity store for the core API layer. */
-  getPipedriveActivityStore(): PipedriveActivityStore | null {
-    return this.pipedriveActivityStore
-  }
-
-  /** Exposes the Pipedrive client for the core API layer (preview/health). */
-  getPipedriveClient(): PipedriveClient | null {
-    return this.pipedriveClient
-  }
-
-  /** Exposes the publisher so the API can manually trigger and re-enqueue. */
-  getPipedrivePublisher(): PipedrivePublisher | null {
-    return this.pipedrivePublisher
-  }
-
-  /** Configured PIPEDRIVE_COMPANY_DOMAIN (or null if unset). */
-  getPipedriveCompanyDomain(): string | null {
-    return this.pipedriveCompanyDomain
-  }
-
-  /** Cache TTL hint forwarded into manual phone-fail intents. */
-  getPipedriveCacheTtlDays(): number | undefined {
-    return this.pipedriveCacheTtlDays
   }
 
   async destroy(): Promise<void> {
@@ -313,8 +308,32 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     if (!parsed.success) {
       return r.status(400).send({ error: 'Invalid params', issues: parsed.error.issues })
     }
-    const { external_ref, ...params } = parsed.data
-    const job = this.store.createJob(params, external_ref)
+    const { external_ref, ...rawParams } = parsed.data
+
+    // Resolve the per-job Pipedrive flag.
+    //   - Default (undefined): enabled iff PIPEDRIVE_API_TOKEN was configured.
+    //   - Explicit true: honoured if integration is wired; otherwise we log
+    //     a warning and silently downgrade to false (matches the documented
+    //     "warn + skip" contract).
+    //   - Explicit false: always honoured.
+    const integrationWired = this.pipedriveClient !== null
+    let pipedriveEnabled: boolean
+    if (rawParams.pipedrive_enabled === undefined) {
+      pipedriveEnabled = integrationWired
+    } else if (rawParams.pipedrive_enabled === true && !integrationWired) {
+      this.ctx?.logger.warn(
+        'Scan requested with pipedrive_enabled=true but PIPEDRIVE_API_TOKEN is not configured — Pipedrive intents will be skipped',
+        { external_ref },
+      )
+      pipedriveEnabled = false
+    } else {
+      pipedriveEnabled = rawParams.pipedrive_enabled
+    }
+
+    // Materialise the resolved flag back onto params so it lands in
+    // params_json (operators can audit exactly what was decided).
+    const params = { ...rawParams, pipedrive_enabled: pipedriveEnabled }
+    const job = this.store.createJob(params, external_ref, { pipedriveEnabled })
     if (job.status === 'queued') {
       // Fire-and-forget; progress visible via GET /scan/:id
       void this.scanner!.runJob(job.id, params).catch(() => {
