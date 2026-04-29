@@ -38,7 +38,11 @@ const PIPEDRIVE_BASE = `${CORE_URL}/api/v1/plugins/adb-precheck/pipedrive`
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
+// `phone_fail` lives only in historical rows (the scanner stopped emitting
+// these on 2026-04-29). The Activities listing/filter still surfaces them
+// for audit, but Manual-trigger no longer accepts the scenario.
 type Scenario = 'phone_fail' | 'deal_all_fail' | 'pasta_summary'
+type ActiveScenario = 'deal_all_fail' | 'pasta_summary'
 type Status = 'success' | 'failed' | 'retrying'
 
 interface ActivityRow {
@@ -97,7 +101,9 @@ type Period = 'today' | '7d' | '30d' | 'all'
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 const SCENARIO_BADGE: Record<Scenario, { label: string; cls: string }> = {
-  phone_fail: { label: 'Phone fail', cls: 'bg-amber-500/15 text-amber-300 border-amber-500/30' },
+  // `phone_fail` is retired (historical-only) — show "(legado)" so operators
+  // know we no longer emit these.
+  phone_fail: { label: 'Phone fail (legado)', cls: 'bg-zinc-700/40 text-zinc-300 border-zinc-600/40' },
   deal_all_fail: { label: 'Deal all-fail', cls: 'bg-red-500/15 text-red-300 border-red-500/30' },
   pasta_summary: { label: 'Pasta summary', cls: 'bg-sky-500/15 text-sky-300 border-sky-500/30' },
 }
@@ -199,9 +205,9 @@ function FiltersBar({
         className="rounded-md bg-zinc-800 border border-zinc-700/40 px-2 py-1.5 text-xs text-zinc-200"
       >
         <option value="">Todas as cenas</option>
-        <option value="phone_fail">Phone fail</option>
         <option value="deal_all_fail">Deal all-fail</option>
         <option value="pasta_summary">Pasta summary</option>
+        <option value="phone_fail">Phone fail (legado)</option>
       </select>
       <select
         value={filters.status}
@@ -503,9 +509,9 @@ function StatsView() {
   const scenarioData = useMemo(() => {
     if (!stats) return []
     return [
-      { name: 'Phone fail', value: stats.byScenario.phone_fail },
       { name: 'Deal all-fail', value: stats.byScenario.deal_all_fail },
       { name: 'Pasta summary', value: stats.byScenario.pasta_summary },
+      { name: 'Phone fail (legado)', value: stats.byScenario.phone_fail },
     ]
   }, [stats])
 
@@ -638,12 +644,11 @@ function KpiCard({
 interface PhoneRow { column: string; phone: string; outcome: 'invalid' | 'valid' | 'error'; strategy: string }
 
 function ManualTriggerView() {
-  const [scenario, setScenario] = useState<Scenario>('phone_fail')
+  // Manual trigger only allows ACTIVE scenarios. `phone_fail` was retired on
+  // 2026-04-29 and the backend rejects it with 400.
+  const [scenario, setScenario] = useState<ActiveScenario>('deal_all_fail')
   const [dealId, setDealId] = useState('')
   const [pasta, setPasta] = useState('')
-  const [phone, setPhone] = useState('')
-  const [column, setColumn] = useState('telefone_1')
-  const [strategy, setStrategy] = useState('adb')
   const [phones, setPhones] = useState<PhoneRow[]>([{ column: 'telefone_1', phone: '', outcome: 'invalid', strategy: 'adb' }])
   const [firstDealId, setFirstDealId] = useState('')
   const [previewMd, setPreviewMd] = useState<{ subject: string | null; body: string; dealUrl: string | null } | null>(null)
@@ -653,13 +658,6 @@ function ManualTriggerView() {
   const [error, setError] = useState<string | null>(null)
 
   const buildBody = useCallback(() => {
-    if (scenario === 'phone_fail') {
-      return {
-        scenario,
-        deal_id: Number(dealId),
-        pasta, phone, column, strategy,
-      }
-    }
     if (scenario === 'deal_all_fail') {
       return {
         scenario,
@@ -679,7 +677,7 @@ function ManualTriggerView() {
       total_phones_checked: 0, ok_phones: 0,
       strategy_counts: { adb: 0, waha: 0, cache: 0 },
     }
-  }, [scenario, dealId, pasta, phone, column, strategy, phones, firstDealId])
+  }, [scenario, dealId, pasta, phones, firstDealId])
 
   const handlePreview = async () => {
     setError(null); setResult(null)
@@ -725,9 +723,10 @@ function ManualTriggerView() {
       </div>
 
       <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 space-y-3">
-        {/* Scenario selector */}
+        {/* Scenario selector — only active scenarios are exposed; phone_fail
+            retired 2026-04-29 (server returns 400 if you bypass the UI). */}
         <div className="flex gap-3 flex-wrap">
-          {(['phone_fail', 'deal_all_fail', 'pasta_summary'] as Scenario[]).map((s) => (
+          {(['deal_all_fail', 'pasta_summary'] as ActiveScenario[]).map((s) => (
             <label key={s} className="flex items-center gap-1.5 text-xs text-zinc-300 cursor-pointer">
               <input
                 type="radio"
@@ -776,43 +775,6 @@ function ManualTriggerView() {
             />
           </div>
         </div>
-
-        {/* Phone fail specific */}
-        {scenario === 'phone_fail' && (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            <div className="space-y-1">
-              <label className="text-[11px] text-zinc-500">Telefone</label>
-              <input
-                type="text" value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                className="w-full rounded-md bg-zinc-800 border border-zinc-700/40 px-2 py-1.5 text-xs font-mono text-zinc-200"
-                placeholder="5543991938235"
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-[11px] text-zinc-500">Coluna</label>
-              <select
-                value={column}
-                onChange={(e) => setColumn(e.target.value)}
-                className="w-full rounded-md bg-zinc-800 border border-zinc-700/40 px-2 py-1.5 text-xs text-zinc-200"
-              >
-                {COLUMNS.map((c) => <option key={c} value={c}>{c}</option>)}
-              </select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-[11px] text-zinc-500">Estratégia</label>
-              <select
-                value={strategy}
-                onChange={(e) => setStrategy(e.target.value)}
-                className="w-full rounded-md bg-zinc-800 border border-zinc-700/40 px-2 py-1.5 text-xs text-zinc-200"
-              >
-                <option value="adb">ADB</option>
-                <option value="waha">WAHA</option>
-                <option value="cache">Cache</option>
-              </select>
-            </div>
-          </div>
-        )}
 
         {/* Deal all-fail dynamic phones */}
         {scenario === 'deal_all_fail' && (

@@ -277,7 +277,6 @@ describe('PrecheckScanner — onInvalidPhone ban callback (Task 5.4)', () => {
 describe('PrecheckScanner — Pipedrive integration', () => {
   function fakePub() {
     return {
-      enqueuePhoneFail: vi.fn(),
       enqueueDealAllFail: vi.fn(),
       enqueuePastaSummary: vi.fn(),
       flush: vi.fn(async () => {}),
@@ -286,8 +285,10 @@ describe('PrecheckScanner — Pipedrive integration', () => {
     }
   }
 
-  it('fires phone_fail for each invalid phone', async () => {
-    const pub = fakePub()
+  it('does NOT emit per-phone (phone_fail) intents — scenario retired 2026-04-29', async () => {
+    const pub = fakePub() as ReturnType<typeof fakePub> & { enqueuePhoneFail?: unknown }
+    // Defensive: prove we never even *call* a removed method by spying on it.
+    pub.enqueuePhoneFail = vi.fn()
     const row = buildRow({ telefone_1: '5543991938235', telefone_2: '5511988880000' })
     const { scanner } = buildScanner([row], (phone) => ({
       exists_on_wa: 0,
@@ -303,11 +304,7 @@ describe('PrecheckScanner — Pipedrive integration', () => {
     })
     await scannerPipe.runJob('job-pipe-1', {})
 
-    expect(pub.enqueuePhoneFail).toHaveBeenCalledTimes(2)
-    const first = pub.enqueuePhoneFail.mock.calls[0]![0] as { deal_id: number; phone: string; column: string; job_id: string }
-    expect(first.deal_id).toBe(42)
-    expect(first.phone).toBe('5543991938235')
-    expect(first.job_id).toBe('job-pipe-1')
+    expect(pub.enqueuePhoneFail).not.toHaveBeenCalled()
   })
 
   it('fires deal_all_fail only when archive succeeds', async () => {

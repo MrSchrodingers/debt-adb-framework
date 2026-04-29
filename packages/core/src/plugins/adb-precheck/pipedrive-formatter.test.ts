@@ -50,7 +50,11 @@ describe('strategyLabel', () => {
   })
 })
 
-describe('buildPhoneFailActivity', () => {
+// `buildPhoneFailActivity` is retained ONLY for the cleanup script; we keep
+// a single sanity test to prove the helper still compiles and produces a
+// payload with the historical dedup-key shape (which the cleanup script
+// relies on when matching legacy rows). New code MUST NOT call it.
+describe('buildPhoneFailActivity (deprecated, cleanup-only)', () => {
   const baseIntent: PipedrivePhoneFailIntent = {
     scenario: 'phone_fail',
     deal_id: 12345,
@@ -64,47 +68,14 @@ describe('buildPhoneFailActivity', () => {
     cache_ttl_days: 30,
   }
 
-  it('produces activity with closed flag and call type', () => {
+  it('still emits the historical dedup_key shape', () => {
     const a = buildPhoneFailActivity(baseIntent)
     expect(a.kind).toBe('activity')
-    expect(a.payload.type).toBe('call')
-    expect(a.payload.done).toBe(1)
-    expect(a.payload.deal_id).toBe(12345)
-    expect(a.payload.subject).toContain('(43) 99193-8235')
-    expect(a.payload.subject).toContain('❌')
-  })
-
-  it('renders dedup key as phone_fail|deal|phone|job', () => {
-    const a = buildPhoneFailActivity(baseIntent)
     expect(a.dedup_key).toBe('phone_fail|12345|5543991938235|job-abc')
-  })
-
-  it('emits HTML (not Markdown) — Pipedrive Activity note field renders HTML', () => {
-    const a = buildPhoneFailActivity(baseIntent, 'debt-5188cf')
-    // Must be HTML.
-    expect(a.payload.note).toContain('<table>')
-    expect(a.payload.note).toContain('<p>')
-    expect(a.payload.note).toContain('<strong>')
-    expect(a.payload.note).toContain('<a href="https://debt-5188cf.pipedrive.com/deal/12345">')
-    // Must NOT contain Markdown markers.
-    expect(a.payload.note).not.toMatch(/^## /m)
-    expect(a.payload.note).not.toContain('|---|')
-    expect(a.payload.note).not.toMatch(/\*\*[^*]+\*\*/)
-    // Domain-specific data still present.
-    expect(a.payload.note).toContain('(43) 99193-8235')
-    expect(a.payload.note).toContain('telefone_1')
-    expect(a.payload.note).toContain('ADB direto')
-    expect(a.payload.note).toContain('job-abc')
-    expect(a.payload.note).toContain('30 dias')
-  })
-
-  it('omits TTL line when cache_ttl_days is undefined', () => {
-    const a = buildPhoneFailActivity({ ...baseIntent, cache_ttl_days: undefined })
-    expect(a.payload.note).not.toContain('Cache TTL')
   })
 })
 
-describe('buildDealAllFailActivity', () => {
+describe('buildDealAllFailActivity (sanitized — no phone numbers in body)', () => {
   const intent: PipedriveDealAllFailIntent = {
     scenario: 'deal_all_fail',
     deal_id: 999,
@@ -126,13 +97,37 @@ describe('buildDealAllFailActivity', () => {
     expect(a.payload.subject).toContain('nenhum telefone')
   })
 
-  it('renders one HTML row per phone', () => {
+  it('redacts phone numbers — body must not contain any digit string', () => {
     const a = buildDealAllFailActivity(intent)
-    expect(a.payload.note).toContain('<td>telefone_1</td>')
-    expect(a.payload.note).toContain('<td>(43) 99193-8235</td>')
-    expect(a.payload.note).toContain('<td>telefone_2</td>')
-    expect(a.payload.note).toContain('<td>(11) 98888-0000</td>')
-    expect(a.payload.note).toContain('❌ Não existe')
+    // No raw phone digits anywhere in body.
+    expect(a.payload.note).not.toContain('5543991938235')
+    expect(a.payload.note).not.toContain('5511988880000')
+    // No pretty-formatted DDD/number pairs either.
+    expect(a.payload.note).not.toMatch(/\(\d{2}\) \d{4,5}-\d{4}/)
+  })
+
+  it('omits per-row column references and results table', () => {
+    const a = buildDealAllFailActivity(intent)
+    // No column refs.
+    expect(a.payload.note).not.toContain('telefone_1')
+    expect(a.payload.note).not.toContain('telefone_2')
+    // No table headers / status cells from the old layout.
+    expect(a.payload.note).not.toContain('<th>Coluna</th>')
+    expect(a.payload.note).not.toContain('<th>Telefone</th>')
+    expect(a.payload.note).not.toContain('<th>Resultado</th>')
+    expect(a.payload.note).not.toContain('❌ Não existe')
+    expect(a.payload.note).not.toContain('<thead>')
+    expect(a.payload.note).not.toContain('<tbody>')
+  })
+
+  it('exposes only an aggregate count of phones tested', () => {
+    const a = buildDealAllFailActivity(intent)
+    expect(a.payload.note).toContain('<strong>2 telefones testados, todos inválidos no WhatsApp.</strong>')
+  })
+
+  it('singularizes the count when only one phone was tested', () => {
+    const a = buildDealAllFailActivity({ ...intent, phones: [intent.phones[0]] })
+    expect(a.payload.note).toContain('<strong>1 telefone testado, todos inválidos no WhatsApp.</strong>')
   })
 
   it('dedup key uses deal+job', () => {
@@ -140,23 +135,21 @@ describe('buildDealAllFailActivity', () => {
     expect(a.dedup_key).toBe('deal_all_fail|999|job-zzz')
   })
 
-  it('emits HTML (not Markdown)', () => {
+  it('emits HTML (not Markdown) with the deal link', () => {
     const a = buildDealAllFailActivity(intent, 'debt-5188cf')
-    expect(a.payload.note).toContain('<table>')
-    expect(a.payload.note).toContain('<thead>')
-    expect(a.payload.note).toContain('<tbody>')
-    expect(a.payload.note).toContain('<th>Coluna</th>')
+    expect(a.payload.note).toContain('<p>')
+    expect(a.payload.note).toContain('<strong>')
     expect(a.payload.note).toContain('<a href="https://debt-5188cf.pipedrive.com/deal/999">')
     expect(a.payload.note).not.toMatch(/^## /m)
     expect(a.payload.note).not.toContain('|---|')
     expect(a.payload.note).not.toMatch(/\*\*[^*]+\*\*/)
   })
 
-  it('includes archival reason and next steps', () => {
+  it('includes archival reason, job id, and next-steps bullets', () => {
     const a = buildDealAllFailActivity(intent)
     expect(a.payload.note).toContain('todos_telefones_invalidos')
+    expect(a.payload.note).toContain('job-zzz')
     expect(a.payload.note).toContain('Próximos passos sugeridos')
-    // Bullets via &bull; entity (HTML safelist friendly).
     expect(a.payload.note).toContain('&bull;')
   })
 })
@@ -294,30 +287,6 @@ describe('buildDealUrl / buildActivityUrl', () => {
 })
 
 describe('formatter — dealUrl interpolation', () => {
-  const phoneIntent: PipedrivePhoneFailIntent = {
-    scenario: 'phone_fail',
-    deal_id: 143611,
-    pasta: 'P-001',
-    phone: '5543991938235',
-    column: 'telefone_1',
-    strategy: 'adb',
-    confidence: 0.9,
-    job_id: 'job-1',
-    occurred_at: '2026-04-28T18:00:00Z',
-  }
-
-  it('phone fail (HTML) includes deal link as <a href> at top when domain is set', () => {
-    const a = buildPhoneFailActivity(phoneIntent, 'debt-5188cf')
-    expect(a.payload.note).toContain('<a href="https://debt-5188cf.pipedrive.com/deal/143611">#143611</a>')
-    // Deal link must be in the very first <p> block.
-    expect(a.payload.note.startsWith('<p>')).toBe(true)
-  })
-
-  it('phone fail omits deal link when domain is unset', () => {
-    const a = buildPhoneFailActivity(phoneIntent)
-    expect(a.payload.note).not.toContain('pipedrive.com/deal')
-  })
-
   it('deal-all-fail (HTML) includes deal link as <a href>', () => {
     const a = buildDealAllFailActivity({
       scenario: 'deal_all_fail',
@@ -385,15 +354,13 @@ describe('escapeHtml', () => {
 })
 
 describe('HTML formatter — escapes user-provided values', () => {
-  it('phone_fail escapes pasta containing < & >', () => {
-    const a = buildPhoneFailActivity({
-      scenario: 'phone_fail',
+  it('deal_all_fail escapes pasta containing < & >', () => {
+    const a = buildDealAllFailActivity({
+      scenario: 'deal_all_fail',
       deal_id: 1,
       pasta: 'Brown & <Co>',
-      phone: '5543991938235',
-      column: 'telefone_1',
-      strategy: 'adb',
-      confidence: 0.9,
+      motivo: 'todos_telefones_invalidos',
+      phones: [{ column: 'telefone_1', phone: '5543991938235', outcome: 'invalid', strategy: 'adb', confidence: 0.9 }],
       job_id: 'job-1',
       occurred_at: '2026-04-28T18:00:00Z',
     })

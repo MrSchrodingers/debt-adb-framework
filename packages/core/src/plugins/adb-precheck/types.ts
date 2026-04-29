@@ -128,8 +128,20 @@ export interface PrecheckScanParams {
 // Scanner emits these as fire-and-forget intents; the PipedrivePublisher
 // dedups by (scenario, deal_id, phone, job_id) and dispatches via
 // PipedriveClient with a token-bucket rate limiter.
+//
+// ─── Scope (post 2026-04-29) ─────────────────────────────────────────────
+// We stopped emitting per-phone Activities (`phone_fail`) — the operator
+// reported the deal timeline was too noisy. Active scenarios are now:
+//   - `deal_all_fail`  → one Activity per archived deal (privacy-redacted,
+//                         no phone numbers in body)
+//   - `pasta_summary`  → one Note per pasta at job-completion
+//
+// The `PipedrivePhoneFailIntent` interface is retained ONLY so the database
+// schema (which has historical `phone_fail` rows) and the cleanup script
+// remain typeable. No active code path may emit one — if you need to
+// repair/delete an old row, do it through the cleanup script.
 
-/** Per-phone validation result fed to the formatter (Scenario A & B rows). */
+/** Per-phone validation result fed to the formatter (Scenario B rows). */
 export interface PipedrivePhoneEntry {
   phone: string
   column: string
@@ -139,7 +151,11 @@ export interface PipedrivePhoneEntry {
   confidence: number | null
 }
 
-/** Scenario A: a single phone failed WhatsApp validation. */
+/**
+ * @deprecated 2026-04-29 — per-phone Activities removed (too noisy).
+ * Type kept only for compatibility with historical `pipedrive_activities`
+ * rows where `scenario='phone_fail'`. Do NOT emit new intents of this kind.
+ */
 export interface PipedrivePhoneFailIntent {
   scenario: 'phone_fail'
   deal_id: number

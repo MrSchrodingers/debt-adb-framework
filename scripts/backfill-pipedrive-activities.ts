@@ -2,6 +2,15 @@
 /**
  * backfill-pipedrive-activities.ts
  *
+ * **OBSOLETE (2026-04-29).** This script was a one-time Markdown→HTML
+ * migration for Activities. The new noise-reduction work supersedes it:
+ *   - `phone_fail` Activities are no longer emitted (and the cleanup
+ *     script DELETES historical ones).
+ *   - `deal_all_fail` Activities now use a sanitized HTML body.
+ * Use `scripts/cleanup-pipedrive-pollution.ts` instead. This file is kept
+ * for reference/audit only.
+ *
+ * Original purpose:
  * One-shot operational tool. Repairs every Pipedrive Activity that was
  * created with the old Markdown formatter (which Pipedrive does not render —
  * shows raw MD source on a single line). Replaces each activity's `note`

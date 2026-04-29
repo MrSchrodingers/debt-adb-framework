@@ -9,17 +9,19 @@ import type {
 /**
  * Pure formatters for Pipedrive payloads.
  *
- * Three scenarios, three layouts. Deterministic — same input ⇒ same output ⇒
- * snapshot-friendly. NEVER calls into IO. The publisher composes these into
- * full intents (with dedup keys) before handing them to the client.
+ * Two active scenarios after the 2026-04-29 noise reduction:
+ *   - `deal_all_fail`  → HTML Activity `note` (one per archived deal,
+ *                        no phone numbers in body — privacy + clutter).
+ *   - `pasta_summary`  → HTML Note `content` (one per pasta at job-end).
  *
- * IMPORTANT — output format: ALL THREE scenarios emit HTML.
- *   - `phone_fail`     → HTML Activity `note` (Pipedrive renders the safelist;
- *                        Markdown is shown raw).
- *   - `deal_all_fail`  → HTML Activity `note` (same reason).
- *   - `pasta_summary`  → HTML Note `content` (the /v1/notes endpoint
- *                        ALSO renders raw Markdown when posted — visually
- *                        broken. Migrated to HTML 2026-04-29.)
+ * `phone_fail` is DEPRECATED. The formatter is kept exported for the
+ * one-shot cleanup script that needs to repair / delete historical
+ * activity rows of that scenario. NO ACTIVE CALLER MAY USE IT — see
+ * pipedrive-publisher.ts which no longer exposes `enqueuePhoneFail()`.
+ *
+ * Deterministic — same input ⇒ same output ⇒ snapshot-friendly. NEVER
+ * calls into IO. The publisher composes these into full intents (with
+ * dedup keys) before handing them to the client.
  *
  * Pipedrive HTML safelist (per docs / observed behavior, identical for
  * Activity.note and Note.content):
@@ -27,6 +29,14 @@ import type {
  *   <thead> <tbody>
  * Tags outside this list are stripped (notably <h1>..<h6>, <code>). We only
  * use safelist tags. Bullets are emitted as &bull; entities inside <p><br>.
+ *
+ * ─── Pasta summary HTML rendering quirk ─────────────────────────────────
+ * Pipedrive's Notes API empirically renders content reliably as HTML when
+ * the body STARTS with a recognized block tag (we use `<p>`). The previous
+ * Markdown payloads were shown raw because they lacked any HTML. As long
+ * as the first character is `<`, the renderer treats the whole body as
+ * HTML and strips disallowed tags silently. The cleanup script verifies
+ * this empirically by GET-ing each migrated note and checking `.content`.
  */
 
 const FALLBACK_PHONE = '(número desconhecido)'
@@ -112,8 +122,13 @@ export function escapeHtml(value: string | null | undefined): string {
     .replace(/'/g, '&#39;')
 }
 
-// ── Scenario A — per-phone fail Activity (HTML) ─────────────────────────
+// ── Scenario A — per-phone fail Activity (HTML) — DEPRECATED ───────────
+//
+// Retained ONLY so the one-shot cleanup script can DELETE historical
+// rows of this scenario. No active caller emits this anymore — the
+// scanner skips `phone_fail` entirely as of 2026-04-29.
 
+/** @deprecated 2026-04-29 — scenario removed; kept for cleanup script only. */
 export function buildPhoneFailActivity(
   intent: PipedrivePhoneFailIntent,
   companyDomain?: string | null,
@@ -166,7 +181,12 @@ export function buildPhoneFailActivity(
   }
 }
 
-// ── Scenario B — deal-level all-fail Activity (HTML) ────────────────────
+// ── Scenario B — deal-level all-fail Activity (HTML, sanitized) ─────────
+//
+// Emits an aggregate-only summary: NO phone numbers, NO column refs, NO
+// per-row results table. Operators still get the alarm + audit trail at
+// the deal level (the deal was archived, why, by which job) without the
+// timeline pollution and without leaking individual numbers.
 
 export function buildDealAllFailActivity(
   intent: PipedriveDealAllFailIntent,
@@ -177,20 +197,7 @@ export function buildDealAllFailActivity(
   const motivoEsc = escapeHtml(intent.motivo)
   const jobIdEsc = escapeHtml(intent.job_id)
   const occurredEsc = escapeHtml(intent.occurred_at)
-
-  const rows = intent.phones
-    .map((p) => {
-      const colEsc = escapeHtml(p.column)
-      const phoneEsc = escapeHtml(formatBrPhonePretty(p.phone))
-      const result =
-        p.outcome === 'invalid'
-          ? '❌ Não existe'
-          : p.outcome === 'error'
-            ? '⚠️ Erro de validação'
-            : '✅ OK'
-      return `<tr><td>${colEsc}</td><td>${phoneEsc}</td><td>${result}</td></tr>`
-    })
-    .join('')
+  const phoneCount = intent.phones.length
 
   const parts: string[] = []
   if (dealUrl) {
@@ -204,13 +211,12 @@ export function buildDealAllFailActivity(
   parts.push(`<p>🚨 <strong>ATENÇÃO</strong> — Deal arquivado em <strong>prov_consultas_snapshot</strong></p>`)
   parts.push(`<p><strong>Verificação completa</strong> &middot; ${occurredEsc}</p>`)
   parts.push(
-    '<table>'
-      + '<thead><tr><th>Coluna</th><th>Telefone</th><th>Resultado</th></tr></thead>'
-      + `<tbody>${rows}</tbody>`
-      + '</table>',
+    `<p><strong>${phoneCount} telefone${phoneCount === 1 ? '' : 's'} testado${phoneCount === 1 ? '' : 's'}, todos inválidos no WhatsApp.</strong></p>`,
   )
-  parts.push(`<p><strong>Motivo arquival:</strong> ${motivoEsc}</p>`)
-  parts.push(`<p><strong>Job ID:</strong> ${jobIdEsc}</p>`)
+  parts.push(
+    `<p><strong>Motivo arquival:</strong> ${motivoEsc}<br>`
+      + `<strong>Job ID:</strong> ${jobIdEsc}</p>`,
+  )
   parts.push('<p><strong>Próximos passos sugeridos:</strong></p>')
   parts.push(
     '<p>'

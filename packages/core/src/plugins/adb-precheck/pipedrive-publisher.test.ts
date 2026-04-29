@@ -6,7 +6,6 @@ import { PipedriveActivityStore } from './pipedrive-activity-store.js'
 import type {
   PipedriveDealAllFailIntent,
   PipedrivePastaSummaryIntent,
-  PipedrivePhoneFailIntent,
 } from './types.js'
 
 const require = createRequire(import.meta.url)
@@ -38,18 +37,6 @@ function fakeClient(
   }
 }
 
-const phoneFail: PipedrivePhoneFailIntent = {
-  scenario: 'phone_fail',
-  deal_id: 1,
-  pasta: 'P',
-  phone: '5543991938235',
-  column: 'telefone_1',
-  strategy: 'adb',
-  confidence: 0.9,
-  job_id: 'job',
-  occurred_at: '2026-04-28T18:00:00Z',
-}
-
 const dealFail: PipedriveDealAllFailIntent = {
   scenario: 'deal_all_fail',
   deal_id: 1,
@@ -73,10 +60,10 @@ const pastaSummary: PipedrivePastaSummaryIntent = {
 }
 
 describe('PipedrivePublisher — basic dispatch', () => {
-  it('enqueues a phone fail and drains it to the client', async () => {
+  it('enqueues a deal_all_fail and drains it to the client', async () => {
     const { client, dispatch } = fakeClient()
     const pub = new PipedrivePublisher(client, fakeLogger())
-    pub.enqueuePhoneFail(phoneFail)
+    pub.enqueueDealAllFail(dealFail)
     await pub.flush()
     expect(dispatch).toHaveBeenCalledTimes(1)
     const arg = dispatch.mock.calls[0][0] as { kind: string; payload: { deal_id: number } }
@@ -97,12 +84,12 @@ describe('PipedrivePublisher — basic dispatch', () => {
 })
 
 describe('PipedrivePublisher — dedup', () => {
-  it('deduplicates identical phone fails (same deal+phone+job)', async () => {
+  it('deduplicates identical deal_all_fails (same deal+job)', async () => {
     const { client, dispatch } = fakeClient()
     const pub = new PipedrivePublisher(client, fakeLogger())
-    pub.enqueuePhoneFail(phoneFail)
-    pub.enqueuePhoneFail(phoneFail) // dup
-    pub.enqueuePhoneFail({ ...phoneFail, phone: '5511988880000' }) // distinct
+    pub.enqueueDealAllFail(dealFail)
+    pub.enqueueDealAllFail(dealFail) // dup
+    pub.enqueueDealAllFail({ ...dealFail, deal_id: 2 }) // distinct
     await pub.flush()
     expect(dispatch).toHaveBeenCalledTimes(2)
   })
@@ -119,8 +106,8 @@ describe('PipedrivePublisher — dedup', () => {
   it('different job_ids are not deduped', async () => {
     const { client, dispatch } = fakeClient()
     const pub = new PipedrivePublisher(client, fakeLogger())
-    pub.enqueuePhoneFail(phoneFail)
-    pub.enqueuePhoneFail({ ...phoneFail, job_id: 'job2' })
+    pub.enqueueDealAllFail(dealFail)
+    pub.enqueueDealAllFail({ ...dealFail, job_id: 'job2' })
     await pub.flush()
     expect(dispatch).toHaveBeenCalledTimes(2)
   })
@@ -136,8 +123,8 @@ describe('PipedrivePublisher — async behavior', () => {
     })
     const pub = new PipedrivePublisher(client, fakeLogger())
     const t0 = Date.now()
-    pub.enqueuePhoneFail(phoneFail)
-    pub.enqueuePhoneFail({ ...phoneFail, phone: '5511988880000' })
+    pub.enqueueDealAllFail(dealFail)
+    pub.enqueueDealAllFail({ ...dealFail, deal_id: 2 })
     const elapsed = Date.now() - t0
     // Enqueue must return synchronously fast (< 50ms) regardless of dispatch latency.
     expect(elapsed).toBeLessThan(50)
@@ -150,8 +137,8 @@ describe('PipedrivePublisher — async behavior', () => {
   it('continues draining after a client returns ok:false', async () => {
     const { client, dispatch } = fakeClient(async () => ({ ok: false, attempts: 3, status: 500 }))
     const pub = new PipedrivePublisher(client, fakeLogger())
-    pub.enqueuePhoneFail(phoneFail)
-    pub.enqueuePhoneFail({ ...phoneFail, phone: '5511988880000' })
+    pub.enqueueDealAllFail(dealFail)
+    pub.enqueueDealAllFail({ ...dealFail, deal_id: 2 })
     await pub.flush()
     expect(dispatch).toHaveBeenCalledTimes(2)
   })
@@ -165,8 +152,8 @@ describe('PipedrivePublisher — async behavior', () => {
     })
     const logger = fakeLogger()
     const pub = new PipedrivePublisher(client, logger)
-    pub.enqueuePhoneFail(phoneFail)
-    pub.enqueuePhoneFail({ ...phoneFail, phone: '5511988880000' })
+    pub.enqueueDealAllFail(dealFail)
+    pub.enqueueDealAllFail({ ...dealFail, deal_id: 2 })
     await pub.flush()
     expect(dispatch).toHaveBeenCalledTimes(2)
     expect(logger.error).toHaveBeenCalled()
@@ -180,9 +167,9 @@ describe('PipedrivePublisher — persistence (with store)', () => {
     store.initialize()
     const { client } = fakeClient(async () => ({ ok: true, attempts: 1, status: 201 }))
     const pub = new PipedrivePublisher(client, fakeLogger(), store)
-    pub.enqueuePhoneFail(phoneFail)
+    pub.enqueueDealAllFail(dealFail)
     await pub.flush()
-    const list = store.list({ scenario: 'phone_fail' })
+    const list = store.list({ scenario: 'deal_all_fail' })
     expect(list.total).toBe(1)
     const row = list.items[0]
     expect(row.pipedrive_response_status).toBe('success')
@@ -199,9 +186,9 @@ describe('PipedrivePublisher — persistence (with store)', () => {
     store.initialize()
     const { client } = fakeClient(async () => ({ ok: false, attempts: 3, status: 500, error: 'http_500: boom' }))
     const pub = new PipedrivePublisher(client, fakeLogger(), store)
-    pub.enqueuePhoneFail(phoneFail)
+    pub.enqueueDealAllFail(dealFail)
     await pub.flush()
-    const row = store.list({ scenario: 'phone_fail' }).items[0]
+    const row = store.list({ scenario: 'deal_all_fail' }).items[0]
     expect(row.pipedrive_response_status).toBe('failed')
     expect(row.http_status).toBe(500)
     expect(row.attempts).toBe(3)
@@ -233,9 +220,9 @@ describe('PipedrivePublisher — persistence (with store)', () => {
     store.initialize()
     const { client } = fakeClient()
     const pub = new PipedrivePublisher(client, fakeLogger(), store)
-    pub.enqueuePhoneFail(phoneFail, { manual: true, triggered_by: 'alice' })
+    pub.enqueueDealAllFail(dealFail, { manual: true, triggered_by: 'alice' })
     await pub.flush()
-    const row = store.list({ scenario: 'phone_fail' }).items[0]
+    const row = store.list({ scenario: 'deal_all_fail' }).items[0]
     expect(row.manual).toBe(1)
     expect(row.triggered_by).toBe('alice')
     db.close()
@@ -249,9 +236,9 @@ describe('PipedrivePublisher — persistence (with store)', () => {
     // which responds 201 with {success:true, data:{id: 987654, ...}}.
     const { client } = fakeClient(async () => ({ ok: true, attempts: 1, status: 201, responseId: 987654 }))
     const pub = new PipedrivePublisher(client, fakeLogger(), store)
-    pub.enqueuePhoneFail(phoneFail)
+    pub.enqueueDealAllFail(dealFail)
     await pub.flush()
-    const row = store.list({ scenario: 'phone_fail' }).items[0]
+    const row = store.list({ scenario: 'deal_all_fail' }).items[0]
     expect(row.pipedrive_response_status).toBe('success')
     expect(row.pipedrive_response_id).toBe(987654)
     db.close()
@@ -263,9 +250,9 @@ describe('PipedrivePublisher — persistence (with store)', () => {
     store.initialize()
     const { client } = fakeClient(async () => ({ ok: true, attempts: 1, status: 201 }))
     const pub = new PipedrivePublisher(client, fakeLogger(), store)
-    pub.enqueuePhoneFail(phoneFail)
+    pub.enqueueDealAllFail(dealFail)
     await pub.flush()
-    const row = store.list({ scenario: 'phone_fail' }).items[0]
+    const row = store.list({ scenario: 'deal_all_fail' }).items[0]
     expect(row.pipedrive_response_status).toBe('success')
     expect(row.pipedrive_response_id).toBeNull()
     db.close()

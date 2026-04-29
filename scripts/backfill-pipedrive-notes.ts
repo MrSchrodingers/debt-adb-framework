@@ -2,6 +2,14 @@
 /**
  * backfill-pipedrive-notes.ts
  *
+ * **OBSOLETE (2026-04-29).** Operators reported that Pasta summary notes
+ * still rendered raw Markdown after this script claimed success. The new
+ * `scripts/cleanup-pipedrive-pollution.ts` (Pass C) supersedes this — it
+ * GETs each note, inspects the actual rendered content, and re-PUTs HTML
+ * only when needed, with empirical reporting. This file is kept for
+ * reference/audit only.
+ *
+ * Original purpose:
  * One-shot operational tool. Repairs every Pipedrive Note created with the
  * old Markdown formatter for the `pasta_summary` scenario. Replaces each
  * note's `content` with the new HTML payload produced by the fixed

@@ -3,14 +3,12 @@ import type { PipedriveClient } from './pipedrive-client.js'
 import {
   buildDealAllFailActivity,
   buildPastaSummaryNote,
-  buildPhoneFailActivity,
 } from './pipedrive-formatter.js'
 import type { PipedriveActivityStore } from './pipedrive-activity-store.js'
 import type {
   PipedriveDealAllFailIntent,
   PipedriveOutgoingIntent,
   PipedrivePastaSummaryIntent,
-  PipedrivePhoneFailIntent,
 } from './types.js'
 
 /**
@@ -40,6 +38,11 @@ interface PendingIntent {
 }
 
 export interface PublisherEnqueueMeta {
+  /**
+   * `phone_fail` is preserved here purely for type-compat with historical
+   * `pipedrive_activities` rows (the store still types it). No active
+   * publisher method emits it — it was retired on 2026-04-29.
+   */
   scenario: 'phone_fail' | 'deal_all_fail' | 'pasta_summary'
   deal_id: number
   pasta: string | null
@@ -61,18 +64,6 @@ export class PipedrivePublisher {
     private readonly store?: PipedriveActivityStore,
     private readonly companyDomain?: string | null,
   ) {}
-
-  enqueuePhoneFail(intent: PipedrivePhoneFailIntent, meta?: Partial<PublisherEnqueueMeta>): string | null {
-    return this.add(buildPhoneFailActivity(intent, this.companyDomain), {
-      scenario: 'phone_fail',
-      deal_id: intent.deal_id,
-      pasta: intent.pasta,
-      phone_normalized: intent.phone,
-      job_id: intent.job_id,
-      manual: meta?.manual,
-      triggered_by: meta?.triggered_by,
-    })
-  }
 
   enqueueDealAllFail(intent: PipedriveDealAllFailIntent, meta?: Partial<PublisherEnqueueMeta>): string | null {
     return this.add(buildDealAllFailActivity(intent, this.companyDomain), {

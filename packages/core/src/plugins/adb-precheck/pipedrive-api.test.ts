@@ -174,7 +174,7 @@ describe('plugin pipedrive API — preview', () => {
     env.db.close()
   })
 
-  it('POST /pipedrive/preview renders phone_fail HTML without persisting', async () => {
+  it('POST /pipedrive/preview rejects phone_fail (scenario removed)', async () => {
     const res = await server.inject({
       method: 'POST',
       url: `${PREFIX}/pipedrive/preview`,
@@ -184,12 +184,25 @@ describe('plugin pipedrive API — preview', () => {
         column: 'telefone_1', strategy: 'adb',
       },
     })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('POST /pipedrive/preview renders deal_all_fail with sanitized HTML (no phone numbers)', async () => {
+    const res = await server.inject({
+      method: 'POST',
+      url: `${PREFIX}/pipedrive/preview`,
+      payload: {
+        scenario: 'deal_all_fail',
+        deal_id: 143611, pasta: 'P',
+        phones: [{ column: 'telefone_1', phone: '5543991938235', outcome: 'invalid', strategy: 'adb' }],
+      },
+    })
     expect(res.statusCode).toBe(200)
     const body = res.json() as { endpoint: string; markdownBody: string; dealUrl: string }
     expect(body.endpoint).toBe('/activities')
-    // phone_fail now uses HTML — preview field name kept for back-compat with UI.
     expect(body.markdownBody).toContain('<a href="https://debt-5188cf.pipedrive.com/deal/143611">#143611</a>')
-    expect(body.markdownBody).toContain('5543991938235'.slice(-4))
+    // Sanitized — no phone digits in body.
+    expect(body.markdownBody).not.toContain('5543991938235')
     expect(body.dealUrl).toBe('https://debt-5188cf.pipedrive.com/deal/143611')
     expect(env.store.list({}).total).toBe(0)
   })
@@ -233,14 +246,15 @@ describe('plugin pipedrive API — manual trigger', () => {
     env.db.close()
   })
 
-  it('POST /pipedrive/manual-trigger persists with manual=1 and returns activityId', async () => {
+  it('POST /pipedrive/manual-trigger persists deal_all_fail with manual=1 and returns activityId', async () => {
     const res = await server.inject({
       method: 'POST',
       url: `${PREFIX}/pipedrive/manual-trigger`,
       payload: {
-        scenario: 'phone_fail',
-        deal_id: 1, pasta: 'P', phone: '5543991938235',
-        column: 'telefone_1', strategy: 'adb', triggered_by: 'alice',
+        scenario: 'deal_all_fail',
+        deal_id: 1, pasta: 'P',
+        phones: [{ column: 'telefone_1', phone: '5543991938235', outcome: 'invalid', strategy: 'adb' }],
+        triggered_by: 'alice',
       },
     })
     expect(res.statusCode).toBe(201)
@@ -260,9 +274,9 @@ describe('plugin pipedrive API — manual trigger', () => {
       url: `${PREFIX}/pipedrive/manual-trigger`,
       headers: { 'x-triggered-by': 'bob' },
       payload: {
-        scenario: 'phone_fail',
-        deal_id: 1, pasta: 'P', phone: '5543991938235',
-        column: 'telefone_1', strategy: 'adb',
+        scenario: 'deal_all_fail',
+        deal_id: 1, pasta: 'P',
+        phones: [{ column: 'telefone_1', phone: '5543991938235', outcome: 'invalid', strategy: 'adb' }],
       },
     })
     expect(res.statusCode).toBe(201)
@@ -278,20 +292,33 @@ describe('plugin pipedrive API — manual trigger', () => {
       method: 'POST',
       url: `${PREFIX}/pipedrive/manual-trigger`,
       payload: {
-        scenario: 'phone_fail',
-        deal_id: 1, pasta: 'P', phone: '5543991938235',
-        column: 'telefone_1', strategy: 'adb',
+        scenario: 'deal_all_fail',
+        deal_id: 1, pasta: 'P',
+        phones: [{ column: 'telefone_1', phone: '5543991938235', outcome: 'invalid', strategy: 'adb' }],
       },
     })
     expect(res.statusCode).toBe(503)
     await localServer.close()
   })
 
+  it('POST /pipedrive/manual-trigger rejects phone_fail (scenario removed)', async () => {
+    const res = await server.inject({
+      method: 'POST',
+      url: `${PREFIX}/pipedrive/manual-trigger`,
+      payload: {
+        scenario: 'phone_fail',
+        deal_id: 1, pasta: 'P', phone: '5543991938235',
+        column: 'telefone_1', strategy: 'adb',
+      },
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
   it('POST /pipedrive/manual-trigger validates body', async () => {
     const res = await server.inject({
       method: 'POST',
       url: `${PREFIX}/pipedrive/manual-trigger`,
-      payload: { scenario: 'phone_fail', deal_id: 'not-a-number' },
+      payload: { scenario: 'deal_all_fail', deal_id: 'not-a-number' },
     })
     expect(res.statusCode).toBe(400)
   })
@@ -315,9 +342,9 @@ describe('plugin pipedrive API — retry', () => {
     env.db.close()
   })
 
-  it('POST /pipedrive/activities/:id/retry creates a new manual attempt row', async () => {
+  it('POST /pipedrive/activities/:id/retry creates a new manual attempt row for deal_all_fail', async () => {
     const id = env.store.insertPending({
-      scenario: 'phone_fail', deal_id: 10, pasta: 'P', phone_normalized: '5511',
+      scenario: 'deal_all_fail', deal_id: 10, pasta: 'P', phone_normalized: null,
       job_id: 'j-1', pipedrive_endpoint: '/activities',
       pipedrive_payload_json: '{"deal_id":10,"note":""}',
     })
@@ -332,6 +359,17 @@ describe('plugin pipedrive API — retry', () => {
     const newRow = env.store.getById(body.newAttemptId)
     expect(newRow).not.toBeNull()
     expect(newRow!.manual).toBe(1)
+  })
+
+  it('POST /pipedrive/activities/:id/retry refuses to re-emit a historical phone_fail (410)', async () => {
+    const id = env.store.insertPending({
+      scenario: 'phone_fail', deal_id: 10, pasta: 'P', phone_normalized: '5511',
+      job_id: 'j-1', pipedrive_endpoint: '/activities',
+      pipedrive_payload_json: '{"deal_id":10,"note":""}',
+    })
+    env.store.updateResult(id, { status: 'failed', attempts: 3, http_status: 500, error_msg: 'x' })
+    const res = await server.inject({ method: 'POST', url: `${PREFIX}/pipedrive/activities/${id}/retry` })
+    expect(res.statusCode).toBe(410)
   })
 
   it('POST /pipedrive/activities/:id/retry returns 404 for unknown id', async () => {

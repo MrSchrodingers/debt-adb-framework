@@ -211,19 +211,10 @@ export class PrecheckScanner {
                 invalidCount++
                 // Task 5.4: record invalid phones in the central blacklist
                 this.deps.onInvalidPhone?.(r.phone_normalized)
-                // Pipedrive Scenario A: fire-and-forget per-phone fail intent.
-                pipedrive?.enqueuePhoneFail({
-                  scenario: 'phone_fail',
-                  deal_id: row.deal_id,
-                  pasta: row.pasta,
-                  phone: r.phone_normalized,
-                  column: p.column,
-                  strategy: r.source,
-                  confidence: r.confidence,
-                  job_id: jobId,
-                  occurred_at: new Date().toISOString(),
-                  cache_ttl_days: this.deps.pipedriveCacheTtlDays,
-                })
+                // NOTE: per-phone Pipedrive Activities (`phone_fail`) were
+                // removed on 2026-04-29 — too noisy on the deal timeline.
+                // We now only emit one Activity per archived deal
+                // (deal_all_fail) and one Note per pasta (pasta_summary).
               } else {
                 errorCount++
               }

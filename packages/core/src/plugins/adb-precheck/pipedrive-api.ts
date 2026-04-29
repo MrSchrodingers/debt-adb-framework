@@ -4,7 +4,6 @@ import {
   buildDealAllFailActivity,
   buildDealUrl,
   buildPastaSummaryNote,
-  buildPhoneFailActivity,
 } from './pipedrive-formatter.js'
 import type { PipedriveActivityRow, PipedriveActivityStore } from './pipedrive-activity-store.js'
 import type { PipedriveClient } from './pipedrive-client.js'
@@ -12,7 +11,6 @@ import type { PipedrivePublisher } from './pipedrive-publisher.js'
 import type {
   PipedriveDealAllFailIntent,
   PipedrivePastaSummaryIntent,
-  PipedrivePhoneFailIntent,
 } from './types.js'
 import type { HttpMethod, PluginContext, RouteHandler } from '../types.js'
 
@@ -39,7 +37,11 @@ export interface PipedrivePluginApiDeps {
   baseUrl?: string
 }
 
+// `phone_fail` is included in the LIST filter enum so operators can still
+// query historical rows in `pipedrive_activities`; it is rejected by the
+// preview and manual-trigger schemas because we no longer emit it.
 const scenarioEnum = z.enum(['phone_fail', 'deal_all_fail', 'pasta_summary'])
+const activeScenarioEnum = z.enum(['deal_all_fail', 'pasta_summary'])
 const statusEnum = z.enum(['success', 'failed', 'retrying'])
 
 const listQuerySchema = z.object({
@@ -51,18 +53,6 @@ const listQuerySchema = z.object({
   until: z.string().min(1).max(64).optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
   offset: z.coerce.number().int().min(0).optional(),
-})
-
-const phoneFailBodySchema = z.object({
-  scenario: z.literal('phone_fail'),
-  deal_id: z.number().int().positive(),
-  pasta: z.string().min(1),
-  phone: z.string().min(8),
-  column: z.string().min(1),
-  strategy: z.string().min(1),
-  confidence: z.number().nullable().optional(),
-  job_id: z.string().min(1).optional(),
-  cache_ttl_days: z.number().int().positive().optional(),
 })
 
 const dealAllFailBodySchema = z.object({
@@ -104,17 +94,20 @@ const pastaSummaryBodySchema = z.object({
     .default({ adb: 0, waha: 0, cache: 0 }),
 })
 
+// preview / manual-trigger accept ONLY the active scenarios. Sending a
+// body with `scenario:'phone_fail'` returns 400 — Zod's discriminated
+// union rejects unknown literal values, which is exactly what we want.
 const previewBodySchema = z.discriminatedUnion('scenario', [
-  phoneFailBodySchema,
   dealAllFailBodySchema,
   pastaSummaryBodySchema,
 ])
 
 const manualTriggerBodySchema = z.discriminatedUnion('scenario', [
-  phoneFailBodySchema.extend({ triggered_by: z.string().min(1).max(120).optional() }),
   dealAllFailBodySchema.extend({ triggered_by: z.string().min(1).max(120).optional() }),
   pastaSummaryBodySchema.extend({ triggered_by: z.string().min(1).max(120).optional() }),
 ])
+
+void activeScenarioEnum  // exported through the schemas above; reference kept for clarity.
 
 const periodEnum = z.enum(['today', '7d', '30d', 'all'])
 const statsQuerySchema = z.object({ period: periodEnum.optional() })
@@ -133,7 +126,7 @@ function rowWithUrls(
 function buildPreviewPayload(
   body: z.infer<typeof previewBodySchema>,
   companyDomain: string | null,
-  cacheTtlDays?: number,
+  _cacheTtlDays?: number,
 ): {
   endpoint: '/activities' | '/notes'
   subject: string | null
@@ -141,28 +134,6 @@ function buildPreviewPayload(
   markdownBody: string
   dealUrl: string | null
 } {
-  if (body.scenario === 'phone_fail') {
-    const intent: PipedrivePhoneFailIntent = {
-      scenario: 'phone_fail',
-      deal_id: body.deal_id,
-      pasta: body.pasta,
-      phone: body.phone,
-      column: body.column,
-      strategy: body.strategy,
-      confidence: body.confidence ?? null,
-      job_id: body.job_id ?? 'manual-preview',
-      occurred_at: new Date().toISOString(),
-      cache_ttl_days: body.cache_ttl_days ?? cacheTtlDays,
-    }
-    const a = buildPhoneFailActivity(intent, companyDomain)
-    return {
-      endpoint: '/activities',
-      subject: a.payload.subject,
-      type: a.payload.type,
-      markdownBody: a.payload.note,
-      dealUrl: buildDealUrl(body.deal_id, companyDomain),
-    }
-  }
   if (body.scenario === 'deal_all_fail') {
     const intent: PipedriveDealAllFailIntent = {
       scenario: 'deal_all_fail',
@@ -302,22 +273,13 @@ export function buildPipedriveRoutes(
     let newRowId: string | null = null
 
     if (row.scenario === 'phone_fail') {
-      const original = JSON.parse(row.pipedrive_payload_json) as { deal_id: number; note: string }
-      newRowId = deps.publisher.enqueuePhoneFail(
-        {
-          scenario: 'phone_fail',
-          deal_id: original.deal_id,
-          pasta: row.pasta ?? '',
-          phone: row.phone_normalized ?? '',
-          column: 'unknown',
-          strategy: 'manual_retry',
-          confidence: null,
-          job_id: `${row.job_id ?? 'manual'}-${retrySuffix}`,
-          occurred_at: new Date().toISOString(),
-          cache_ttl_days: deps.cacheTtlDays,
-        },
-        { manual: true, triggered_by },
-      )
+      // phone_fail was retired on 2026-04-29. Re-emitting one would
+      // re-pollute Pipedrive with the very kind of activity the operator
+      // explicitly asked us to stop creating. Refuse the retry.
+      return r.status(410).send({
+        error: 'scenario_removed',
+        detail: 'phone_fail Activities are no longer emitted; retry blocked.',
+      })
     } else if (row.scenario === 'deal_all_fail') {
       newRowId = deps.publisher.enqueueDealAllFail(
         {
@@ -377,23 +339,7 @@ export function buildPipedriveRoutes(
       parsed.data.triggered_by ?? headers['x-triggered-by'] ?? 'operator'
     const jobIdSuffix = `manual-${Date.now()}`
     let newRowId: string | null = null
-    if (parsed.data.scenario === 'phone_fail') {
-      newRowId = deps.publisher.enqueuePhoneFail(
-        {
-          scenario: 'phone_fail',
-          deal_id: parsed.data.deal_id,
-          pasta: parsed.data.pasta,
-          phone: parsed.data.phone,
-          column: parsed.data.column,
-          strategy: parsed.data.strategy,
-          confidence: parsed.data.confidence ?? null,
-          job_id: parsed.data.job_id ?? jobIdSuffix,
-          occurred_at: new Date().toISOString(),
-          cache_ttl_days: parsed.data.cache_ttl_days ?? deps.cacheTtlDays,
-        },
-        { manual: true, triggered_by },
-      )
-    } else if (parsed.data.scenario === 'deal_all_fail') {
+    if (parsed.data.scenario === 'deal_all_fail') {
       newRowId = deps.publisher.enqueueDealAllFail(
         {
           scenario: 'deal_all_fail',
