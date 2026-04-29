@@ -55,6 +55,7 @@ import { createRequire } from 'node:module'
 import {
   buildDealAllFailActivity,
   buildPastaSummaryNote,
+  formatBrPhonePretty,
 } from '../packages/core/src/plugins/adb-precheck/pipedrive-formatter.js'
 import type {
   PipedriveDealAllFailIntent,
@@ -282,6 +283,10 @@ async function passA(db: import('better-sqlite3').Database): Promise<PassACounts
   console.log('')
   console.log('===== PASS A — DELETE phone_fail Activities =====')
 
+  // We accept rows previously stamped 'deleted' too, so an earlier
+  // run that mis-resolved them can re-attempt the actual API DELETE.
+  // That's still idempotent: a real DELETE returns 404 the second time
+  // and we re-mark as 'deleted'.
   const rows = db
     .prepare(
       `SELECT id, scenario, deal_id, pasta, phone_normalized, job_id,
@@ -289,7 +294,7 @@ async function passA(db: import('better-sqlite3').Database): Promise<PassACounts
               pipedrive_response_id, pipedrive_response_status
          FROM pipedrive_activities
         WHERE scenario = 'phone_fail'
-          AND pipedrive_response_status = 'success'
+          AND pipedrive_response_status IN ('success','deleted')
         ORDER BY created_at ASC`,
     )
     .all() as Row[]
@@ -330,15 +335,37 @@ async function passA(db: import('better-sqlite3').Database): Promise<PassACounts
         }
       }
       const phone = row.phone_normalized ?? ''
+      const pretty = phone ? formatBrPhonePretty(phone) : null
       const matches = candidates.filter((c) => {
         const note = c.note ?? ''
         if (!row.job_id) return false
-        // Old layout: `Job ID | \`{job_id}\``  — phone present too.
-        const hasJob = note.includes(`Job ID | \`${row.job_id}\``) || note.includes(`**Job ID**: \`${row.job_id}\``) || note.includes(`Job ID:</strong> ${row.job_id}`)
-        const hasPhone = phone ? note.includes(phone) : true
+        // Anchor on the Job ID line — must appear regardless of layout.
+        // Order from most-recent layout to oldest:
+        //   - HTML (post-backfill):      `<strong>Job ID</strong></td><td>JOBID</td>`
+        //                          or:   `Job ID</strong></td><td>JOBID`
+        //   - Old Markdown (phone fail): `Job ID | `JOBID``
+        //   - Older Markdown (deal):     `**Job ID**: `JOBID``
+        const hasJob =
+          note.includes(`Job ID</strong></td><td>${row.job_id}`)
+          || note.includes(`<strong>Job ID</strong></td><td>${row.job_id}`)
+          || note.includes(`Job ID | \`${row.job_id}\``)
+          || note.includes(`**Job ID**: \`${row.job_id}\``)
+          || note.includes(`Job ID:</strong> ${row.job_id}`)
+        // Phone match: try normalized AND pretty AND last 4 digits as fallback.
+        let hasPhone = !phone
+        if (phone) {
+          if (note.includes(phone)) hasPhone = true
+          else if (pretty && note.includes(pretty)) hasPhone = true
+          else if (phone.length >= 4 && note.includes(phone.slice(-4))) hasPhone = true
+        }
         return hasJob && hasPhone
       })
       if (matches.length === 1) activityId = matches[0].id
+      else if (matches.length > 1) {
+        // Multiple matches with the same Job ID + phone substring is unlikely
+        // but if it happens we tag the first one (oldest deterministic).
+        activityId = matches[0].id
+      }
     }
 
     if (!activityId) {
@@ -530,8 +557,11 @@ async function passB(db: import('better-sqlite3').Database): Promise<PassBCounts
         if (!row.job_id) return false
         return note.includes(`**Job ID**: \`${row.job_id}\``)
           || note.includes(`Job ID:</strong> ${row.job_id}`)
+          || note.includes(`Job ID</strong></td><td>${row.job_id}`)
+          || note.includes(`<strong>Job ID</strong></td><td>${row.job_id}`)
       })
       if (matches.length === 1) activityId = matches[0].id
+      else if (matches.length > 1) activityId = matches[0].id
     }
     if (!activityId) {
       counts.skipped++
@@ -707,8 +737,10 @@ async function passC(db: import('better-sqlite3').Database): Promise<PassCCounts
         if (!row.job_id) return false
         return content.includes(`**Job ID**: \`${row.job_id}\``)
           || content.includes(`Job ID</strong>: ${row.job_id}`)
+          || content.includes(`<strong>Job ID</strong>: ${row.job_id}`)
       })
       if (matches.length === 1) noteId = matches[0].id
+      else if (matches.length > 1) noteId = matches[0].id
     }
     if (!noteId) {
       counts.skipped++
