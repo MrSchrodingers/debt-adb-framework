@@ -5,6 +5,7 @@ import type { PrecheckJobStore } from './job-store.js'
 import { extractPhones } from './phone-extractor.js'
 import type { PipedrivePublisher } from './pipedrive-publisher.js'
 import type {
+  DealKey,
   DealResult,
   PhoneResult,
   PipedrivePhoneEntry,
@@ -12,6 +13,16 @@ import type {
 } from './types.js'
 
 const INVALID_MOTIVO = 'whatsapp_nao_existe'
+
+/**
+ * Maximum number of deal keys we are willing to inline into a Postgres
+ * `NOT IN ((..),(..))` tuple list before we bail out and rely on
+ * scanner-side filtering instead. Empirically, parameter counts above
+ * ~30k can hurt the planner; 5000 keys × 4 cols = 20k bound params, well
+ * within Postgres' default `max_prepared_statements` budget but still
+ * comfortably below pathological territory.
+ */
+const MAX_PG_EXCLUDED_KEYS = 5000
 
 export interface ScannerDeps {
   pg: PipeboardPg
@@ -86,12 +97,71 @@ export class PrecheckScanner {
     let finalStatus: 'completed' | 'cancelled' | 'failed' = 'completed'
     const pastaAgg: Map<string, PastaAggregate> = new Map()
     const startedAt = new Date().toISOString()
-    try {
-      const total = await pg.countPool(params)
-      store.markStarted(jobId, total)
-      logger.info('precheck scan started', { jobId, total, params })
 
-      for await (const page of pg.iterateDeals(params, 200)) {
+    // ── Recheck freshness filter ────────────────────────────────────────
+    //
+    // When `recheck_after_days` is set, the operator wants to skip deals
+    // already scanned within the freshness window — but they ALSO want
+    // `params.limit` to count *processed* deals, not "first N rows from PG".
+    //
+    // Strategy:
+    //   1. Try to fetch the recently-scanned key set from SQLite. If it
+    //      fits within MAX_PG_EXCLUDED_KEYS we pass it down as an
+    //      `excluded_keys` filter so PG drops them server-side (faster
+    //      iteration, accurate countPool).
+    //   2. If too many keys (cache larger than 5k entries) we degrade to
+    //      scanner-side filtering only — the loop below still skips fresh
+    //      rows, just at the cost of an extra Postgres round-trip per page.
+    //
+    // Either way, the inner loop ALSO checks per-row in case a new fresh
+    // entry landed in the cache between countPool and iterateDeals.
+    let pgParams: PrecheckScanParams = params
+    let scannerSideFilter = false
+    let recheckThresholdIso: string | null = null
+    if (params.recheck_after_days !== undefined && params.recheck_after_days >= 0) {
+      const ms = params.recheck_after_days * 24 * 60 * 60 * 1000
+      recheckThresholdIso = new Date(Date.now() - ms).toISOString()
+      // Probe the cache: cap at MAX_PG_EXCLUDED_KEYS+1 so we know if we
+      // overflowed without pulling the whole set.
+      const recentKeys = store.listRecentlyScannedKeys(
+        recheckThresholdIso,
+        MAX_PG_EXCLUDED_KEYS + 1,
+      )
+      if (recentKeys.length <= MAX_PG_EXCLUDED_KEYS && recentKeys.length > 0) {
+        pgParams = { ...params, excluded_keys: recentKeys }
+      } else if (recentKeys.length > MAX_PG_EXCLUDED_KEYS) {
+        scannerSideFilter = true
+        logger.warn(
+          'recheck_after_days excluded set too large to inline — falling back to scanner-side filtering',
+          { jobId, cachedKeysAboveThreshold: recentKeys.length },
+        )
+      }
+    }
+
+    // Scanner-side processing budget. `limit` now means "this many deals
+    // ACTUALLY PROCESSED" (i.e. validator was called), not "this many rows
+    // out of PG". Anything else here would re-introduce the bug where a
+    // small limit (e.g. 10) gets exhausted by 10 already-fresh rows.
+    const processingBudget = params.limit ?? Number.MAX_SAFE_INTEGER
+    let processedCount = 0
+
+    try {
+      const total = await pg.countPool(pgParams)
+      // When `limit` is set we cap the displayed total at the budget so the
+      // progress bar is not misleading (a limit-10 job over a 6k pool should
+      // show 10/10, not 10/6000 once finished).
+      const reportedTotal = Math.min(total, processingBudget)
+      store.markStarted(jobId, reportedTotal)
+      logger.info('precheck scan started', {
+        jobId,
+        total,
+        reportedTotal,
+        scannerSideFilter,
+        pgExcludedKeys: pgParams.excluded_keys?.length ?? 0,
+        params,
+      })
+
+      outer: for await (const page of pg.iterateDeals(pgParams, 200)) {
         if (shouldCancel(jobId)) {
           store.finishJob(jobId, 'cancelled')
           logger.warn('precheck scan cancelled', { jobId })
@@ -100,11 +170,21 @@ export class PrecheckScanner {
           return
         }
         for (const row of page) {
-          const key = {
+          const key: DealKey = {
             pasta: row.pasta,
             deal_id: row.deal_id,
             contato_tipo: row.contato_tipo,
             contato_id: row.contato_id,
+          }
+          // Defensive freshness re-check: covers the large-set fallback path
+          // AND the (rare) case where a row landed in the cache between
+          // countPool and the moment we read it from PG. NEVER counts toward
+          // processedCount or progress — the deal was simply not eligible.
+          if (recheckThresholdIso !== null) {
+            const lastScan = store.getDealLastScannedAt(key)
+            if (lastScan !== null && lastScan >= recheckThresholdIso) {
+              continue
+            }
           }
           const phones = extractPhones(row)
           const phoneResults: PhoneResult[] = []
@@ -310,11 +390,24 @@ export class PrecheckScanner {
             error_phones: errorCount,
             cache_hits: cacheHits,
           })
+
+          // Scanner-side limit enforcement. We count only deals that made it
+          // past the freshness filter — i.e. real work was done. Once the
+          // operator's budget is spent, break out of the keyset iterator
+          // entirely (don't fetch additional pages we won't consume).
+          processedCount += 1
+          if (processedCount >= processingBudget) {
+            break outer
+          }
         }
       }
 
       store.finishJob(jobId, 'completed')
-      logger.info('precheck scan completed', { jobId })
+      logger.info('precheck scan completed', {
+        jobId,
+        processedCount,
+        budget: processingBudget,
+      })
 
       // Pipedrive Scenario C: emit one Note per pasta touched, on the lowest
       // deal_id of the pasta. Skips empty pastas (defensive — shouldn't happen

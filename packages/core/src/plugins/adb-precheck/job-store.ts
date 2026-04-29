@@ -182,6 +182,45 @@ export class PrecheckJobStore {
     return Boolean(row?.c)
   }
 
+  /**
+   * Look up the cached `scanned_at` timestamp for a single deal key.
+   * Returns `null` if the deal has never been scanned. Used by the scanner
+   * to honour `params.recheck_after_days` — the freshness window check.
+   */
+  getDealLastScannedAt(key: DealKey): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT scanned_at FROM adb_precheck_deals
+         WHERE pasta = ? AND deal_id = ? AND contato_tipo = ? AND contato_id = ?`,
+      )
+      .get(key.pasta, key.deal_id, key.contato_tipo, key.contato_id) as
+      | { scanned_at: string }
+      | undefined
+    return row?.scanned_at ?? null
+  }
+
+  /**
+   * Returns the set of deal keys whose `scanned_at` is on or after
+   * `thresholdIso` (i.e. still within the recheck freshness window). Used by
+   * the scanner to exclude those rows from the Postgres-side query when the
+   * set is small enough to inline; larger sets fall back to scanner-side
+   * filtering via `getDealLastScannedAt`.
+   *
+   * Bounded by `limit` so we never return an unbounded list — callers should
+   * pass a value above the inline threshold and decide based on the result
+   * length whether the optimisation is viable.
+   */
+  listRecentlyScannedKeys(thresholdIso: string, limit = 5001): DealKey[] {
+    const rows = this.db
+      .prepare(
+        `SELECT pasta, deal_id, contato_tipo, contato_id FROM adb_precheck_deals
+         WHERE scanned_at >= ?
+         LIMIT ?`,
+      )
+      .all(thresholdIso, limit) as DealKey[]
+    return rows
+  }
+
   upsertDeal(jobId: string, result: DealResult): void {
     this.db
       .prepare(

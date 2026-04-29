@@ -66,17 +66,28 @@ export class PipeboardPg {
   /**
    * Stream deals page by page. Uses keyset pagination on (pasta, deal_id,
    * contato_tipo, contato_id) to avoid OFFSET scans on large pools.
+   *
+   * NOTE — scanner-driven limit:
+   *   `params.limit` is **NOT** applied as an SQL ceiling here. The scanner
+   *   enforces it AFTER the freshness filter (`recheck_after_days`), so
+   *   re-running a scan with `{ limit: 10, recheck_after_days: 7 }` in a
+   *   pool where the first 10 rows are already fresh will correctly fetch
+   *   pages until 10 *new* deals have been processed, instead of returning
+   *   10 rows that the scanner immediately short-circuits.
+   *
+   *   Each page is sized by `pageSize` and the iterator stops only when PG
+   *   yields fewer rows than requested — meaning the keyset has reached the
+   *   end of the pool. The scanner is responsible for breaking out of its
+   *   loop once `params.limit` deals have been actually processed.
    */
   async *iterateDeals(
     params: PrecheckScanParams,
     pageSize = 200,
   ): AsyncGenerator<ProvConsultaRow[], void, void> {
     let after: DealKey | null = null
-    const hardLimit = params.limit ?? Number.MAX_SAFE_INTEGER
-    let emitted = 0
 
-    while (emitted < hardLimit) {
-      const fetch = Math.min(pageSize, hardLimit - emitted)
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
       const where = this.buildWhere(params, after)
       const sql = `
         SELECT pasta, deal_id, contato_tipo, contato_id, contato_nome, contato_relacao,
@@ -89,10 +100,9 @@ export class PipeboardPg {
         ORDER BY pasta, deal_id, contato_tipo, contato_id
         LIMIT $${where.args.length + 1}
       `
-      const { rows } = await this.pool.query<ProvConsultaRow>(sql, [...where.args, fetch])
+      const { rows } = await this.pool.query<ProvConsultaRow>(sql, [...where.args, pageSize])
       if (rows.length === 0) return
       yield rows
-      emitted += rows.length
       const last = rows[rows.length - 1]!
       after = {
         pasta: last.pasta,
@@ -100,7 +110,7 @@ export class PipeboardPg {
         contato_tipo: last.contato_tipo,
         contato_id: last.contato_id,
       }
-      if (rows.length < fetch) return
+      if (rows.length < pageSize) return
     }
   }
 
@@ -310,6 +320,21 @@ export class PipeboardPg {
       const n = args.length
       conds.push(
         `(pasta, deal_id, contato_tipo, contato_id) > ($${n - 3}, $${n - 2}, $${n - 1}, $${n})`,
+      )
+    }
+    if (params.excluded_keys && params.excluded_keys.length > 0) {
+      // PG-side exclusion of recently-scanned deals when the set is small
+      // enough to inline. Caller (scanner) is expected to gate this by the
+      // 5000-key threshold to avoid blowing the parser stack — we still
+      // emit the tuple list as written.
+      const tupleParts: string[] = []
+      for (const k of params.excluded_keys) {
+        args.push(k.pasta, k.deal_id, k.contato_tipo, k.contato_id)
+        const n = args.length
+        tupleParts.push(`($${n - 3}, $${n - 2}, $${n - 1}, $${n})`)
+      }
+      conds.push(
+        `(pasta, deal_id, contato_tipo, contato_id) NOT IN (${tupleParts.join(', ')})`,
       )
     }
     return conds.length ? { sql: `WHERE ${conds.join(' AND ')}`, args } : { sql: '', args }

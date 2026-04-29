@@ -47,6 +47,7 @@ interface FakeDeps {
     writeInvalid: ReturnType<typeof vi.fn>
     archiveDealIfEmpty: ReturnType<typeof vi.fn>
     writeLocalizado: ReturnType<typeof vi.fn>
+    listRecentlyScannedKeys?: ReturnType<typeof vi.fn>
   }
   validator: { validate: ReturnType<typeof vi.fn> }
   store: {
@@ -54,10 +55,19 @@ interface FakeDeps {
     upsertDeal: ReturnType<typeof vi.fn>
     bumpProgress: ReturnType<typeof vi.fn>
     finishJob: ReturnType<typeof vi.fn>
+    getDealLastScannedAt: ReturnType<typeof vi.fn>
+    listRecentlyScannedKeys: ReturnType<typeof vi.fn>
   }
 }
 
-function buildScanner(rows: ProvConsultaRow[], validateImpl: (phone: string) => unknown): FakeDeps {
+function buildScanner(
+  rows: ProvConsultaRow[],
+  validateImpl: (phone: string) => unknown,
+  opts: {
+    cachedScans?: Map<string, string> // dealKey -> ISO scanned_at
+  } = {},
+): FakeDeps {
+  const cachedScans = opts.cachedScans ?? new Map<string, string>()
   const pg = {
     countPool: vi.fn(async () => rows.length),
     iterateDeals: vi.fn(async function* () {
@@ -76,6 +86,25 @@ function buildScanner(rows: ProvConsultaRow[], validateImpl: (phone: string) => 
     upsertDeal: vi.fn(),
     bumpProgress: vi.fn(),
     finishJob: vi.fn(),
+    getDealLastScannedAt: vi.fn((k: { pasta: string; deal_id: number; contato_tipo: string; contato_id: number }) => {
+      const id = `${k.pasta}|${k.deal_id}|${k.contato_tipo}|${k.contato_id}`
+      return cachedScans.get(id) ?? null
+    }),
+    listRecentlyScannedKeys: vi.fn((thresholdIso: string) => {
+      const out: { pasta: string; deal_id: number; contato_tipo: string; contato_id: number }[] = []
+      for (const [id, scannedAt] of cachedScans.entries()) {
+        if (scannedAt >= thresholdIso) {
+          const [pasta, dealIdStr, contato_tipo, contatoIdStr] = id.split('|')
+          out.push({
+            pasta: pasta!,
+            deal_id: Number(dealIdStr),
+            contato_tipo: contato_tipo!,
+            contato_id: Number(contatoIdStr),
+          })
+        }
+      }
+      return out
+    }),
   }
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
   const deps = {
@@ -374,5 +403,160 @@ describe('PrecheckScanner — Pipedrive integration', () => {
     }))
     // Omits pipedrive — must not throw, scanner should still complete.
     await expect(scanner.runJob('job-pipe-5', { writeback_invalid: true })).resolves.not.toThrow()
+  })
+})
+
+// Bug reproducer + fix coverage — `recheck_after_days` semantic.
+//
+// Reported: "Se eu coloco para fazer 10, ele lê os que ele já fez e pula, mas
+// não busca novos — ele aceita e finaliza." Root cause: scanner was honouring
+// `params.limit` at the SQL level, so the iterator returned only the first N
+// rows (which were all cached); the loop then silently emitted them and
+// finished without ever fetching new work.
+//
+// Contract after the fix:
+//   - When `recheck_after_days` is set, scanner must skip rows whose cached
+//     `scanned_at` is within the freshness window AND not count those skips
+//     against `params.limit`.
+//   - `params.limit` is a budget of *deals actually processed* (i.e. validator
+//     was called), not an SQL ceiling.
+//   - When `recheck_after_days` is omitted, behaviour is unchanged from the
+//     pre-fix world (every row from PG is processed).
+describe('PrecheckScanner — recheck_after_days bug reproducer (#novo-scan-skip)', () => {
+  it('processes N NEW deals even when first N are within freshness window', async () => {
+    // Build 30 rows: rows 1..10 are "already scanned 1 day ago" (fresh), rows
+    // 11..30 are brand new. limit=10, recheck_after_days=7 — operator expects
+    // 10 NEW deals processed, NOT 10 fresh ones short-circuited.
+    const allRows: ProvConsultaRow[] = []
+    for (let i = 1; i <= 30; i++) {
+      allRows.push(buildRow({
+        pasta: `PASTA-${String(i).padStart(3, '0')}`,
+        deal_id: 1000 + i,
+        contato_tipo: 'PRINCIPAL',
+        contato_id: i,
+        telefone_1: `554399193${String(8200 + i).padStart(4, '0')}`,
+      }))
+    }
+    // Mark first 10 as recently scanned (1 day ago).
+    const oneDayAgo = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString()
+    const cachedScans = new Map<string, string>()
+    for (let i = 0; i < 10; i++) {
+      const r = allRows[i]!
+      cachedScans.set(`${r.pasta}|${r.deal_id}|${r.contato_tipo}|${r.contato_id}`, oneDayAgo)
+    }
+
+    const validator = vi.fn((phone: string) => ({
+      exists_on_wa: 1,
+      from_cache: false,
+      phone_normalized: phone,
+      source: 'adb',
+      confidence: 0.95,
+      attempts: [],
+    }))
+    const { scanner, store } = buildScanner(allRows, validator, { cachedScans })
+
+    await scanner.runJob('job-bug-1', { limit: 10, recheck_after_days: 7 })
+
+    // The 10 processed deals must all be NEW (rows 11..30, NOT 1..10).
+    expect(store.upsertDeal).toHaveBeenCalledTimes(10)
+    const upsertedKeys = store.upsertDeal.mock.calls.map((c) => {
+      const dealResult = c[1] as { key: { deal_id: number } }
+      return dealResult.key.deal_id
+    })
+    // Every upserted deal_id must be > 1010 (i.e. NOT in the cached window).
+    for (const dealId of upsertedKeys) {
+      expect(dealId).toBeGreaterThan(1010)
+    }
+    // Validator (real work) called 10 times — never for the cached rows.
+    expect(validator).toHaveBeenCalledTimes(10)
+  })
+
+  it('preserves backward compatibility — recheck_after_days undefined → no skipping', async () => {
+    // 5 rows, all "recently scanned" — but with no `recheck_after_days` param,
+    // scanner must behave as today (process every row).
+    const rows: ProvConsultaRow[] = []
+    for (let i = 1; i <= 5; i++) {
+      rows.push(buildRow({
+        pasta: `P-${i}`,
+        deal_id: 100 + i,
+        contato_id: i,
+      }))
+    }
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    const cachedScans = new Map<string, string>()
+    for (const r of rows) {
+      cachedScans.set(`${r.pasta}|${r.deal_id}|${r.contato_tipo}|${r.contato_id}`, yesterday)
+    }
+
+    const validator = vi.fn((phone: string) => ({
+      exists_on_wa: 1,
+      from_cache: false,
+      phone_normalized: phone,
+      source: 'adb',
+      confidence: 0.9,
+      attempts: [],
+    }))
+    const { scanner, store } = buildScanner(rows, validator, { cachedScans })
+
+    // No recheck_after_days → scanner must process all 5.
+    await scanner.runJob('job-bug-2', { limit: 10 })
+
+    expect(store.upsertDeal).toHaveBeenCalledTimes(5)
+    expect(validator).toHaveBeenCalledTimes(5)
+  })
+
+  it('falls back to scanner-side filtering when excluded set is too large (>5000)', async () => {
+    // Edge: cache contains 6000 fresh entries — too many to inline into a
+    // PG NOT IN (...) tuple list. Scanner must NOT pass excluded_keys to PG
+    // (countPool/iterateDeals receive params w/o the heavy list), and instead
+    // skip cached rows in the loop.
+    const allRows: ProvConsultaRow[] = []
+    // 10 fresh + 5 new — small enough to keep test fast, but we will populate
+    // the fake cache with > 5000 unrelated keys to trigger the fallback path.
+    for (let i = 1; i <= 15; i++) {
+      allRows.push(buildRow({
+        pasta: `PASTA-X-${String(i).padStart(3, '0')}`,
+        deal_id: 9000 + i,
+        contato_tipo: 'PRINCIPAL',
+        contato_id: i,
+        telefone_1: `554399193${String(7000 + i).padStart(4, '0')}`,
+      }))
+    }
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    const cachedScans = new Map<string, string>()
+    // First 10 of allRows are fresh.
+    for (let i = 0; i < 10; i++) {
+      const r = allRows[i]!
+      cachedScans.set(`${r.pasta}|${r.deal_id}|${r.contato_tipo}|${r.contato_id}`, oneDayAgo)
+    }
+    // Pad with 6000 unrelated fresh entries to push count over the threshold.
+    for (let i = 0; i < 6000; i++) {
+      cachedScans.set(`OTHER|${i}|PRINCIPAL|${i}`, oneDayAgo)
+    }
+
+    const validator = vi.fn((phone: string) => ({
+      exists_on_wa: 1,
+      from_cache: false,
+      phone_normalized: phone,
+      source: 'adb',
+      confidence: 0.9,
+      attempts: [],
+    }))
+    const { scanner, pg, store } = buildScanner(allRows, validator, { cachedScans })
+
+    await scanner.runJob('job-bug-3', { limit: 5, recheck_after_days: 7 })
+
+    // Scanner must NOT have inlined excluded_keys into PG calls (too many).
+    const countPoolArgs = pg.countPool.mock.calls[0]?.[0] as { excluded_keys?: unknown[] } | undefined
+    expect(countPoolArgs?.excluded_keys ?? null).toBeNull()
+    const iterateArgs = pg.iterateDeals.mock.calls[0]?.[0] as { excluded_keys?: unknown[] } | undefined
+    expect(iterateArgs?.excluded_keys ?? null).toBeNull()
+
+    // But scanner-side filtering still works: only NEW deals processed.
+    expect(store.upsertDeal).toHaveBeenCalledTimes(5)
+    const dealIds = store.upsertDeal.mock.calls.map((c) => (c[1] as { key: { deal_id: number } }).key.deal_id)
+    for (const id of dealIds) {
+      expect(id).toBeGreaterThan(9010) // skipped 9001..9010 (fresh)
+    }
   })
 })

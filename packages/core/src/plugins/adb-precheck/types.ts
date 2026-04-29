@@ -112,6 +112,15 @@ export interface PrecheckScanParams {
    * env-only feature flag for compatibility.
    */
   pipedrive_enabled?: boolean
+  /**
+   * Internal-use only — populated by the scanner when `recheck_after_days`
+   * is set. Carries the list of deal keys that were scanned within the
+   * freshness window so the Postgres layer can exclude them at query time
+   * (small N) or be skipped (large N, scanner-side filtering kicks in).
+   *
+   * Operators do NOT supply this directly — the API schema rejects it.
+   */
+  excluded_keys?: DealKey[]
 }
 
 // ── Pipedrive integration intents ─────────────────────────────────────────
