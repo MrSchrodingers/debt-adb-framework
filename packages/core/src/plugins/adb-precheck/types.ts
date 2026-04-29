@@ -183,6 +183,32 @@ export interface PipedriveDealAllFailIntent {
   occurred_at: string
 }
 
+/**
+ * Per-deal phone-level breakdown surfaced inside a `pasta_summary` Note.
+ *
+ * Operators wanted the Pasta Note to spell out *which* phones were checked
+ * for *which* deal — not just aggregate counts — so they can spot which
+ * column was mistyped, which contact_id is stale, etc. Each row carries the
+ * minimum data needed to render `<column> | <number> | ✅/❌/⚠️ | <strategy>`
+ * inside the note.
+ *
+ * Phone numbers stored as the scanner saw them post-normalization (E.164
+ * when the normalizer succeeded, raw otherwise) — the formatter pretty-prints
+ * for display but always escapes before HTML interpolation.
+ */
+export interface PipedrivePastaDealRow {
+  deal_id: number
+  phones: Array<{
+    /** Source column from prov_consultas (e.g. 'telefone_1', 'whatsapp_hot'). */
+    column: string
+    /** Phone as carried by the scanner result (post-normalization). */
+    phone_normalized: string
+    outcome: PhoneOutcome
+    /** Lowercase strategy id ('adb' | 'waha' | 'cache'). */
+    strategy: string
+  }>
+}
+
 /** Scenario C: pasta-level summary posted as a Note on the first deal. */
 export interface PipedrivePastaSummaryIntent {
   scenario: 'pasta_summary'
@@ -203,6 +229,15 @@ export interface PipedrivePastaSummaryIntent {
     waha: number
     cache: number
   }
+  /**
+   * Per-deal breakdown for the visual "Detalhamento por deal" section.
+   *
+   * Optional for backwards-compatibility — when omitted the formatter
+   * gracefully degrades (no per-deal section, only aggregate metrics). The
+   * scanner always populates this; manual API callers and the backfill
+   * resolver may pass an empty array when the data is unrecoverable.
+   */
+  deals?: PipedrivePastaDealRow[]
 }
 
 /** Outgoing Pipedrive Activity payload (`POST /v1/activities`). */

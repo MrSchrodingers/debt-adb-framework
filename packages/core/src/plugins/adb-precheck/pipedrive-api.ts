@@ -75,6 +75,20 @@ const dealAllFailBodySchema = z.object({
     .max(20),
 })
 
+const pastaDealRowSchema = z.object({
+  deal_id: z.number().int().positive(),
+  phones: z
+    .array(
+      z.object({
+        column: z.string().min(1).max(64),
+        phone_normalized: z.string().min(1).max(32),
+        outcome: z.enum(['valid', 'invalid', 'error']),
+        strategy: z.string().min(1).max(32),
+      }),
+    )
+    .max(50),
+})
+
 const pastaSummaryBodySchema = z.object({
   scenario: z.literal('pasta_summary'),
   pasta: z.string().min(1),
@@ -92,6 +106,12 @@ const pastaSummaryBodySchema = z.object({
       cache: z.number().int().min(0).default(0),
     })
     .default({ adb: 0, waha: 0, cache: 0 }),
+  /**
+   * Optional per-deal phone breakdown for the v2 visual layout. When omitted
+   * the formatter renders aggregate metrics only — useful for legacy callers
+   * that don't have phone-level data on hand.
+   */
+  deals: z.array(pastaDealRowSchema).max(500).optional(),
 })
 
 // preview / manual-trigger accept ONLY the active scenarios. Sending a
@@ -173,6 +193,7 @@ function buildPreviewPayload(
     total_phones_checked: body.total_phones_checked,
     ok_phones: body.ok_phones,
     strategy_counts: body.strategy_counts,
+    deals: body.deals ?? [],
   }
   const n = buildPastaSummaryNote(intent, companyDomain)
   return {
@@ -373,6 +394,7 @@ export function buildPipedriveRoutes(
           total_phones_checked: parsed.data.total_phones_checked,
           ok_phones: parsed.data.ok_phones,
           strategy_counts: parsed.data.strategy_counts,
+          deals: parsed.data.deals ?? [],
         },
         { manual: true, triggered_by },
       )

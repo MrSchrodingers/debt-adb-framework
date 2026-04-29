@@ -2,6 +2,7 @@ import type {
   PipedriveActivityIntent,
   PipedriveDealAllFailIntent,
   PipedriveNoteIntent,
+  PipedrivePastaDealRow,
   PipedrivePastaSummaryIntent,
   PipedrivePhoneFailIntent,
 } from './types.js'
@@ -252,6 +253,43 @@ function pct(numerator: number, denominator: number): string {
   return ((numerator / denominator) * 100).toFixed(1)
 }
 
+/** Marker that identifies the v2 layout (per-deal detail) — used by
+ *  the backfill script for cheap idempotency detection without parsing
+ *  the rest of the body. The marker lives inside the per-deal intro line
+ *  ("Detalhamento por deal:") emitted only when `deals[]` is non-empty.
+ */
+export const PASTA_SUMMARY_V2_MARKER = 'Detalhamento por deal'
+
+/** Map a phone outcome to a friendly status cell (with emoji + label). */
+function outcomeCell(outcome: 'valid' | 'invalid' | 'error'): string {
+  if (outcome === 'valid') return '✅ Existe no WhatsApp'
+  if (outcome === 'invalid') return '❌ Não localizado'
+  return '⚠️ Erro de verificação'
+}
+
+/** Render the phone table for one deal — already-escaped values only. */
+function renderDealPhonesTable(deal: PipedrivePastaDealRow): string {
+  if (!deal.phones || deal.phones.length === 0) {
+    return '<p><em>(nenhum telefone foi extraído deste deal)</em></p>'
+  }
+  const rows = deal.phones
+    .map((p) => {
+      const colEsc = escapeHtml(p.column)
+      const pretty = formatBrPhonePretty(p.phone_normalized)
+      const phoneEsc = escapeHtml(pretty)
+      const statusEsc = escapeHtml(outcomeCell(p.outcome))
+      const stratEsc = escapeHtml(strategyLabel(p.strategy))
+      return `<tr><td>${colEsc}</td><td>${phoneEsc}</td><td>${statusEsc}</td><td>${stratEsc}</td></tr>`
+    })
+    .join('')
+  return (
+    '<table>'
+    + '<thead><tr><th>Coluna</th><th>Número</th><th>Status</th><th>Validado via</th></tr></thead>'
+    + `<tbody>${rows}</tbody>`
+    + '</table>'
+  )
+}
+
 export function buildPastaSummaryNote(
   intent: PipedrivePastaSummaryIntent,
   companyDomain?: string | null,
@@ -268,34 +306,61 @@ export function buildPastaSummaryNote(
   const endedEsc = escapeHtml(intent.job_ended ?? 'n/a')
 
   const parts: string[] = []
+
+  // ── Header — pasta name as visual title + first-deal link inline ──────
   if (dealUrl) {
-    // dealUrl is built from sanitized inputs (dealId integer, domain regex)
-    // but we still escape for defense-in-depth. <a> is on the safelist.
     parts.push(
-      `<p><strong>Primeiro deal da pasta:</strong> <a href="${escapeHtml(dealUrl)}">#${intent.first_deal_id}</a></p>`,
+      `<p><strong>📋 Resumo de varredura</strong> &middot; Pasta <strong>${pastaEsc}</strong> &middot; `
+        + `<a href="${escapeHtml(dealUrl)}">deal #${intent.first_deal_id}</a></p>`,
+    )
+  } else {
+    parts.push(
+      `<p><strong>📋 Resumo de varredura</strong> &middot; Pasta <strong>${pastaEsc}</strong></p>`,
     )
   }
-  // No <h1>/<h2> — not in the safelist; use <p><strong> visual emphasis instead.
-  parts.push(`<p><strong>📋 Resumo de varredura</strong> &middot; Pasta <strong>${pastaEsc}</strong></p>`)
+
+  // ── Period + Job ID block (compact) ───────────────────────────────────
   parts.push(
     '<p>'
-      + `<strong>Período</strong>: ${startedEsc} → ${endedEsc}<br>`
-      + `<strong>Job ID</strong>: ${jobIdEsc}`
+      + `<em>Período</em>: ${startedEsc} &ndash; ${endedEsc}<br>`
+      + `<em>Job ID</em>: ${jobIdEsc}`
       + '</p>',
   )
+
+  // ── Aggregate metrics with emoji column ──────────────────────────────
   parts.push('<p><strong>Métricas</strong></p>')
   parts.push(
     '<table>'
-      + '<thead><tr><th>Métrica</th><th>Valor</th></tr></thead>'
+      + '<thead><tr><th></th><th>Métrica</th><th>Valor</th></tr></thead>'
       + '<tbody>'
-      + `<tr><td>Deals na pasta</td><td>${intent.total_deals}</td></tr>`
-      + `<tr><td>Deals com ≥ 1 telefone válido</td><td>${intent.ok_deals} (${okPct}%)</td></tr>`
-      + `<tr><td>Deals 100% inválidos (arquivados)</td><td>${intent.archived_deals} (${archivedPct}%)</td></tr>`
-      + `<tr><td>Total fones verificados</td><td>${intent.total_phones_checked}</td></tr>`
-      + `<tr><td>Fones existentes no WhatsApp</td><td>${intent.ok_phones} (${okPhonesPct}%)</td></tr>`
+      + `<tr><td>📞</td><td>Deals na pasta</td><td><strong>${intent.total_deals}</strong></td></tr>`
+      + `<tr><td>✅</td><td>Deals com ≥ 1 telefone válido</td><td><strong>${intent.ok_deals}</strong> (${okPct}%)</td></tr>`
+      + `<tr><td>❌</td><td>Deals 100% inválidos (arquivados)</td><td><strong>${intent.archived_deals}</strong> (${archivedPct}%)</td></tr>`
+      + `<tr><td>📞</td><td>Total fones verificados</td><td><strong>${intent.total_phones_checked}</strong></td></tr>`
+      + `<tr><td>✅</td><td>Fones existentes no WhatsApp</td><td><strong>${intent.ok_phones}</strong> (${okPhonesPct}%)</td></tr>`
       + '</tbody>'
       + '</table>',
   )
+
+  // ── NEW per-deal section ──────────────────────────────────────────────
+  // Only rendered when the intent carries deal-level detail — keeps
+  // backwards-compat with manual API callers that omit `deals`.
+  const deals = intent.deals ?? []
+  if (deals.length > 0) {
+    parts.push(`<p><em>${PASTA_SUMMARY_V2_MARKER}:</em></p>`)
+    // Deals are rendered in scan order — scanner inserts them as they are
+    // processed, so the natural ordering reflects the keyset traversal.
+    for (const deal of deals) {
+      const dealUrlForRow = buildDealUrl(deal.deal_id, companyDomain)
+      const header = dealUrlForRow
+        ? `<p><strong>📌 Deal <a href="${escapeHtml(dealUrlForRow)}">#${deal.deal_id}</a></strong></p>`
+        : `<p><strong>📌 Deal #${deal.deal_id}</strong></p>`
+      parts.push(header)
+      parts.push(renderDealPhonesTable(deal))
+    }
+  }
+
+  // ── Strategy distribution (aggregated bottom block) ──────────────────
   parts.push('<p><strong>Distribuição por estratégia de validação</strong></p>')
   parts.push(
     '<table>'

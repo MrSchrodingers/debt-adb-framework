@@ -183,12 +183,12 @@ describe('buildPastaSummaryNote', () => {
 
   it('renders percentages with 1 decimal', () => {
     const n = buildPastaSummaryNote(intent)
-    // 35/50 = 70.0%
-    expect(n.payload.content).toContain('35 (70.0%)')
+    // 35/50 = 70.0% — value is now bolded to highlight the metric.
+    expect(n.payload.content).toContain('<strong>35</strong> (70.0%)')
     // 15/50 = 30.0%
-    expect(n.payload.content).toContain('15 (30.0%)')
+    expect(n.payload.content).toContain('<strong>15</strong> (30.0%)')
     // 140/200 = 70.0%
-    expect(n.payload.content).toContain('140 (70.0%)')
+    expect(n.payload.content).toContain('<strong>140</strong> (70.0%)')
   })
 
   it('includes strategy breakdown as HTML rows', () => {
@@ -235,7 +235,7 @@ describe('buildPastaSummaryNote', () => {
       ok_phones: 0,
     })
     expect(n.payload.content).not.toContain('NaN')
-    expect(n.payload.content).toContain('0 (0.0%)')
+    expect(n.payload.content).toContain('<strong>0</strong> (0.0%)')
   })
 
   it('escapes pasta containing html-special chars (defense vs injection)', () => {
@@ -248,6 +248,158 @@ describe('buildPastaSummaryNote', () => {
     expect(n.payload.content).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
     expect(n.payload.content).not.toContain('Brown & <Co>')
     expect(n.payload.content).not.toContain('<script>alert(1)</script>')
+  })
+
+  // ── v2 layout — per-deal detail section ────────────────────────────────
+  describe('v2 per-deal detail section', () => {
+    const baseIntent: PipedrivePastaSummaryIntent = {
+      scenario: 'pasta_summary',
+      pasta: 'PASTA-X',
+      first_deal_id: 100,
+      job_id: 'job-v2',
+      job_started: '2026-04-29T10:00:00Z',
+      job_ended: '2026-04-29T10:05:00Z',
+      total_deals: 2,
+      ok_deals: 1,
+      archived_deals: 1,
+      total_phones_checked: 3,
+      ok_phones: 1,
+      strategy_counts: { adb: 2, waha: 1, cache: 0 },
+      deals: [
+        {
+          deal_id: 100,
+          phones: [
+            { column: 'telefone_1', phone_normalized: '5543991938235', outcome: 'valid', strategy: 'adb' },
+            { column: 'telefone_2', phone_normalized: '5511988887777', outcome: 'invalid', strategy: 'waha' },
+          ],
+        },
+        {
+          deal_id: 101,
+          phones: [
+            { column: 'whatsapp_hot', phone_normalized: '5511444444444', outcome: 'invalid', strategy: 'adb' },
+          ],
+        },
+      ],
+    }
+
+    it('emits the "Detalhamento por deal" intro line', () => {
+      const n = buildPastaSummaryNote(baseIntent)
+      expect(n.payload.content).toContain('<p><em>Detalhamento por deal:</em></p>')
+    })
+
+    it('emits a 📌 sub-header per deal with the deal link when domain is set', () => {
+      const n = buildPastaSummaryNote(baseIntent, 'debt-5188cf')
+      expect(n.payload.content).toContain(
+        '<p><strong>📌 Deal <a href="https://debt-5188cf.pipedrive.com/deal/100">#100</a></strong></p>',
+      )
+      expect(n.payload.content).toContain(
+        '<p><strong>📌 Deal <a href="https://debt-5188cf.pipedrive.com/deal/101">#101</a></strong></p>',
+      )
+    })
+
+    it('renders 📌 deal sub-header without link when domain is unset', () => {
+      const n = buildPastaSummaryNote(baseIntent)
+      expect(n.payload.content).toContain('<p><strong>📌 Deal #100</strong></p>')
+      expect(n.payload.content).toContain('<p><strong>📌 Deal #101</strong></p>')
+      expect(n.payload.content).not.toContain('pipedrive.com/deal/100')
+    })
+
+    it('emits a phones table per deal with 4 columns (Coluna, Número, Status, Validado via)', () => {
+      const n = buildPastaSummaryNote(baseIntent)
+      expect(n.payload.content).toContain(
+        '<thead><tr><th>Coluna</th><th>Número</th><th>Status</th><th>Validado via</th></tr></thead>',
+      )
+    })
+
+    it('renders ✅ for valid, ❌ for invalid, ⚠️ for error rows', () => {
+      const n = buildPastaSummaryNote({
+        ...baseIntent,
+        deals: [
+          {
+            deal_id: 100,
+            phones: [
+              { column: 'telefone_1', phone_normalized: '5543991938235', outcome: 'valid', strategy: 'adb' },
+              { column: 'telefone_2', phone_normalized: '5511988887777', outcome: 'invalid', strategy: 'waha' },
+              { column: 'telefone_3', phone_normalized: '5511777777777', outcome: 'error', strategy: 'cache' },
+            ],
+          },
+        ],
+      })
+      expect(n.payload.content).toContain('✅ Existe no WhatsApp')
+      expect(n.payload.content).toContain('❌ Não localizado')
+      expect(n.payload.content).toContain('⚠️ Erro de verificação')
+    })
+
+    it('uses pretty BR phone formatting in the per-deal table', () => {
+      const n = buildPastaSummaryNote(baseIntent)
+      // 5543991938235 → (43) 99193-8235
+      expect(n.payload.content).toContain('(43) 99193-8235')
+      // 5511988887777 → (11) 98888-7777
+      expect(n.payload.content).toContain('(11) 98888-7777')
+    })
+
+    it('renders strategy labels (ADB direto / WAHA fallback / Cache (recente))', () => {
+      const n = buildPastaSummaryNote(baseIntent)
+      expect(n.payload.content).toContain('ADB direto')
+      expect(n.payload.content).toContain('WAHA fallback')
+    })
+
+    it('escapes column, phone, and strategy in per-deal rows', () => {
+      const n = buildPastaSummaryNote({
+        ...baseIntent,
+        deals: [
+          {
+            deal_id: 100,
+            phones: [
+              {
+                column: 'tel<script>',
+                phone_normalized: '<bad>',
+                outcome: 'invalid',
+                strategy: 'adb<x>',
+              },
+            ],
+          },
+        ],
+      })
+      expect(n.payload.content).toContain('tel&lt;script&gt;')
+      expect(n.payload.content).not.toContain('<script>')
+      expect(n.payload.content).toContain('&lt;bad&gt;')
+      expect(n.payload.content).toContain('adb&lt;x&gt;')
+    })
+
+    it('renders gracefully when a deal has zero phones (all-archived corner case)', () => {
+      const n = buildPastaSummaryNote({
+        ...baseIntent,
+        deals: [{ deal_id: 100, phones: [] }],
+      })
+      expect(n.payload.content).toContain('(nenhum telefone foi extraído deste deal)')
+    })
+
+    it('omits the per-deal section entirely when deals is empty/undefined (graceful degradation)', () => {
+      const n1 = buildPastaSummaryNote({ ...baseIntent, deals: [] })
+      const n2 = buildPastaSummaryNote({ ...baseIntent, deals: undefined })
+      expect(n1.payload.content).not.toContain('Detalhamento por deal')
+      expect(n1.payload.content).not.toContain('📌 Deal')
+      expect(n2.payload.content).not.toContain('Detalhamento por deal')
+      expect(n2.payload.content).not.toContain('📌 Deal')
+      // Aggregate metrics block must still render.
+      expect(n1.payload.content).toContain('<th>Métrica</th>')
+    })
+
+    it('aggregates the deal link into the title (single header line)', () => {
+      const n = buildPastaSummaryNote(baseIntent, 'debt-5188cf')
+      // Title carries the deal link inline — no separate "Primeiro deal" line.
+      expect(n.payload.content).toContain('📋 Resumo de varredura')
+      expect(n.payload.content).toContain('<a href="https://debt-5188cf.pipedrive.com/deal/100">deal #100</a>')
+      expect(n.payload.content).not.toContain('Primeiro deal da pasta')
+    })
+
+    it('exposes the v2 marker so the backfill script can detect already-migrated notes', async () => {
+      const m = await import('./pipedrive-formatter.js')
+      expect(m.PASTA_SUMMARY_V2_MARKER).toBe('Detalhamento por deal')
+      const n = buildPastaSummaryNote(baseIntent)
+      expect(n.payload.content).toContain(m.PASTA_SUMMARY_V2_MARKER)
+    })
   })
 })
 
@@ -300,7 +452,7 @@ describe('formatter — dealUrl interpolation', () => {
     expect(a.payload.note).toContain('<a href="https://debt-5188cf.pipedrive.com/deal/143611">#143611</a>')
   })
 
-  it('pasta summary (HTML) includes deal link as <a href> at top when domain is set', () => {
+  it('pasta summary (HTML) includes deal link as <a href> in title when domain is set', () => {
     const n = buildPastaSummaryNote({
       scenario: 'pasta_summary',
       pasta: 'P-001', first_deal_id: 143611, job_id: 'job-1',
@@ -309,8 +461,10 @@ describe('formatter — dealUrl interpolation', () => {
       total_phones_checked: 1, ok_phones: 1,
       strategy_counts: { adb: 1, waha: 0, cache: 0 },
     }, 'debt-5188cf')
-    expect(n.payload.content).toContain('<a href="https://debt-5188cf.pipedrive.com/deal/143611">#143611</a>')
-    // The deal link must appear before the header block (first <p>).
+    // v2 layout merges the deal link into the title — link text is "deal #N"
+    // (not just "#N") so it reads naturally next to the pasta name.
+    expect(n.payload.content).toContain('<a href="https://debt-5188cf.pipedrive.com/deal/143611">deal #143611</a>')
+    // The body still starts with the title <p>.
     expect(n.payload.content.startsWith('<p>')).toBe(true)
     // Must NOT contain Markdown link syntax.
     expect(n.payload.content).not.toContain('](https://debt-5188cf')

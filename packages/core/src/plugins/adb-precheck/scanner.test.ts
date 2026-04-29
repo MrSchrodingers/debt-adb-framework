@@ -388,6 +388,101 @@ describe('PrecheckScanner — Pipedrive integration', () => {
     expect(summariesByPasta.get('B')!.total_deals).toBe(1)
   })
 
+  it('passes per-deal phones[] into pasta_summary for the v2 visual layout', async () => {
+    // Two rows under the same pasta `A`:
+    //   - deal 50 has telefone_1 valid, telefone_2 invalid
+    //   - deal 100 has telefone_1 invalid (only)
+    // Expect one pasta_summary call with deals sorted ascending and each
+    // deal's phones[] reflecting the checked rows.
+    const pub = fakePub()
+    const rows = [
+      buildRow({ pasta: 'A', deal_id: 100, telefone_1: '5511444444444' }),
+      buildRow({
+        pasta: 'A',
+        deal_id: 50,
+        telefone_1: '5543991938235',
+        telefone_2: '5511988887777',
+      }),
+    ]
+    const { scanner } = buildScanner(rows, (phone) => ({
+      // 5543991938235 valid, others invalid.
+      exists_on_wa: phone === '5543991938235' ? 1 : 0,
+      from_cache: false,
+      phone_normalized: phone,
+      source: 'adb',
+      confidence: 0.9,
+      attempts: [],
+    }))
+    const scannerPipe = new PrecheckScanner({
+      ...((scanner as unknown as { deps: ScannerDeps }).deps),
+      pipedrive: pub as unknown as Parameters<typeof PrecheckScanner.prototype.constructor>[0]['pipedrive'],
+    })
+    await scannerPipe.runJob('job-pipe-v2', {})
+
+    expect(pub.enqueuePastaSummary).toHaveBeenCalledTimes(1)
+    const arg = pub.enqueuePastaSummary.mock.calls[0]![0] as {
+      pasta: string
+      deals: Array<{ deal_id: number; phones: Array<{ column: string; phone_normalized: string; outcome: string; strategy: string }> }>
+    }
+    expect(arg.pasta).toBe('A')
+    expect(arg.deals).toHaveLength(2)
+    // Sorted ascending by deal_id.
+    expect(arg.deals[0]!.deal_id).toBe(50)
+    expect(arg.deals[1]!.deal_id).toBe(100)
+    // Deal 50 carries 2 phones with the right outcomes.
+    const d50 = arg.deals[0]!
+    expect(d50.phones).toHaveLength(2)
+    expect(d50.phones[0]!).toMatchObject({
+      column: 'telefone_1',
+      phone_normalized: '5543991938235',
+      outcome: 'valid',
+      strategy: 'adb',
+    })
+    expect(d50.phones[1]!).toMatchObject({
+      column: 'telefone_2',
+      phone_normalized: '5511988887777',
+      outcome: 'invalid',
+      strategy: 'adb',
+    })
+    // Deal 100 carries 1 invalid phone.
+    expect(arg.deals[1]!.phones).toHaveLength(1)
+    expect(arg.deals[1]!.phones[0]!).toMatchObject({
+      phone_normalized: '5511444444444',
+      outcome: 'invalid',
+    })
+  })
+
+  it('merges phones from same-deal rows under different contato_id into one entry', async () => {
+    const pub = fakePub()
+    // Same deal_id (77) appears twice under same pasta with different contato_id.
+    const rows = [
+      buildRow({ pasta: 'M', deal_id: 77, contato_id: 1, telefone_1: '5543991938235' }),
+      buildRow({ pasta: 'M', deal_id: 77, contato_id: 2, telefone_1: '5511988887777' }),
+    ]
+    const { scanner } = buildScanner(rows, (phone) => ({
+      exists_on_wa: 0,
+      from_cache: false,
+      phone_normalized: phone,
+      source: 'adb',
+      confidence: 0.9,
+      attempts: [],
+    }))
+    const scannerPipe = new PrecheckScanner({
+      ...((scanner as unknown as { deps: ScannerDeps }).deps),
+      pipedrive: pub as unknown as Parameters<typeof PrecheckScanner.prototype.constructor>[0]['pipedrive'],
+    })
+    await scannerPipe.runJob('job-merge', {})
+
+    expect(pub.enqueuePastaSummary).toHaveBeenCalledTimes(1)
+    const arg = pub.enqueuePastaSummary.mock.calls[0]![0] as {
+      deals: Array<{ deal_id: number; phones: unknown[] }>
+    }
+    // Single deal entry with both phones merged.
+    expect(arg.deals).toHaveLength(1)
+    expect(arg.deals[0]!.deal_id).toBe(77)
+    expect(arg.deals[0]!.phones).toHaveLength(2)
+  })
+
   it('does nothing pipedrive-related when publisher omitted', async () => {
     const row = buildRow({ telefone_1: '5543991938235' })
     const { scanner } = buildScanner([row], (phone) => ({

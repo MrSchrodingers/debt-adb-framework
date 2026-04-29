@@ -8,6 +8,7 @@ import type {
   DealKey,
   DealResult,
   PhoneResult,
+  PipedrivePastaDealRow,
   PipedrivePhoneEntry,
   PrecheckScanParams,
 } from './types.js'
@@ -62,6 +63,17 @@ interface PastaAggregate {
   total_phones_checked: number
   ok_phones: number
   strategy_counts: { adb: number; waha: number; cache: number }
+  /**
+   * Per-deal phone-level breakdown carried into the `pasta_summary` Note.
+   *
+   * Operators wanted the timeline note to show *which* phones were checked
+   * for *which* deal — not just aggregate counts. We keep one entry per
+   * (deal_id) within the pasta; if the same deal appears twice in a job
+   * (different `contato_id` rows), we merge their phones into the same
+   * deal entry. The first time we see a deal_id, we push a new row; on
+   * subsequent rows we append phones to the existing entry.
+   */
+  deals: Map<number, PipedrivePastaDealRow>
 }
 
 function classifyStrategy(source: string): 'adb' | 'waha' | 'cache' {
@@ -344,7 +356,8 @@ export class PrecheckScanner {
           }
 
           // Pasta-level aggregation for Scenario C (pasta summary Note).
-          // Records first deal_id (lowest), counts, and strategy distribution.
+          // Records first deal_id (lowest), counts, strategy distribution,
+          // AND per-deal phone-level detail for the v2 layout.
           if (pipedrive) {
             let agg = pastaAgg.get(row.pasta)
             if (!agg) {
@@ -357,6 +370,7 @@ export class PrecheckScanner {
                 total_phones_checked: 0,
                 ok_phones: 0,
                 strategy_counts: { adb: 0, waha: 0, cache: 0 },
+                deals: new Map<number, PipedrivePastaDealRow>(),
               }
               pastaAgg.set(row.pasta, agg)
             }
@@ -370,6 +384,24 @@ export class PrecheckScanner {
             else if (phoneResults.length > 0) agg.archived_deals += 1
             for (const pr of phoneResults) {
               agg.strategy_counts[classifyStrategy(pr.source)] += 1
+            }
+
+            // Per-deal phone breakdown: merge by deal_id. If two rows of the
+            // same deal_id (different contato_id) appear in the job, we
+            // append phones into the same deal entry — operator sees one
+            // 📌 sub-section per deal, with all checked phones grouped.
+            let dealRow = agg.deals.get(row.deal_id)
+            if (!dealRow) {
+              dealRow = { deal_id: row.deal_id, phones: [] }
+              agg.deals.set(row.deal_id, dealRow)
+            }
+            for (const pr of phoneResults) {
+              dealRow.phones.push({
+                column: pr.column,
+                phone_normalized: pr.normalized,
+                outcome: pr.outcome,
+                strategy: classifyStrategy(pr.source),
+              })
             }
           }
 
@@ -407,6 +439,12 @@ export class PrecheckScanner {
         const finishedAt = new Date().toISOString()
         for (const agg of pastaAgg.values()) {
           if (agg.total_deals === 0 || agg.first_deal_id === null) continue
+          // Emit deals in numeric order so the Note layout is deterministic
+          // and easy to scan visually (smallest deal_id first, matching the
+          // `first_deal_id` referenced in the title).
+          const dealsSorted = Array.from(agg.deals.values()).sort(
+            (a, b) => a.deal_id - b.deal_id,
+          )
           pipedrive.enqueuePastaSummary({
             scenario: 'pasta_summary',
             pasta: agg.pasta,
@@ -420,6 +458,7 @@ export class PrecheckScanner {
             total_phones_checked: agg.total_phones_checked,
             ok_phones: agg.ok_phones,
             strategy_counts: agg.strategy_counts,
+            deals: dealsSorted,
           })
         }
       }
