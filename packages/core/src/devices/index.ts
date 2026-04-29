@@ -20,3 +20,6 @@ export {
   getBloatPackages,
 } from './bloat-list.js'
 export type { BloatListOptions } from './bloat-list.js'
+
+export { SetupWizardStore } from './setup-wizard-state.js'
+export type { WizardState, WizardSubStep, SetupWizardRow } from './setup-wizard-state.js'

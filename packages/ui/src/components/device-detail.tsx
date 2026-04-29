@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts'
-import { X, Camera, RotateCcw, RefreshCw, Battery, Thermometer, MemoryStick, HardDrive, Phone, Sun, Sparkles, ScanLine, Smartphone, AlertTriangle } from 'lucide-react'
+import { X, Camera, RotateCcw, RefreshCw, Battery, Thermometer, MemoryStick, HardDrive, Phone, Sun, Sparkles, ScanLine, Smartphone, AlertTriangle, Wand2 } from 'lucide-react'
 import { CORE_URL, authHeaders } from '../config'
 import type { Alert, DeviceRecord, HealthSnapshot, WhatsAppAccount } from '../types'
+import { DeviceSetupWizard } from './device-setup-wizard'
 
 type ProfilePackageState =
   | 'not_installed'
@@ -52,6 +53,7 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose, onProf
   const [launchingProfile, setLaunchingProfile] = useState<string | null>(null)
   const [bypassConfirm, setBypassConfirm] = useState<number | null>(null)
   const [bypassingProfile, setBypassingProfile] = useState<number | null>(null)
+  const [showWizard, setShowWizard] = useState<boolean>(false)
 
   interface HygieneLogEntry {
     id: string
@@ -670,7 +672,23 @@ export function DeviceDetail({ device, health, accounts, alerts, onClose, onProf
           ) : (
             <ActionBtn icon={RefreshCw} label="Restart WA" loading={actionLoading === 'restart-wa'} onClick={() => setConfirmAction('restart-wa')} danger />
           )}
+          <ActionBtn
+            icon={Wand2}
+            label={showWizard ? 'Fechar Wizard' : 'Setup Wizard'}
+            loading={false}
+            onClick={() => setShowWizard((v) => !v)}
+          />
         </div>
+
+        {/* Setup Wizard panel — toggled by the Wand2 action button. The
+            wizard is fully self-contained: it loads its own state from
+            /setup/state and persists progress server-side, so toggling it
+            does not lose work. */}
+        {showWizard && (
+          <div className="mt-4">
+            <DeviceSetupWizard serial={device.serial} onClose={() => setShowWizard(false)} />
+          </div>
+        )}
 
         {/* Hygienize progress */}
         {actionLoading === 'hygienize' && (

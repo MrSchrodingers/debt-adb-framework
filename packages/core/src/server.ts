@@ -10,9 +10,9 @@ import { AdbBridge } from './adb/index.js'
 import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, SenderScoring, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender } from './engine/index.js'
 import { DispatchPauseState, type PauseScope } from './engine/dispatch-pause-state.js'
 import { DispatchEmitter } from './events/index.js'
-import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes, registerMessageTimelineRoutes, registerAdminMessageRoutes, registerInsightsHeatmapRoutes, registerAckRateRoutes, registerFleetRoutes } from './api/index.js'
+import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes, registerMessageTimelineRoutes, registerAdminMessageRoutes, registerInsightsHeatmapRoutes, registerAckRateRoutes, registerFleetRoutes, registerSetupWizardRoutes } from './api/index.js'
 import { ChipRegistry } from './fleet/index.js'
-import { HygieneLog, AutoHygiene } from './devices/index.js'
+import { HygieneLog, AutoHygiene, SetupWizardStore } from './devices/index.js'
 import { registerAnomalyRoutes, registerChanged24hRoutes } from './insights/index.js'
 import { verifyJwt } from './api/jwt.js'
 import { ContactRegistry } from './contacts/index.js'
@@ -180,6 +180,10 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // Hygiene audit log — every hygienize run (manual + auto) writes here.
   const hygieneLog = new HygieneLog(db)
   hygieneLog.initialize()
+
+  // Per-device Setup Wizard state (POCO C71 root reproduction). Re-entrant.
+  const setupWizardStore = new SetupWizardStore(db)
+  setupWizardStore.initialize()
 
   const auditLogger = new AuditLogger(db)
 
@@ -417,6 +421,15 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   // Fleet management (chip cost tracking, Phase 3 anti-ban roadmap).
   registerFleetRoutes(server, { registry: chipRegistry })
+
+  // Per-device Setup Wizard (POCO C71 root reproduction with HITL).
+  registerSetupWizardRoutes(server, adb, {
+    store: setupWizardStore,
+    waMapper,
+    chipRegistry,
+    auditLogger,
+    emitter,
+  })
 
   // Phase 9 (P9): Insights endpoints
   registerInsightsHeatmapRoutes(server, db)
