@@ -1260,6 +1260,25 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     )
   }
 
+  // Second normalization pass: catches orphans that the first pass couldn't
+  // delete because of a transient FK error, and any new legacy rows that
+  // sneaked in from `sender_mapping` (which carries pre-canonicalization data).
+  // The import-time normalizer in `importFromDevices` should make this a
+  // no-op going forward; this stays as a safety net.
+  try {
+    const chipNormPass2 = chipRegistry.normalizeStoredPhones({
+      warn: (payload, msg) => server.log.warn(payload, msg),
+    })
+    if (chipNormPass2.length > 0) {
+      server.log.info(
+        { changes: chipNormPass2, count: chipNormPass2.length },
+        'Boot migration (pass 2): normalized chips after auto-import',
+      )
+    }
+  } catch (err) {
+    server.log.warn({ err }, 'chips phone normalization pass 2 failed (non-fatal)')
+  }
+
   // Boot-time root extraction: 30s after start, sweep every online rooted
   // device once. Idempotent — `setPhoneNumber` upserts; `importFromDevices`
   // is no-op for chips that already exist. Logs `wa_not_initialized` /

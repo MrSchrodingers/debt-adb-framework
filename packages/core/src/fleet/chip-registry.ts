@@ -891,11 +891,14 @@ export class ChipRegistry {
 
     // Group by phone_number — `whatsapp_accounts` has one row per
     // (device, profile, package) but a chip is keyed by phone_number alone.
+    // Normalize at import-time so legacy 12-digit values from `sender_mapping`
+    // can never re-create stale chip rows after the boot migration ran.
     const byPhone = new Map<string, ImportSourceRow>()
     for (const row of rows) {
-      const phone = String(row.phone_number ?? '').trim()
-      if (!phone) continue
-      if (!byPhone.has(phone)) byPhone.set(phone, row)
+      const rawPhone = String(row.phone_number ?? '').trim()
+      if (!rawPhone) continue
+      const phone = normalizeBrPhone(rawPhone).phone || rawPhone
+      if (!byPhone.has(phone)) byPhone.set(phone, { ...row, phone_number: phone })
     }
 
     for (const [phone, row] of byPhone.entries()) {
