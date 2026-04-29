@@ -10,6 +10,7 @@
     "plugins": "Plugins",
     "admin": "Admin",
     "mirror": "Espelho",
+    "fleet": "Frota",
     "logout": "Sair"
   },
   "mirror": {

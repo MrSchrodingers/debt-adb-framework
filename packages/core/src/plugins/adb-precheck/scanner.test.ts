@@ -652,3 +652,146 @@ describe('PrecheckScanner — recheck_after_days bug reproducer (#novo-scan-skip
     }
   })
 })
+
+describe('PrecheckScanner — hygienization_mode (Part 2)', () => {
+  it('pauses global at start and resumes in finally on happy path', async () => {
+    const rows = [buildRow({ telefone_1: '5543991938235' })]
+    const validator = () => ({
+      exists_on_wa: 1,
+      from_cache: false,
+      phone_normalized: '5543991938235',
+      source: 'adb',
+      confidence: 0.9,
+      attempts: [],
+    })
+    const { scanner } = buildScanner(rows, validator)
+    const pause = vi.fn()
+    const resume = vi.fn(() => true)
+    const pauseState = { pause, resume }
+    // Inject pauseState by re-creating the scanner with extended deps.
+    ;(scanner as unknown as { deps: ScannerDeps }).deps.pauseState = pauseState
+    ;(scanner as unknown as { deps: ScannerDeps }).deps.hygienizationOperator = 'op-x'
+
+    await scanner.runJob('job-hyg-1', { hygienization_mode: true })
+
+    expect(pause).toHaveBeenCalledWith('global', '*', expect.stringContaining('hygienization'), 'op-x')
+    expect(resume).toHaveBeenCalledWith('global', '*', 'op-x')
+    expect(pause).toHaveBeenCalledBefore(resume)
+  })
+
+  it('floors recheck_after_days at 30 when below', async () => {
+    const rows = [buildRow({ telefone_1: '5543991938235' })]
+    const validator = () => ({
+      exists_on_wa: 1,
+      from_cache: false,
+      phone_normalized: '5543991938235',
+      source: 'adb',
+      confidence: 0.9,
+      attempts: [],
+    })
+    const { scanner, pg } = buildScanner(rows, validator)
+    const pauseState = { pause: vi.fn(), resume: vi.fn(() => true) }
+    ;(scanner as unknown as { deps: ScannerDeps }).deps.pauseState = pauseState
+    await scanner.runJob('job-hyg-2', { hygienization_mode: true, recheck_after_days: 7 })
+
+    // The countPool call should have received `recheck_after_days` overridden to 30.
+    const args = pg.countPool.mock.calls[0]?.[0] as { recheck_after_days?: number }
+    expect(args.recheck_after_days).toBe(30)
+  })
+
+  it('preserves recheck_after_days when already >= 30', async () => {
+    const rows = [buildRow({ telefone_1: '5543991938235' })]
+    const validator = () => ({
+      exists_on_wa: 1,
+      from_cache: false,
+      phone_normalized: '5543991938235',
+      source: 'adb',
+      confidence: 0.9,
+      attempts: [],
+    })
+    const { scanner, pg } = buildScanner(rows, validator)
+    const pauseState = { pause: vi.fn(), resume: vi.fn(() => true) }
+    ;(scanner as unknown as { deps: ScannerDeps }).deps.pauseState = pauseState
+    await scanner.runJob('job-hyg-3', { hygienization_mode: true, recheck_after_days: 60 })
+
+    const args = pg.countPool.mock.calls[0]?.[0] as { recheck_after_days?: number }
+    expect(args.recheck_after_days).toBe(60)
+  })
+
+  it('resumes global pause even when scanner throws mid-iteration', async () => {
+    const rows = [buildRow({ telefone_1: '5543991938235' })]
+    const { scanner, pg } = buildScanner(rows, () => {
+      throw new Error('validator boom')
+    })
+    pg.iterateDeals.mockImplementation(async function* () {
+      yield rows
+    })
+    const pauseState = { pause: vi.fn(), resume: vi.fn(() => true) }
+    ;(scanner as unknown as { deps: ScannerDeps }).deps.pauseState = pauseState
+
+    // The validator throws — scanner catches per-phone, finishes the job, but
+    // the pause/resume contract must still hold.
+    await scanner.runJob('job-hyg-err', { hygienization_mode: true })
+    expect(pauseState.pause).toHaveBeenCalled()
+    expect(pauseState.resume).toHaveBeenCalled()
+  })
+
+  it('aborts the job with status=failed if pause() throws', async () => {
+    const rows = [buildRow({ telefone_1: '5543991938235' })]
+    const { scanner, store } = buildScanner(rows, () => ({
+      exists_on_wa: 1,
+      from_cache: false,
+      phone_normalized: '5543991938235',
+      source: 'adb',
+      confidence: 0.9,
+      attempts: [],
+    }))
+    const pauseState = {
+      pause: vi.fn(() => { throw new Error('pause table locked') }),
+      resume: vi.fn(),
+    }
+    ;(scanner as unknown as { deps: ScannerDeps }).deps.pauseState = pauseState
+
+    await expect(
+      scanner.runJob('job-hyg-pausefail', { hygienization_mode: true }),
+    ).rejects.toThrow('pause table locked')
+    // finishJob must have been called with 'failed' so the job row reflects it.
+    const failedCalls = store.finishJob.mock.calls.filter((c) => c[1] === 'failed')
+    expect(failedCalls.length).toBeGreaterThan(0)
+  })
+
+  it('does NOT pause when hygienization_mode is false (default behaviour preserved)', async () => {
+    const rows = [buildRow({ telefone_1: '5543991938235' })]
+    const validator = () => ({
+      exists_on_wa: 1,
+      from_cache: false,
+      phone_normalized: '5543991938235',
+      source: 'adb',
+      confidence: 0.9,
+      attempts: [],
+    })
+    const { scanner } = buildScanner(rows, validator)
+    const pauseState = { pause: vi.fn(), resume: vi.fn() }
+    ;(scanner as unknown as { deps: ScannerDeps }).deps.pauseState = pauseState
+    await scanner.runJob('job-non-hyg', {})
+    expect(pauseState.pause).not.toHaveBeenCalled()
+    expect(pauseState.resume).not.toHaveBeenCalled()
+  })
+
+  it('warns and continues when pauseState is not wired', async () => {
+    const rows = [buildRow({ telefone_1: '5543991938235' })]
+    const validator = () => ({
+      exists_on_wa: 1,
+      from_cache: false,
+      phone_normalized: '5543991938235',
+      source: 'adb',
+      confidence: 0.9,
+      attempts: [],
+    })
+    const { scanner } = buildScanner(rows, validator)
+    // No pauseState injected at all.
+    await expect(
+      scanner.runJob('job-hyg-no-state', { hygienization_mode: true }),
+    ).resolves.toBeUndefined()
+  })
+})

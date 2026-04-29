@@ -88,6 +88,12 @@ export interface PrecheckJob {
    * audit trails remain accurate even if the env flag flips later.
    */
   pipedrive_enabled: number
+  /**
+   * Whether the job ran (or is running) in "hygienization mode" — global
+   * production sends paused for the duration, conservative rate limits.
+   * 1 = enabled, 0 = disabled.
+   */
+  hygienization_mode: number
 }
 
 /** Params for a new scan run. */
@@ -121,6 +127,18 @@ export interface PrecheckScanParams {
    * Operators do NOT supply this directly — the API schema rejects it.
    */
   excluded_keys?: DealKey[]
+  /**
+   * "Hygienization mode" — when true, the scanner pauses the global circuit
+   * breaker (`DispatchPauseState` scope='global') for the lifetime of the
+   * job and overrides `recheck_after_days` to at least 30 days. The pause
+   * is auto-resumed in the scanner's `finally` block, regardless of
+   * cancel/error.
+   *
+   * Use case: large-fleet hygiene runs (>100 deals) where the operator wants
+   * to hard-freeze production sends so no message goes out while the scanner
+   * walks the pool with conservative rate limits.
+   */
+  hygienization_mode?: boolean
 }
 
 // ── Pipedrive integration intents ─────────────────────────────────────────

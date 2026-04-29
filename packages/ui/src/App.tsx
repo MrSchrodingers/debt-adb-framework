@@ -20,14 +20,16 @@ import { PluginTabs } from './components/plugin-tabs'
 import { SenderDashboard } from './components/sender-dashboard'
 import { ContactsAudit } from './components/contacts-audit'
 import { AdminPage } from './components/admin-page'
+import { FleetPage } from './components/fleet-page'
 import { DevicesGridMirror } from './components/devices-grid-mirror'
 import { AnomalyBanner } from './components/anomaly-banner'
+import { HygienizationBanner } from './components/hygienization-banner'
 import { CommandPalette } from './components/command-palette'
 import { KeyboardShortcutsHelp } from './components/keyboard-shortcuts-help'
 import { useAuth } from './auth/auth-context'
 import type { DeviceRecord, HealthSnapshot, WhatsAppAccount, Alert } from './types'
 
-type Tab = 'devices' | 'queue' | 'senders' | 'sessions' | 'metricas' | 'auditoria' | 'plugins' | 'contatos' | 'admin' | 'mirror'
+type Tab = 'devices' | 'queue' | 'senders' | 'sessions' | 'metricas' | 'auditoria' | 'plugins' | 'contatos' | 'admin' | 'mirror' | 'fleet'
 
 export function App() {
   const { logout } = useAuth()
@@ -306,6 +308,10 @@ export function App() {
         {/* Anomaly banner — spans full width */}
         <AnomalyBanner />
 
+        {/* Hygienization banner — visible across all tabs while a hygiene-mode
+            scan has paused production globally. */}
+        <HygienizationBanner />
+
         {/* Stats */}
         <StatsBar
           deviceCount={devices.length}
@@ -323,6 +329,8 @@ export function App() {
             <DevicesGridMirror />
           ) : activeTab === 'admin' ? (
             <AdminPage />
+          ) : activeTab === 'fleet' ? (
+            <FleetPage />
           ) : activeTab === 'plugins' ? (
             <PluginTabs />
           ) : activeTab === 'contatos' ? (

@@ -13,6 +13,31 @@ import type {
   PrecheckScanParams,
 } from './types.js'
 
+/**
+ * Subset of `DispatchPauseState` the scanner needs. Kept structural so this
+ * module never imports the `engine/` tree (avoids the plugin → engine cycle).
+ *
+ * `set` semantics match `DispatchPauseState.pause`:
+ *   - source: scope hint (we always pass 'global' for hygienization mode)
+ *   - reason: human-readable label that appears in the admin UI banner
+ *   - by:     audit operator name
+ */
+export interface ScannerPauseState {
+  pause: (scope: 'global', key: string, reason: string, by: string) => void
+  resume: (scope: 'global', key: string, by: string) => boolean
+}
+
+/** Hard floor for `recheck_after_days` when hygienization mode is on. */
+export const HYGIENIZATION_RECHECK_FLOOR_DAYS = 30
+
+/**
+ * Reason string written into `dispatch_pause` rows when the scanner pauses
+ * production for hygienization. The UI banner matches on `:hygienization`
+ * substring of the source/reason — keep both stable.
+ */
+export const HYGIENIZATION_PAUSE_REASON =
+  'auto-paused by adb-precheck:hygienization'
+
 const INVALID_MOTIVO = 'whatsapp_nao_existe'
 
 /**
@@ -52,6 +77,15 @@ export interface ScannerDeps {
   pipedrive?: PipedrivePublisher
   /** TTL hint for the cache footer in Pipedrive notes (days). */
   pipedriveCacheTtlDays?: number
+  /**
+   * Optional pause-state proxy. When the job has `hygienization_mode = true`,
+   * the scanner pauses the global circuit breaker before iterating and
+   * resumes it in `finally` (regardless of cancel/error). Omitted in unit
+   * tests that don't exercise the hygienization path.
+   */
+  pauseState?: ScannerPauseState
+  /** Operator label written to the audit log when the scanner toggles pause. */
+  hygienizationOperator?: string
 }
 
 interface PastaAggregate {
@@ -101,7 +135,7 @@ export class PrecheckScanner {
   constructor(private deps: ScannerDeps) {}
 
   async runJob(jobId: string, params: PrecheckScanParams): Promise<void> {
-    const { pg, store, logger, shouldCancel, onJobFinished } = this.deps
+    const { pg, store, logger, shouldCancel, onJobFinished, pauseState } = this.deps
     // Per-job opt-out: even when the integration is wired we honour the
     // `pipedrive_enabled === false` flag and skip all 3 scenarios for this
     // job. This lets operators run a quick scan without polluting Pipedrive.
@@ -109,6 +143,62 @@ export class PrecheckScanner {
     let finalStatus: 'completed' | 'cancelled' | 'failed' = 'completed'
     const pastaAgg: Map<string, PastaAggregate> = new Map()
     const startedAt = new Date().toISOString()
+
+    // ── Hygienization mode (Part 2) ─────────────────────────────────────
+    //
+    // When the operator opted in via `hygienization_mode=true`, we MUST
+    // pause global production sends BEFORE any iteration. The pause is
+    // released in the outermost `finally` regardless of cancel/error/panic.
+    //
+    // Safety net: if `pauseState` was not injected (legacy callers, unit
+    // tests without the engine), we honour the recheck floor but log a
+    // warning — operators can still detect this by inspecting the job row.
+    let hygienizationActive = false
+    const hygienizationOperator = this.deps.hygienizationOperator ?? 'adb-precheck:scanner'
+    if (params.hygienization_mode === true) {
+      // Floor `recheck_after_days` at 30 — operators chose hygiene mode to
+      // avoid hammering recently-checked numbers, so we never honour smaller
+      // windows in this mode (would defeat the purpose).
+      const floor = HYGIENIZATION_RECHECK_FLOOR_DAYS
+      const requested = params.recheck_after_days ?? 0
+      if (requested < floor) {
+        params = { ...params, recheck_after_days: floor }
+      }
+      if (pauseState) {
+        try {
+          pauseState.pause(
+            'global',
+            '*',
+            HYGIENIZATION_PAUSE_REASON,
+            hygienizationOperator,
+          )
+          hygienizationActive = true
+          logger.warn('hygienization mode: global send paused', { jobId })
+        } catch (e) {
+          // If the pause itself fails we ABORT the job — the operator's
+          // intent was "freeze prod first, then scan". Continuing without
+          // the pause would violate that contract.
+          logger.error('hygienization mode: failed to pause global', {
+            jobId,
+            error: e instanceof Error ? e.message : String(e),
+          })
+          store.finishJob(
+            jobId,
+            'failed',
+            `hygienization pause failed: ${e instanceof Error ? e.message : String(e)}`,
+          )
+          if (onJobFinished) {
+            try { await onJobFinished(jobId) } catch { /* swallow */ }
+          }
+          throw e
+        }
+      } else {
+        logger.warn(
+          'hygienization mode requested but pauseState not wired — proceeding without global pause',
+          { jobId },
+        )
+      }
+    }
 
     // ── Recheck freshness filter ────────────────────────────────────────
     //
@@ -179,6 +269,9 @@ export class PrecheckScanner {
           logger.warn('precheck scan cancelled', { jobId })
           finalStatus = 'cancelled'
           if (onJobFinished) await onJobFinished(jobId)
+          // Resume the global pause before exiting the cancel path; the early
+          // `return` would otherwise skip the post-loop resume call.
+          this.resumeHygienizationIfActive(hygienizationActive, hygienizationOperator, jobId)
           return
         }
         for (const row of page) {
@@ -472,12 +565,45 @@ export class PrecheckScanner {
           logger.error('onJobFinished callback failed', { jobId, error: cbErr instanceof Error ? cbErr.message : String(cbErr) })
         }
       }
+      this.resumeHygienizationIfActive(hygienizationActive, hygienizationOperator, jobId)
       throw e
     }
     if (finalStatus === 'completed' && onJobFinished) {
       try { await onJobFinished(jobId) } catch (cbErr) {
         logger.error('onJobFinished callback failed', { jobId, error: cbErr instanceof Error ? cbErr.message : String(cbErr) })
       }
+    }
+    // Happy path: completion went through. Resume idempotently.
+    this.resumeHygienizationIfActive(hygienizationActive, hygienizationOperator, jobId)
+  }
+
+  /**
+   * Idempotent helper invoked from every termination path (cancel, error,
+   * success). When hygienization mode was successfully engaged at job start,
+   * we MUST call resume — otherwise the global circuit breaker would stay
+   * locked across a restart, blocking every plugin from sending.
+   *
+   * Logs loudly when resume itself fails so the operator can manually clear.
+   */
+  private resumeHygienizationIfActive(
+    active: boolean,
+    operator: string,
+    jobId: string,
+  ): void {
+    if (!active) return
+    const { pauseState, logger } = this.deps
+    if (!pauseState) return
+    try {
+      const ok = pauseState.resume('global', '*', operator)
+      logger.info('hygienization mode: global send resumed', { jobId, resumed: ok })
+    } catch (resumeErr) {
+      logger.error(
+        'hygienization mode: failed to resume global pause — MANUAL INTERVENTION REQUIRED',
+        {
+          jobId,
+          error: resumeErr instanceof Error ? resumeErr.message : String(resumeErr),
+        },
+      )
     }
   }
 }

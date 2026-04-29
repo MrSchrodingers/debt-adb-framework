@@ -4,6 +4,7 @@ import { z } from 'zod'
 import type { ContactRegistry } from '../contacts/contact-registry.js'
 import type { AdbShellAdapter } from '../monitor/types.js'
 import type { WahaApiClient } from '../waha/types.js'
+import type { DispatchPauseState } from '../engine/dispatch-pause-state.js'
 import { ContactValidator } from '../validator/contact-validator.js'
 import {
   AdbProbeStrategy,
@@ -38,6 +39,13 @@ const scanParamsSchema = z
      * `false` to skip even when wired (e.g. dry-run scans).
      */
     pipedrive_enabled: z.boolean().optional(),
+    /**
+     * Hygienization mode (Part 2): pauses global production sends for the
+     * lifetime of the job and floors `recheck_after_days` at 30. Default
+     * false. The actual pause/resume happens server-side in the scanner
+     * (so the lifecycle is honoured even if the UI is closed mid-scan).
+     */
+    hygienization_mode: z.boolean().optional(),
   })
   .strict()
 
@@ -83,6 +91,8 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   private pipedriveActivityStore: PipedriveActivityStore | null = null
   private readonly pipedriveCacheTtlDays: number | undefined
   private readonly pipedriveCompanyDomain: string | null
+  private readonly pauseState: DispatchPauseState | undefined
+  private readonly hygienizationOperator: string
 
   constructor(
     opts: {
@@ -122,6 +132,15 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       }
       /** Dispatch emitter — required for Pipedrive failure event surfacing. */
       emitter?: DispatchEmitter
+      /**
+       * Optional pause-state proxy used by hygienization mode. When omitted,
+       * hygienization-mode jobs run with the recheck floor enforced but
+       * WITHOUT pausing global sends — a warning is logged. In production
+       * (server.ts) we always pass it; tests can omit it.
+       */
+      pauseState?: DispatchPauseState
+      /** Operator label written to the audit log when scanner toggles pause. */
+      hygienizationOperator?: string
     },
     private db: Database.Database,
     private registry: ContactRegistry,
@@ -136,6 +155,8 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     this.store = new PrecheckJobStore(db)
     this.pipedriveCacheTtlDays = opts.pipedrive?.cacheTtlDays
     this.pipedriveCompanyDomain = opts.pipedrive?.companyDomain ?? null
+    this.pauseState = opts.pauseState
+    this.hygienizationOperator = opts.hygienizationOperator ?? 'adb-precheck:hygienization'
 
     // Pipedrive client + publisher are wired only when a token is provided.
     // Stays null when the env var is missing — scanner becomes a no-op for
@@ -197,6 +218,11 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       onInvalidPhone: this.onInvalidPhoneCb,
       pipedrive: this.pipedrivePublisher ?? undefined,
       pipedriveCacheTtlDays: this.pipedriveCacheTtlDays,
+      // Hygienization mode wiring — DispatchPauseState satisfies ScannerPauseState
+      // structurally so we can pass it directly. When omitted, the scanner
+      // logs a warning and runs without pausing global sends.
+      pauseState: this.pauseState,
+      hygienizationOperator: this.hygienizationOperator,
     })
 
     ctx.registerRoute('GET',  '/health',     this.handleHealth.bind(this))
@@ -332,8 +358,9 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
 
     // Materialise the resolved flag back onto params so it lands in
     // params_json (operators can audit exactly what was decided).
-    const params = { ...rawParams, pipedrive_enabled: pipedriveEnabled }
-    const job = this.store.createJob(params, external_ref, { pipedriveEnabled })
+    const hygienizationMode = rawParams.hygienization_mode === true
+    const params = { ...rawParams, pipedrive_enabled: pipedriveEnabled, hygienization_mode: hygienizationMode }
+    const job = this.store.createJob(params, external_ref, { pipedriveEnabled, hygienizationMode })
     if (job.status === 'queued') {
       // Fire-and-forget; progress visible via GET /scan/:id
       void this.scanner!.runJob(job.id, params).catch(() => {

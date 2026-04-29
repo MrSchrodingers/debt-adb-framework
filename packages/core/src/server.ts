@@ -10,7 +10,8 @@ import { AdbBridge } from './adb/index.js'
 import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, SenderScoring, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender } from './engine/index.js'
 import { DispatchPauseState, type PauseScope } from './engine/dispatch-pause-state.js'
 import { DispatchEmitter } from './events/index.js'
-import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes, registerMessageTimelineRoutes, registerAdminMessageRoutes, registerInsightsHeatmapRoutes, registerAckRateRoutes } from './api/index.js'
+import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes, registerMessageTimelineRoutes, registerAdminMessageRoutes, registerInsightsHeatmapRoutes, registerAckRateRoutes, registerFleetRoutes } from './api/index.js'
+import { ChipRegistry } from './fleet/index.js'
 import { registerAnomalyRoutes, registerChanged24hRoutes } from './insights/index.js'
 import { verifyJwt } from './api/jwt.js'
 import { ContactRegistry } from './contacts/index.js'
@@ -152,6 +153,11 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   contactRegistry.initialize()
   const hygieneJobService = new HygieneJobService(db)
   hygieneJobService.initialize()
+
+  // Fleet (Phase 3 of anti-ban roadmap): internal SIM-card cost tracking.
+  // Schema is idempotent — safe to call on pre-existing databases.
+  const chipRegistry = new ChipRegistry(db)
+  chipRegistry.initialize()
 
   const auditLogger = new AuditLogger(db)
 
@@ -356,6 +362,9 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   registerContactRoutes(server, contactRegistry, adb, queue)
   registerHygieneRoutes(server, hygieneJobService)
 
+  // Fleet management (chip cost tracking, Phase 3 anti-ban roadmap).
+  registerFleetRoutes(server, { registry: chipRegistry })
+
   // Phase 9 (P9): Insights endpoints
   registerInsightsHeatmapRoutes(server, db)
   registerAnomalyRoutes(server, db)
@@ -453,6 +462,11 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const accountMutex = new AccountMutex()
   const wahaFallback = new WahaFallback(senderMapping, queue, fetch, process.env.WAHA_API_KEY)
 
+  // ── Manual circuit breaker (pause state) — global/plugin/sender/device/chain/message ──
+  // Hoisted before plugins so adb-precheck's hygienization mode can wire it.
+  const pauseState = new DispatchPauseState(db, emitter)
+  pauseState.initialize()
+
   // ── Plugin System (Phase 7) ──
   const pluginRegistry = new PluginRegistry(db)
   pluginRegistry.initialize()
@@ -504,6 +518,10 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
           onInvalidPhone: (phone) => queue.recordBan(phone, 'precheck_invalid'),
           pipedrive: pipedriveOpts,
           emitter,
+          // Hygienization mode (Part 2): scanner pauses global sends for the
+          // lifetime of the job and resumes in finally.
+          pauseState,
+          hygienizationOperator: 'adb-precheck:hygienization',
         },
         db,
         contactRegistry,
@@ -1348,9 +1366,8 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   })
   circuitBreaker.initialize()
 
-  // ── Manual circuit breaker (pause state) — global/plugin/sender/device/chain/message ──
-  const pauseState = new DispatchPauseState(db, emitter)
-  pauseState.initialize()
+  // pauseState was hoisted earlier (right before the plugin system) so that
+  // hygienization mode in adb-precheck can wire it. Nothing to do here.
 
   // ── Ban Prediction Daemon (Task 12.2 — experimental, default off) ──
   // Per-sender ack-rate thresholds beat the env-default when an operator has

@@ -289,7 +289,12 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
   // Per-job Pipedrive opt-in. Default ON — operators can flip it OFF for
   // dry-run scans that should not pollute the CRM.
   const [pipedriveEnabled, setPipedriveEnabled] = useState(true)
+  // Modo Higienização (Part 2): pauses global production sends server-side
+  // for the lifetime of the scan and floors recheck_after_days at 30. Strong
+  // confirmation required because it freezes ALL outgoing messages.
+  const [hygienizationMode, setHygienizationMode] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  const [confirmingHygienization, setConfirmingHygienization] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
@@ -305,6 +310,7 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
         writeback_invalid: writebackInvalid,
         writeback_localizado: writebackLocalizado,
         pipedrive_enabled: pipedriveEnabled,
+        hygienization_mode: hygienizationMode,
       }
       const r = await fetch(`${PLUGIN_BASE}/scan`, {
         method: 'POST',
@@ -316,12 +322,15 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
-      setSubmitting(false); setConfirming(false)
+      setSubmitting(false); setConfirming(false); setConfirmingHygienization(false)
     }
   }
 
   const handleStart = () => {
-    if (hasWriteback) setConfirming(true)
+    // Hygienization confirmation supersedes the writeback confirmation:
+    // the operator MUST acknowledge the global pause before anything else.
+    if (hygienizationMode) setConfirmingHygienization(true)
+    else if (hasWriteback) setConfirming(true)
     else submit()
   }
 
@@ -401,6 +410,29 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
           </div>
         </Section>
 
+        <Section title="Modo Higienização (segurança)" description="Para varreduras grandes (>100 deals). Pausa o envio em produção pelo tempo do scan e usa rate conservador.">
+          <div className="space-y-2 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4">
+            <Toggle
+              checked={hygienizationMode}
+              onChange={setHygienizationMode}
+              label="Pausar envio prod e usar rate conservador"
+              hint="recheck_after_days será forçado para no mínimo 30; durante o scan, NENHUMA mensagem prod sai. Auto-resume ao terminar."
+              icon={<svg className="h-4 w-4 text-amber-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>}
+            />
+            {hygienizationMode ? (
+              <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200 flex items-start gap-2">
+                <CircleAlert className="h-4 w-4 shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-medium">Pausa global será aplicada</div>
+                  <p className="mt-0.5 text-amber-200/80">
+                    Recomendado para scans de varredura ampla. Confirmação adicional será pedida antes de iniciar.
+                  </p>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </Section>
+
         {err ? <InlineError message={`Erro: ${err}`} /> : null}
 
         <div className="flex items-center gap-3">
@@ -448,6 +480,66 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
           writebackLocalizado={writebackLocalizado}
         />
       ) : null}
+
+      {confirmingHygienization ? (
+        <HygienizationConfirmModal
+          onCancel={() => setConfirmingHygienization(false)}
+          onConfirm={() => {
+            // Chain into the writeback confirmation if writeback is also on,
+            // otherwise submit immediately. Operator already acknowledged the
+            // global pause at this point.
+            setConfirmingHygienization(false)
+            if (hasWriteback) setConfirming(true)
+            else void submit()
+          }}
+          submitting={submitting}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+function HygienizationConfirmModal({
+  onCancel,
+  onConfirm,
+  submitting,
+}: {
+  onCancel: () => void
+  onConfirm: () => void
+  submitting: boolean
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+      <div className="w-full max-w-md rounded-xl border border-amber-500/40 bg-zinc-950 p-5 shadow-xl shadow-black/50">
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-500/10 border border-amber-500/30">
+            <CircleAlert className="h-5 w-5 text-amber-300" />
+          </div>
+          <div className="flex-1">
+            <h5 className="text-sm font-semibold text-zinc-100">Confirmar Modo Higienização</h5>
+            <p className="mt-1 text-xs text-zinc-400">
+              Esta ação <strong className="text-amber-200">pausará TODO o envio em produção</strong> enquanto o scan rodar.
+            </p>
+            <ul className="mt-3 space-y-1 text-xs text-zinc-300 list-disc list-inside">
+              <li>Recheck após N dias forçado para ≥ 30</li>
+              <li>Rate limit conservador (~1 req/min)</li>
+              <li>Auto-resume quando o scan terminar (sucesso, erro ou cancelamento)</li>
+            </ul>
+          </div>
+        </div>
+        <div className="mt-5 flex items-center justify-end gap-2">
+          <button onClick={onCancel} className="rounded-md px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800">
+            Cancelar
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={submitting}
+            className="rounded-md bg-amber-500/20 border border-amber-500/40 px-3 py-1.5 text-sm text-amber-100 hover:bg-amber-500/30 disabled:opacity-50"
+          >
+            {submitting ? 'Iniciando…' : 'Confirmar e pausar prod'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

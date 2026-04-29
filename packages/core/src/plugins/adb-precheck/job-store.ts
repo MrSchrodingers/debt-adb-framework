@@ -36,7 +36,8 @@ const SCHEMA_SQL = `
     cache_hits INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    pipedrive_enabled INTEGER NOT NULL DEFAULT 1
+    pipedrive_enabled INTEGER NOT NULL DEFAULT 1,
+    hygienization_mode INTEGER NOT NULL DEFAULT 0
   );
   CREATE INDEX IF NOT EXISTS idx_adb_precheck_jobs_status
     ON adb_precheck_jobs(status, created_at DESC);
@@ -75,12 +76,17 @@ export class PrecheckJobStore {
         "ALTER TABLE adb_precheck_jobs ADD COLUMN pipedrive_enabled INTEGER NOT NULL DEFAULT 1",
       )
     }
+    if (!cols.some((c) => c.name === 'hygienization_mode')) {
+      this.db.exec(
+        "ALTER TABLE adb_precheck_jobs ADD COLUMN hygienization_mode INTEGER NOT NULL DEFAULT 0",
+      )
+    }
   }
 
   createJob(
     params: PrecheckScanParams,
     externalRef?: string,
-    opts?: { pipedriveEnabled?: boolean },
+    opts?: { pipedriveEnabled?: boolean; hygienizationMode?: boolean },
   ): PrecheckJob {
     if (externalRef) {
       const existing = this.db
@@ -91,12 +97,20 @@ export class PrecheckJobStore {
     const id = nanoid()
     const created_at = new Date().toISOString()
     const pipedriveEnabled = opts?.pipedriveEnabled === false ? 0 : 1
+    const hygienizationMode = opts?.hygienizationMode === true ? 1 : 0
     this.db
       .prepare(
-        `INSERT INTO adb_precheck_jobs (id, external_ref, status, params_json, created_at, pipedrive_enabled)
-         VALUES (?, ?, 'queued', ?, ?, ?)`,
+        `INSERT INTO adb_precheck_jobs (id, external_ref, status, params_json, created_at, pipedrive_enabled, hygienization_mode)
+         VALUES (?, ?, 'queued', ?, ?, ?, ?)`,
       )
-      .run(id, externalRef ?? null, JSON.stringify(params), created_at, pipedriveEnabled)
+      .run(
+        id,
+        externalRef ?? null,
+        JSON.stringify(params),
+        created_at,
+        pipedriveEnabled,
+        hygienizationMode,
+      )
     return this.getJob(id)!
   }
 
