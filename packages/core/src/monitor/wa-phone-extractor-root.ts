@@ -84,9 +84,16 @@ interface ExtractParsedPhone {
 /**
  * Parse a SharedPrefs XML blob looking for the registered phone.
  *
- * Order of precedence:
- *   1. `<string name="ph">…</string>` — verbatim international phone (no `cc` prefix).
- *   2. `cc` + `registration_jid` / `self_lid` — country code + JID number.
+ * WhatsApp's SharedPrefs schema (verified live on POCO C71):
+ *   <string name="cc">55</string>             -- country code
+ *   <string name="ph">43996835100</string>     -- 11-digit DDD+9+subscriber (NO cc)
+ *   <string name="registration_jid">554396835100</string> -- often legacy 12-digit
+ *   <string name="self_lid">…</string>         -- LID format (NOT a phone)
+ *
+ * Logic:
+ *   1. If both `cc` and `ph` exist → compose `cc + ph` (most reliable, full E.164).
+ *   2. Else if `ph` ≥ 12 digits → ph already includes the country code; use as-is.
+ *   3. Else fall back to `registration_jid` (compose with `cc` if missing prefix).
  *
  * Returns `null` when nothing usable is present.
  */
@@ -94,18 +101,26 @@ export function parsePhoneFromSharedPrefs(
   xml: string,
   source: RootExtractionSource,
 ): ExtractParsedPhone | null {
-  // Precedence 1: `ph` is the most reliable — WA writes it on registration.
+  const ccMatch = xml.match(/<string name="cc">(\d+)<\/string>/)
   const phMatch = xml.match(/<string name="ph">(\d+)<\/string>/)
-  if (phMatch && phMatch[1].length >= 10) {
+
+  // ph already contains the country code (≥ 12 digits) — use as-is even
+  // when cc is also present (avoids double-prefixing).
+  if (phMatch && phMatch[1].length >= 12) {
     return { raw: phMatch[1], source }
   }
-  // Precedence 2: assemble from cc + jid/lid.
-  const ccMatch = xml.match(/<string name="cc">(\d+)<\/string>/)
-  const jidMatch = xml.match(/<string name="registration_jid">(\d+)@/)
-  const lidMatch = xml.match(/<string name="self_lid">(\d+)@/)
-  const num = jidMatch?.[1] ?? lidMatch?.[1]
-  if (num && ccMatch) return { raw: ccMatch[1] + num, source }
-  if (num) return { raw: num, source }
+  // ph is short (DDD+9+subscriber, no cc) — compose with cc to make it E.164.
+  if (ccMatch && phMatch && phMatch[1].length >= 10) {
+    return { raw: ccMatch[1] + phMatch[1], source }
+  }
+  // Precedence 3: registration_jid. Strip @ suffix; prepend cc if shorter than 12.
+  const jidMatch = xml.match(/<string name="registration_jid">(\d+)/)
+  const jid = jidMatch?.[1]
+  if (jid) {
+    if (jid.length >= 12) return { raw: jid, source }
+    if (ccMatch) return { raw: ccMatch[1] + jid, source }
+  }
+  // Note: self_lid is a Linked-ID, not a phone — never use it.
   return null
 }
 

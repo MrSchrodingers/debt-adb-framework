@@ -14,23 +14,28 @@ function makeAdb(handler: (serial: string, cmd: string) => string | Promise<stri
   }
 }
 
+// Real-world SharedPrefs schema verified on a live POCO C71:
+//   ph contains DDD+9+subscriber WITHOUT the country code.
+//   cc is the country code (always 55 in this fleet).
+//   registration_jid often has the legacy 12-digit format (no 9 prefix).
 const WA_LIGHT_XML = `<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="self_lid">135665836662940@lid</string>
+    <string name="cc">55</string>
+    <string name="ph">43991938235</string>
+    <string name="registration_jid">554391938235</string>
+</map>`.trim()
+
+// Edge case: ph is already 13 digits (alternate WA version).
+const WA_LIGHT_XML_FULL_PH = `<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>
     <string name="cc">55</string>
     <string name="ph">5543991938235</string>
-    <string name="registration_jid">5543991938235@s.whatsapp.net</string>
 </map>`.trim()
 
-const WA_LIGHT_XML_LEGACY_12_DIGIT = `<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+// Edge case: only registration_jid available (no ph, no cc), 13-digit JID.
+const WA_LIGHT_XML_JID_ONLY = `<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>
-    <string name="cc">55</string>
-    <string name="ph">554391938235</string>
-    <string name="registration_jid">554391938235@s.whatsapp.net</string>
-</map>`.trim()
-
-const WA_LIGHT_XML_NO_PH = `<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
-<map>
-    <string name="cc">55</string>
     <string name="registration_jid">5543996835100@s.whatsapp.net</string>
 </map>`.trim()
 
@@ -74,15 +79,24 @@ describe('listUserProfiles', () => {
 })
 
 describe('parsePhoneFromSharedPrefs', () => {
-  it('prefers <string name="ph"> when present', () => {
+  it('composes cc + ph (real-world POCO C71 schema)', () => {
     const r = parsePhoneFromSharedPrefs(WA_LIGHT_XML, 'shared_prefs_light')
     expect(r).toEqual({ raw: '5543991938235', source: 'shared_prefs_light' })
   })
 
-  it('falls back to cc + registration_jid when ph is missing', () => {
-    const r = parsePhoneFromSharedPrefs(WA_LIGHT_XML_NO_PH, 'shared_prefs_light')
-    expect(r?.raw).toBe('555543996835100') // 55 + cc + jid composition
-    expect(r?.source).toBe('shared_prefs_light')
+  it('uses ph as-is when it already contains the country code (≥ 12 digits)', () => {
+    const r = parsePhoneFromSharedPrefs(WA_LIGHT_XML_FULL_PH, 'shared_prefs_light')
+    expect(r?.raw).toBe('5543991938235')
+  })
+
+  it('falls back to registration_jid when ph is absent and jid already ≥ 12 digits', () => {
+    const r = parsePhoneFromSharedPrefs(WA_LIGHT_XML_JID_ONLY, 'shared_prefs_light')
+    expect(r?.raw).toBe('5543996835100')
+  })
+
+  it('ignores self_lid (it is a Linked-ID, not a phone)', () => {
+    const xml = '<map><string name="self_lid">135665836662940@lid</string></map>'
+    expect(parsePhoneFromSharedPrefs(xml, 'shared_prefs_light')).toBeNull()
   })
 
   it('returns null when nothing usable is in the XML', () => {
@@ -119,7 +133,7 @@ describe('extractPhonesViaRoot', () => {
     expect(await extractPhonesViaRoot(adb, 'X')).toEqual([])
   })
 
-  it('extracts a canonical 13-digit phone from shared_prefs_light', async () => {
+  it('extracts canonical 13-digit phone from cc + ph composition (POCO schema)', async () => {
     const adb = makeAdb((_s, cmd) => {
       if (cmd.includes('su -c id')) return 'uid=0(root)'
       if (cmd.includes('ls /data/user')) return '0'
@@ -138,15 +152,17 @@ describe('extractPhonesViaRoot', () => {
     })
   })
 
-  it('upgrades a 12-digit legacy ph to 13 digits via normalizer', async () => {
+  it('upgrades a 12-digit registration_jid via the normalizer when ph is absent', async () => {
+    const xml = `<map><string name="cc">55</string><string name="registration_jid">554391938235</string></map>`
     const adb = makeAdb((_s, cmd) => {
       if (cmd.includes('su -c id')) return 'uid=0(root)'
       if (cmd.includes('ls /data/user')) return '0'
       if (cmd.includes('test -d')) return 'YES'
-      if (cmd.includes('preferences_light.xml')) return WA_LIGHT_XML_LEGACY_12_DIGIT
+      if (cmd.includes('preferences_light.xml')) return xml
       return ''
     })
     const r = await extractPhonesViaRoot(adb, 'X', { packages: ['com.whatsapp'] })
+    // jid is 12 digits → returned as-is by parser; normalizer adds 9-prefix.
     expect(r[0]).toMatchObject({
       profile_id: 0,
       phone: '5543991938235',
@@ -196,9 +212,9 @@ describe('extractPhonesViaRoot', () => {
 
   it('passes the shared logger through to the normalizer for malformed phones', async () => {
     const logger = { warn: vi.fn() }
-    // 11-digit ph (no country code, but >= 10 so the parser still extracts it)
-    // — normalizer should warn that the shape is unrecognized.
-    const malformed = `<map><string name="ph">12345678901</string></map>`
+    // 14-digit ph with non-BR cc — parser accepts (ph >= 12), normalizer
+    // can't recognize the shape and must log a warning.
+    const malformed = `<map><string name="ph">12345678901234</string></map>`
     const adb = makeAdb((_s, cmd) => {
       if (cmd.includes('su -c id')) return 'uid=0(root)'
       if (cmd.includes('ls /data/user')) return '0'
