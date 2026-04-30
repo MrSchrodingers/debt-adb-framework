@@ -10,7 +10,7 @@ import { AdbBridge } from './adb/index.js'
 import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, SenderScoring, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender } from './engine/index.js'
 import { DispatchPauseState, type PauseScope } from './engine/dispatch-pause-state.js'
 import { DispatchEmitter } from './events/index.js'
-import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes, registerMessageTimelineRoutes, registerAdminMessageRoutes, registerInsightsHeatmapRoutes, registerAckRateRoutes, registerFleetRoutes, registerSetupWizardRoutes } from './api/index.js'
+import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes, registerMessageTimelineRoutes, registerAdminMessageRoutes, registerInsightsHeatmapRoutes, registerAckRateRoutes, registerQualityRoutes, registerFleetRoutes, registerSetupWizardRoutes } from './api/index.js'
 import { ChipRegistry } from './fleet/index.js'
 import { HygieneLog, AutoHygiene, SetupWizardStore } from './devices/index.js'
 import { registerAnomalyRoutes, registerChanged24hRoutes } from './insights/index.js'
@@ -46,6 +46,10 @@ import type { DispatchEventName } from './events/index.js'
 import type { DispatchPlugin, PluginRecord } from './plugins/types.js'
 import { BanPredictionDaemon, type SerialResolver, type ThresholdProvider } from './research/ban-prediction-daemon.js'
 import { AckRateThresholds } from './research/ack-rate-thresholds.js'
+import { QualityHistory } from './research/quality-history.js'
+import { QualityWatcher } from './research/quality-watcher.js'
+import { BurstDetector } from './research/burst-detector.js'
+import { composeQualityInputs, fleetMedianReadRatio } from './research/quality-composer.js'
 import { AckPersistFailures } from './waha/ack-persist-failures.js'
 
 export interface DispatchCore {
@@ -441,6 +445,31 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     persistFailures: ackPersistFailures,
   })
 
+  const qualityHistory = new QualityHistory(db)
+  qualityHistory.initialize()
+  const FLEET_MEDIAN_TTL_MS = 60_000
+  let cachedFleetMedian = { value: 0, computedAt: 0 }
+  const getFleetMedian = (): number => {
+    const now = Date.now()
+    if (now - cachedFleetMedian.computedAt > FLEET_MEDIAN_TTL_MS) {
+      cachedFleetMedian = { value: fleetMedianReadRatio(db, now, 24), computedAt: now }
+    }
+    return cachedFleetMedian.value
+  }
+  registerQualityRoutes(server, {
+    db,
+    history: qualityHistory,
+    chips: chipRegistry,
+    composerFactory: (senderPhone) => ({
+      senderPhone,
+      db,
+      chips: chipRegistry,
+      warmup: senderWarmup,
+      now: Date.now(),
+      fleetMedianReadRatio: getFleetMedian(),
+    }),
+  })
+
   // Manual phone number mapping moved to api/devices.ts
 
   // Reset permanently_failed → queued (manual recovery for lost messages)
@@ -532,6 +561,85 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // Hoisted before plugins so adb-precheck's hygienization mode can wire it.
   const pauseState = new DispatchPauseState(db, emitter)
   pauseState.initialize()
+
+  // Quality watcher + burst detector — wired after pauseState so the burst
+  // breaker hits the global scope and stays idempotent across resumes.
+  const qualityBurstDetector = new BurstDetector({
+    threshold: Number(process.env.DISPATCH_QUALITY_BURST_THRESHOLD ?? 3),
+    windowMs: Number(process.env.DISPATCH_QUALITY_BURST_WINDOW_MS ?? 10 * 60_000),
+    alert: (e) => {
+      void sendCriticalAlert({
+        title: 'Fleet burst detected',
+        severity: 'critical',
+        summary: e.reason,
+        fields: { affected: e.affected.join(', '), kind: e.kind },
+        source: 'dispatch-core/quality',
+      })
+    },
+    pauseGlobal: (reason) => {
+      pauseState.pause('global', '*', reason, 'quality-burst-detector')
+    },
+    isPausedGlobally: () => pauseState.isPaused({}).paused,
+  })
+  emitter.on('dispatch:resumed', (e) => {
+    if (e.scope === 'global') qualityBurstDetector.reset()
+  })
+
+  const qualityWatcher = new QualityWatcher({
+    history: qualityHistory,
+    composer: (senderPhone: string) => composeQualityInputs({
+      senderPhone, db, chips: chipRegistry, warmup: senderWarmup, now: Date.now(),
+      fleetMedianReadRatio: getFleetMedian(),
+    }),
+    listSenders: () => senderMapping.listAll().map((r) => r.phone_number).filter((p): p is string => Boolean(p)),
+    pauseSender: (phone, reason) => senderMapping.pauseSender(phone, reason),
+    isPaused: (phone) => senderMapping.isPaused(phone),
+    alert: (e) => {
+      void sendCriticalAlert({
+        title: e.kind === 'low_score' ? 'Quality score dropped below threshold' : 'Quality score rapid decline',
+        severity: 'warning',
+        summary: e.reason,
+        fields: {
+          sender: e.senderPhone, total: e.total, previous: e.previousTotal ?? '—', kind: e.kind,
+        },
+        source: 'dispatch-core/quality',
+      })
+      qualityBurstDetector.observeQuarantine(e.senderPhone)
+    },
+    thresholds: {
+      absolute: Number(process.env.DISPATCH_QUALITY_ABSOLUTE_THRESHOLD ?? 40),
+      deltaWindow24h: Number(process.env.DISPATCH_QUALITY_DELTA_WINDOW_24H ?? -30),
+    },
+    logger: { warn: (msg, ctx) => server.log.warn({ ctx }, msg) },
+    audit: (entry) => auditLogger.log({
+      actor: 'quality-watcher',
+      action: entry.action,
+      resourceType: 'sender',
+      resourceId: entry.senderPhone,
+      afterState: { total: entry.total, previousTotal: entry.previousTotal, reason: entry.reason },
+    }),
+  })
+  const qualityIntervalMs = Number(process.env.DISPATCH_QUALITY_INTERVAL_MS ?? 60 * 60_000)
+  if (qualityIntervalMs > 0) {
+    setInterval(() => {
+      try { qualityWatcher.tick() } catch (err) {
+        server.log.error({ err: String(err) }, 'quality-watcher tick failed')
+      }
+    }, qualityIntervalMs).unref()
+    server.log.info({ intervalMs: qualityIntervalMs }, 'quality-watcher scheduled')
+  }
+  const qualityRetentionDays = Number(process.env.DISPATCH_QUALITY_RETENTION_DAYS ?? 90)
+  const qualityPruneIntervalMs = Number(process.env.DISPATCH_QUALITY_PRUNE_INTERVAL_MS ?? 24 * 60 * 60_000)
+  if (qualityRetentionDays > 0 && qualityPruneIntervalMs > 0) {
+    setInterval(() => {
+      try {
+        const pruned = qualityHistory.prune(qualityRetentionDays)
+        if (pruned > 0) server.log.info({ pruned, retentionDays: qualityRetentionDays }, 'quality-history pruned')
+      } catch (err) {
+        server.log.error({ err: String(err) }, 'quality-history prune failed')
+      }
+    }, qualityPruneIntervalMs).unref()
+  }
 
   // ── Plugin System (Phase 7) ──
   const pluginRegistry = new PluginRegistry(db)

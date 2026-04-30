@@ -3,6 +3,7 @@ import { AlertTriangle, RefreshCw, Trash2, Search, Database, ShieldOff, PauseCir
 import { useTranslation } from 'react-i18next'
 import { CORE_URL, authHeaders } from '../config'
 import { AckRatePage } from './ack-rate-page'
+import { QualityDashboard } from './quality-dashboard'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -431,7 +432,7 @@ function PausePanel() {
 
 // ── Main page ──────────────────────────────────────────────────────────────
 
-type AdminTab = 'dead-letter' | 'banned' | 'pause' | 'ack-rate'
+type AdminTab = 'dead-letter' | 'banned' | 'pause' | 'ack-rate' | 'quality'
 
 export function AdminPage() {
   const { t } = useTranslation()
@@ -441,10 +442,12 @@ export function AdminPage() {
     if (id === 'pause') return t('admin.pauseTab')
     if (id === 'dead-letter') return t('admin.deadLetterTab')
     if (id === 'banned') return t('admin.bannedTab')
+    if (id === 'quality') return t('admin.qualityTab')
     return t('admin.ackRateTab')
   }
   const tabIcon = (id: AdminTab) => {
     if (id === 'ack-rate') return <Gauge className="h-3.5 w-3.5" />
+    if (id === 'quality') return <Gauge className="h-3.5 w-3.5" />
     return null
   }
 
@@ -456,7 +459,7 @@ export function AdminPage() {
       </div>
 
       <div className="flex gap-2 border-b border-zinc-800 flex-wrap">
-        {(['pause', 'dead-letter', 'banned', 'ack-rate'] as AdminTab[]).map(id => (
+        {(['pause', 'dead-letter', 'banned', 'quality', 'ack-rate'] as AdminTab[]).map(id => (
           <button
             key={id}
             onClick={() => setTab(id)}
@@ -475,6 +478,7 @@ export function AdminPage() {
       {tab === 'pause' && <PausePanel />}
       {tab === 'dead-letter' && <DeadLetterPanel />}
       {tab === 'banned' && <BannedNumbersPanel />}
+      {tab === 'quality' && <QualityDashboard />}
       {tab === 'ack-rate' && <AckRatePage />}
     </div>
   )
