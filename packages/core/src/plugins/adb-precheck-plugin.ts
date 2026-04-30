@@ -359,7 +359,22 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     // Materialise the resolved flag back onto params so it lands in
     // params_json (operators can audit exactly what was decided).
     const hygienizationMode = rawParams.hygienization_mode === true
-    const params = { ...rawParams, pipedrive_enabled: pipedriveEnabled, hygienization_mode: hygienizationMode }
+
+    // Default freshness window: when the caller omits `recheck_after_days`,
+    // treat scans as incremental (skip deals scanned in the last N days). The
+    // env knob lets operators override globally; pass an explicit value (incl.
+    // 0 for force-rescan-all) to bypass. Without this default, the scanner
+    // re-iterates the same first-page deals every run — every cache hit
+    // counts toward `limit`, so a 10-deal budget is exhausted by the same
+    // 10 already-validated deals forever.
+    const defaultRecheckDays = Number(process.env.PLUGIN_ADB_PRECHECK_DEFAULT_RECHECK_AFTER_DAYS ?? 30)
+    const recheckAfterDays = rawParams.recheck_after_days ?? defaultRecheckDays
+    const params = {
+      ...rawParams,
+      recheck_after_days: recheckAfterDays,
+      pipedrive_enabled: pipedriveEnabled,
+      hygienization_mode: hygienizationMode,
+    }
     const job = this.store.createJob(params, external_ref, { pipedriveEnabled, hygienizationMode })
     if (job.status === 'queued') {
       // Fire-and-forget; progress visible via GET /scan/:id
