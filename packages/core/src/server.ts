@@ -456,6 +456,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     }
     return cachedFleetMedian.value
   }
+  let qualityWatcherRef: QualityWatcher | null = null
   registerQualityRoutes(server, {
     db,
     history: qualityHistory,
@@ -468,6 +469,12 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       now: Date.now(),
       fleetMedianReadRatio: getFleetMedian(),
     }),
+    manualTick: () => {
+      if (!qualityWatcherRef) throw new Error('quality watcher not yet initialized')
+      const senders = senderMapping.listAll().filter((r) => r.phone_number).length
+      qualityWatcherRef.tick()
+      return { senders }
+    },
   })
 
   // Manual phone number mapping moved to api/devices.ts
@@ -585,7 +592,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     if (e.scope === 'global') qualityBurstDetector.reset()
   })
 
-  const qualityWatcher = new QualityWatcher({
+  qualityWatcherRef = new QualityWatcher({
     history: qualityHistory,
     composer: (senderPhone: string) => composeQualityInputs({
       senderPhone, db, chips: chipRegistry, warmup: senderWarmup, now: Date.now(),
@@ -622,7 +629,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const qualityIntervalMs = Number(process.env.DISPATCH_QUALITY_INTERVAL_MS ?? 60 * 60_000)
   if (qualityIntervalMs > 0) {
     setInterval(() => {
-      try { qualityWatcher.tick() } catch (err) {
+      try { qualityWatcherRef!.tick() } catch (err) {
         server.log.error({ err: String(err) }, 'quality-watcher tick failed')
       }
     }, qualityIntervalMs).unref()

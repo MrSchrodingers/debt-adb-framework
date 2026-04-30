@@ -122,6 +122,27 @@ describe('quality API', () => {
     expect(tim.banRate).toBe(0.5)
   })
 
+  it('POST /tick returns 503 when manualTick not wired', async () => {
+    const res = await server.inject({ method: 'POST', url: '/api/v1/quality/tick' })
+    expect(res.statusCode).toBe(503)
+  })
+
+  it('POST /tick invokes manualTick and returns processed senders', async () => {
+    let invoked = 0
+    const tickServer = Fastify()
+    registerQualityRoutes(tickServer, {
+      db, history, chips,
+      composerFactory: (phone) => ({ senderPhone: phone, db, chips, warmup, now: Date.now() }),
+      manualTick: () => { invoked++; return { senders: 7 } },
+    })
+    await tickServer.ready()
+    const res = await tickServer.inject({ method: 'POST', url: '/api/v1/quality/tick' })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ ok: true, senders: 7 })
+    expect(invoked).toBe(1)
+    await tickServer.close()
+  })
+
   it('GET /fleet-median returns 0..1', async () => {
     const res = await server.inject({ method: 'GET', url: '/api/v1/quality/fleet-median' })
     expect(res.statusCode).toBe(200)

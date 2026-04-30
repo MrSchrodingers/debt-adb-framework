@@ -63,6 +63,7 @@ export class PipedrivePublisher {
     private readonly logger: PluginLogger,
     private readonly store?: PipedriveActivityStore,
     private readonly companyDomain?: string | null,
+    private readonly idempotencyWindowMs: number = 30 * 24 * 60 * 60_000,
   ) {}
 
   enqueueDealAllFail(intent: PipedriveDealAllFailIntent, meta?: Partial<PublisherEnqueueMeta>): string | null {
@@ -105,8 +106,28 @@ export class PipedrivePublisher {
 
   private add(intent: PipedriveOutgoingIntent, meta: PublisherEnqueueMeta): string | null {
     if (this.seenDedupKeys.has(intent.dedup_key)) {
-      this.logger.debug('pipedrive intent deduped', { dedup_key: intent.dedup_key })
+      this.logger.debug('pipedrive intent deduped (in-memory)', { dedup_key: intent.dedup_key })
       return null
+    }
+    if (this.store) {
+      const sinceIso = new Date(Date.now() - this.idempotencyWindowMs).toISOString()
+      const existing = this.store.hasRecentSuccess({
+        scenario: meta.scenario,
+        deal_id: meta.deal_id,
+        pasta: meta.pasta ?? null,
+        phone_normalized: meta.phone_normalized ?? null,
+        sinceIso,
+      })
+      if (existing) {
+        this.logger.debug('pipedrive intent deduped (store)', {
+          dedup_key: intent.dedup_key,
+          scenario: meta.scenario,
+          deal_id: meta.deal_id,
+          pasta: meta.pasta ?? null,
+        })
+        this.seenDedupKeys.add(intent.dedup_key)
+        return null
+      }
     }
     this.seenDedupKeys.add(intent.dedup_key)
     let rowId: string | null = null

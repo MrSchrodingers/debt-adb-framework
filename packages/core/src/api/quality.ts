@@ -16,6 +16,8 @@ export interface QualityApiDeps {
   history: QualityHistory
   chips: ChipRegistry
   composerFactory: (senderPhone: string) => ComposeDeps
+  /** Optional manual tick — runs the full watcher loop synchronously. */
+  manualTick?: () => { senders: number }
 }
 
 const trendQuerySchema = z.object({
@@ -129,6 +131,18 @@ export function registerQualityRoutes(server: FastifyInstance, deps: QualityApiD
         banRate: r.total > 0 ? r.banned / r.total : 0,
       })),
     })
+  })
+
+  server.post('/api/v1/quality/tick', async (_request, reply) => {
+    if (!deps.manualTick) {
+      return reply.status(503).send({ error: 'manual_tick_not_wired' })
+    }
+    try {
+      const result = deps.manualTick()
+      return reply.send({ ok: true, senders: result.senders })
+    } catch (err) {
+      return reply.status(500).send({ error: 'tick_failed', detail: String(err) })
+    }
   })
 
   server.get('/api/v1/quality/fleet-median', async (_request, reply) => {

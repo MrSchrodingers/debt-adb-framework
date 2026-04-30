@@ -95,6 +95,13 @@ const SCHEMA_SQL = `
     ON pipedrive_activities(pipedrive_response_status, created_at);
   CREATE INDEX IF NOT EXISTS idx_pipedrive_scenario
     ON pipedrive_activities(scenario, created_at);
+  CREATE INDEX IF NOT EXISTS idx_pipedrive_idempotency
+    ON pipedrive_activities(
+      scenario, deal_id,
+      COALESCE(pasta, ''),
+      COALESCE(phone_normalized, ''),
+      created_at
+    );
 `
 
 export class PipedriveActivityStore {
@@ -162,6 +169,42 @@ export class PipedriveActivityStore {
         update.status,
         id,
       )
+  }
+
+  /**
+   * Returns true when the same (scenario, deal_id, pasta, phone) tuple was
+   * successfully published within the lookback window. Used by the publisher
+   * to suppress duplicate Pipedrive activities across scan runs and process
+   * restarts (formatter dedup_key includes job_id, which is per-scan, so the
+   * publisher's in-memory Set cannot enforce cross-scan idempotency).
+   */
+  hasRecentSuccess(params: {
+    scenario: string
+    deal_id: number
+    pasta: string | null
+    phone_normalized: string | null
+    sinceIso: string
+  }): boolean {
+    const row = this.db
+      .prepare(`
+        SELECT 1
+        FROM pipedrive_activities
+        WHERE scenario = ?
+          AND deal_id = ?
+          AND COALESCE(pasta, '') = COALESCE(?, '')
+          AND COALESCE(phone_normalized, '') = COALESCE(?, '')
+          AND pipedrive_response_status = 'success'
+          AND created_at >= ?
+        LIMIT 1
+      `)
+      .get(
+        params.scenario,
+        params.deal_id,
+        params.pasta,
+        params.phone_normalized,
+        params.sinceIso,
+      ) as { 1: number } | undefined
+    return Boolean(row)
   }
 
   getById(id: string): PipedriveActivityRow | null {

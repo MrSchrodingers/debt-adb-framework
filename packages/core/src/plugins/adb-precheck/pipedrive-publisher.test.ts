@@ -103,13 +103,63 @@ describe('PipedrivePublisher — dedup', () => {
     expect(dispatch).toHaveBeenCalledTimes(1)
   })
 
-  it('different job_ids are not deduped', async () => {
+  it('different job_ids are not deduped (in-memory only, no store)', async () => {
     const { client, dispatch } = fakeClient()
     const pub = new PipedrivePublisher(client, fakeLogger())
     pub.enqueueDealAllFail(dealFail)
     pub.enqueueDealAllFail({ ...dealFail, job_id: 'job2' })
     await pub.flush()
     expect(dispatch).toHaveBeenCalledTimes(2)
+  })
+
+  it('store-backed dedup: skips re-publish for same (scenario, deal, pasta) across jobs', async () => {
+    const db = new Database(':memory:')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    const { client, dispatch } = fakeClient()
+    const pub = new PipedrivePublisher(client, fakeLogger(), store)
+    pub.enqueueDealAllFail(dealFail)
+    await pub.flush()
+    expect(dispatch).toHaveBeenCalledTimes(1)
+    pub.enqueueDealAllFail({ ...dealFail, job_id: 'job2' })
+    await pub.flush()
+    expect(dispatch).toHaveBeenCalledTimes(1)
+    db.close()
+  })
+
+  it('store-backed dedup: re-publish allowed after window expires', async () => {
+    const db = new Database(':memory:')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    const { client, dispatch } = fakeClient()
+    const pub = new PipedrivePublisher(client, fakeLogger(), store, null, 1)
+    pub.enqueueDealAllFail(dealFail)
+    await pub.flush()
+    await new Promise((r) => setTimeout(r, 5))
+    pub.enqueueDealAllFail({ ...dealFail, job_id: 'job2' })
+    await pub.flush()
+    expect(dispatch).toHaveBeenCalledTimes(2)
+    db.close()
+  })
+
+  it('store-backed dedup: failed runs do not block retry on next scan', async () => {
+    const db = new Database(':memory:')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    let calls = 0
+    const { client, dispatch } = fakeClient(async () => {
+      calls++
+      return calls === 1
+        ? { ok: false, attempts: 3, status: 500, error: 'boom' }
+        : { ok: true, attempts: 1, status: 201 }
+    })
+    const pub = new PipedrivePublisher(client, fakeLogger(), store)
+    pub.enqueueDealAllFail(dealFail)
+    await pub.flush()
+    pub.enqueueDealAllFail({ ...dealFail, job_id: 'job2' })
+    await pub.flush()
+    expect(dispatch).toHaveBeenCalledTimes(2)
+    db.close()
   })
 })
 
