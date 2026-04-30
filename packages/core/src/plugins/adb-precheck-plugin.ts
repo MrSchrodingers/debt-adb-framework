@@ -227,6 +227,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
 
     ctx.registerRoute('GET',  '/health',     this.handleHealth.bind(this))
     ctx.registerRoute('GET',  '/stats',      this.handleStats.bind(this))
+    ctx.registerRoute('GET',  '/stats/pool', this.handleStatsPool.bind(this))
     ctx.registerRoute('POST', '/scan',       this.handleStartScan.bind(this))
     ctx.registerRoute('GET',  '/scan/:id',   this.handleGetJob.bind(this))
     ctx.registerRoute('POST', '/scan/:id/cancel', this.handleCancelJob.bind(this))
@@ -326,6 +327,51 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
 
   private async handleStats(_req: unknown, reply: unknown): Promise<unknown> {
     return (reply as { send: (x: unknown) => unknown }).send(this.store.aggregateStats())
+  }
+
+  /**
+   * Operator-facing pool inventory: how many deals are in the upstream pool
+   * (Pipeboard PG), how many we've already covered, how many are still fresh
+   * within the recheck window, and how many are due for re-scan. Helps answer
+   * "is the scanner stuck or just waiting on input?" without trawling logs.
+   */
+  private async handleStatsPool(req: unknown, reply: unknown): Promise<unknown> {
+    const r = reply as { status: (c: number) => { send: (x: unknown) => unknown }; send: (x: unknown) => unknown }
+    const query = (req as { query?: { recheck_after_days?: string | number } }).query ?? {}
+    const defaultRecheckDays = Number(process.env.PLUGIN_ADB_PRECHECK_DEFAULT_RECHECK_AFTER_DAYS ?? 30)
+    const recheckAfterDays = query.recheck_after_days !== undefined
+      ? Number(query.recheck_after_days)
+      : defaultRecheckDays
+    if (!Number.isFinite(recheckAfterDays) || recheckAfterDays < 0) {
+      return r.status(400).send({ error: 'invalid_recheck_after_days' })
+    }
+
+    let poolTotal: number | null
+    let poolError: string | null = null
+    try {
+      poolTotal = await this.pg.countPool({})
+    } catch (e) {
+      poolTotal = null
+      poolError = e instanceof Error ? e.message : String(e)
+    }
+
+    const thresholdIso = new Date(Date.now() - recheckAfterDays * 86_400_000).toISOString()
+    const { fresh, total: scannedTotal } = this.store.countScannedSince(thresholdIso)
+    const stale = Math.max(0, scannedTotal - fresh)
+    const pending = poolTotal !== null ? Math.max(0, poolTotal - fresh) : null
+    const coveragePercent = poolTotal && poolTotal > 0 ? (scannedTotal / poolTotal) * 100 : 0
+
+    return r.status(200).send({
+      recheck_after_days: recheckAfterDays,
+      threshold_iso: thresholdIso,
+      pool_total: poolTotal,
+      pool_error: poolError,
+      scanned_total: scannedTotal,
+      fresh_count: fresh,
+      stale_count: stale,
+      pending_count: pending,
+      coverage_percent: Number(coveragePercent.toFixed(2)),
+    })
   }
 
   private async handleStartScan(req: unknown, reply: unknown): Promise<unknown> {

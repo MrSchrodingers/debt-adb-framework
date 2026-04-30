@@ -235,6 +235,22 @@ export class PrecheckJobStore {
     return rows
   }
 
+  /**
+   * Returns the count of distinct deals scanned at any time (entire history)
+   * and the count scanned within the freshness window starting at
+   * `thresholdIso`. Used by /stats/pool to expose the operator-facing view of
+   * how many deals are still pending vs already covered.
+   */
+  countScannedSince(thresholdIso: string): { fresh: number; total: number } {
+    const fresh = (this.db
+      .prepare(`SELECT COUNT(*) AS n FROM adb_precheck_deals WHERE scanned_at >= ?`)
+      .get(thresholdIso) as { n: number }).n
+    const total = (this.db
+      .prepare(`SELECT COUNT(*) AS n FROM adb_precheck_deals`)
+      .get() as { n: number }).n
+    return { fresh, total }
+  }
+
   upsertDeal(jobId: string, result: DealResult): void {
     this.db
       .prepare(
