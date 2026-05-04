@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import type { ManagedSessions } from './managed-sessions.js'
+import { normalizeBrPhone } from '../monitor/phone-normalizer.js'
 
 /**
  * Resolves `managed_sessions.device_serial + profile_id` automatically
@@ -67,9 +68,19 @@ export class ManagedSessionAutoAttacher {
         unresolved++
         continue
       }
+      // Canonicalize both sides through the same BR normalizer so
+      // the 9-prefix gap (12-digit WAHA `554396835100` vs 13-digit
+      // root-scanned `5543996835100`) collapses into a single
+      // comparable form. The 9 sits between DDD and number — it's
+      // NOT a suffix, so plain endsWith() misses it.
+      const sessNorm = normalizeBrPhone(s.phoneNumber).phone
       const sessDigits = s.phoneNumber.replace(/\D/g, '')
       const acc = accounts.find((a) => {
+        const accNorm = normalizeBrPhone(a.phone_number).phone
         const accDigits = a.phone_number.replace(/\D/g, '')
+        if (sessNorm && accNorm && sessNorm === accNorm) return true
+        // Last-resort raw-digit comparison for non-BR numbers (the
+        // normalizer returns empty for those).
         return (
           accDigits === sessDigits ||
           accDigits.endsWith(sessDigits) ||
