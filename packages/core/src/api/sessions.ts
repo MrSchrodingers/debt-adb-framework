@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import type { InboxAutomation } from '../chatwoot/inbox-automation.js'
 import type { ManagedSessions } from '../chatwoot/managed-sessions.js'
+import type { ManagedSessionAutoAttacher } from '../chatwoot/managed-session-auto-attach.js'
 import type { SenderMapping } from '../engine/sender-mapping.js'
 
 /**
@@ -24,6 +25,7 @@ interface SessionDeps {
   inboxAutomation: InboxAutomation | null
   managedSessions: ManagedSessions
   senderMapping?: SenderMapping
+  autoAttacher?: ManagedSessionAutoAttacher
 }
 
 const bulkManagedSchema = z.object({
@@ -107,6 +109,28 @@ export function registerSessionRoutes(server: FastifyInstance, deps: SessionDeps
       }
       throw err
     }
+  })
+
+  // --- Auto-attach: scan whatsapp_accounts and resolve every managed
+  // session whose phoneNumber matches an on-device account. Operator
+  // hits this from the UI as "Re-detectar mapeamentos" — no manual
+  // device/profile picking needed when the data is already there. ---
+  server.post('/api/v1/sessions/managed/auto-attach', async (_request, reply) => {
+    if (!deps.autoAttacher) {
+      return reply.status(503).send({ error: 'auto-attacher not configured' })
+    }
+    const result = deps.autoAttacher.autoAttachAll()
+    if (deps.senderMapping) {
+      // Sender_mapping needs to mirror the new attachments so /pair
+      // resolves correctly afterwards.
+      try {
+        const r = deps.senderMapping.reconcileFromWhatsappAccounts()
+        return reply.status(200).send({ ...result, sender_reconcile: r })
+      } catch {
+        // Reconcile failure is non-fatal for the attach itself.
+      }
+    }
+    return reply.status(200).send(result)
   })
 
   // --- Attach session to device + profile (required before pairing) ---

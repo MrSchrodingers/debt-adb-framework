@@ -21,6 +21,7 @@ import { DeviceManager, HealthCollector, WaAccountMapper, AlertSystem, extractPh
 import { SessionManager, WebhookHandler, MessageHistory, AckHistory } from './waha/index.js'
 import { createWahaHttpClient } from './waha/waha-http-client.js'
 import { createChatwootHttpClient, ManagedSessions, InboxAutomation } from './chatwoot/index.js'
+import { ManagedSessionAutoAttacher } from './chatwoot/managed-session-auto-attach.js'
 import { PluginRegistry, PluginEventBus, CallbackDelivery, PluginLoader } from './plugins/index.js'
 import { buildLoggerConfig } from './config/logger.js'
 import { GracefulShutdown } from './config/graceful-shutdown.js'
@@ -323,6 +324,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // Initialize managed sessions table (always available, even without WAHA/Chatwoot)
   const managedSessions = new ManagedSessions(db)
   managedSessions.initialize()
+  const sessionAutoAttacher = new ManagedSessionAutoAttacher(managedSessions, db)
 
   if (wahaApiUrl && wahaApiKey) {
     const wahaClient = createWahaHttpClient(wahaApiUrl, wahaApiKey)
@@ -410,9 +412,15 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // senderMapping exists. The PUT /sessions/managed/:name/device
   // handler reads `deps.senderMapping` at request time, not at boot,
   // so this resolves correctly.
-  const sessionDeps: { inboxAutomation: typeof inboxAutomation; managedSessions: typeof managedSessions; senderMapping?: import('./engine/sender-mapping.js').SenderMapping } = {
+  const sessionDeps: {
+    inboxAutomation: typeof inboxAutomation
+    managedSessions: typeof managedSessions
+    senderMapping?: import('./engine/sender-mapping.js').SenderMapping
+    autoAttacher?: ManagedSessionAutoAttacher
+  } = {
     inboxAutomation,
     managedSessions,
+    autoAttacher: sessionAutoAttacher,
   }
   registerSessionRoutes(server, sessionDeps)
 
@@ -564,10 +572,21 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // ── Sender Mapping (DP-1) ──
   const senderMapping = new SenderMapping(db, senderScoring, senderHealth)
   senderMapping.initialize()
-  // Boot-time reconcile: kill any sender row whose (device, profile,
-  // package) no longer holds the same number in whatsapp_accounts —
-  // those are phantoms left by previous scans (the most common case
-  // is a number that was logged out / replaced on the device).
+  // Boot-time reconcile, in order:
+  //   1. Auto-attach managed sessions to (device, profile) by matching
+  //      session.phoneNumber against whatsapp_accounts.phone_number.
+  //      This populates managed_sessions.device_serial without any
+  //      manual UI interaction whenever the device is reachable.
+  //   2. Reconcile sender_mapping with whatsapp_accounts truth — kill
+  //      phantoms, insert real senders for newly-mapped accounts.
+  try {
+    const attachResult = sessionAutoAttacher.autoAttachAll()
+    if (attachResult.matched > 0) {
+      server.log.warn({ ...attachResult }, 'managed_sessions boot auto-attach')
+    }
+  } catch (err) {
+    server.log.error({ err }, 'managed_sessions boot auto-attach failed')
+  }
   try {
     const reapResult = senderMapping.reconcileFromWhatsappAccounts()
     if (reapResult.inserted + reapResult.updated + reapResult.deleted > 0) {
@@ -1533,10 +1552,18 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         server.log.error({ err, serial: device.serial }, 'WA account mapping failed for device')
       }
     }
-    // After re-scanning every device, propagate the new truth to
-    // sender_mapping. Removes phantoms (number left the device),
-    // inserts new senders (account paired since last cycle), and
-    // refreshes (device, profile, package) when an account moved.
+    // After re-scanning every device, propagate the new truth:
+    //   1. Auto-attach any managed session whose number matches a
+    //      profile that just came online.
+    //   2. Reconcile sender_mapping (insert real, kill phantoms).
+    try {
+      const a = sessionAutoAttacher.autoAttachAll()
+      if (a.matched > 0) {
+        server.log.info({ ...a }, 'managed_sessions auto-attached after device scan')
+      }
+    } catch (err) {
+      server.log.error({ err }, 'managed_sessions auto-attach failed')
+    }
     try {
       const r = senderMapping.reconcileFromWhatsappAccounts()
       if (r.inserted + r.updated + r.deleted > 0) {
