@@ -8,6 +8,8 @@ export interface SessionWithStatus {
   phoneNumber: string | null
   managed: boolean
   chatwootInboxId: number | null
+  deviceSerial: string | null
+  profileId: number | null
 }
 
 export interface BulkManagedResult {
@@ -126,6 +128,8 @@ export class InboxAutomation {
         phoneNumber: extractPhone(ws),
         managed: managed?.managed ?? false,
         chatwootInboxId,
+        deviceSerial: managed?.deviceSerial ?? null,
+        profileId: managed?.profileId ?? null,
       }
     })
   }

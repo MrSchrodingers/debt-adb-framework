@@ -404,8 +404,17 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // sessionManager may be null if WAHA_API_URL not configured
   // WAHA routes registered after senderMapping init (see below)
 
-  // Session management routes (Phase 5)
-  registerSessionRoutes(server, { inboxAutomation, managedSessions })
+  // Session management routes (Phase 5).
+  // senderMapping is instantiated further down (right before the WAHA
+  // routes); we pass a mutable deps object and fill it in once
+  // senderMapping exists. The PUT /sessions/managed/:name/device
+  // handler reads `deps.senderMapping` at request time, not at boot,
+  // so this resolves correctly.
+  const sessionDeps: { inboxAutomation: typeof inboxAutomation; managedSessions: typeof managedSessions; senderMapping?: import('./engine/sender-mapping.js').SenderMapping } = {
+    inboxAutomation,
+    managedSessions,
+  }
+  registerSessionRoutes(server, sessionDeps)
 
   // Metrics routes (Phase 6)
   registerMetricsRoutes(server, db)
@@ -555,6 +564,9 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // ── Sender Mapping (DP-1) ──
   const senderMapping = new SenderMapping(db, senderScoring, senderHealth)
   senderMapping.initialize()
+  // Late-binding: the session routes registered earlier read this in
+  // request handlers (not at boot), so wiring it now is safe.
+  sessionDeps.senderMapping = senderMapping
   registerSenderMappingRoutes(server, senderMapping, auditLogger)
   registerSenderRoutes(server, { senderWarmup, senderMapping, senderHealth, queue, deviceManager })
 

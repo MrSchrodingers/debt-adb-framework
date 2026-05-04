@@ -194,7 +194,12 @@ export function registerWahaRoutes(server: FastifyInstance, deps: WahaDeps): voi
       // 1. Resolve session → sender mapping → profile_id + device_serial
       const mappings = senderMapping.listAll().filter(m => m.waha_session === name)
       if (mappings.length === 0) {
-        return reply.status(404).send({ error: `No sender mapping found for session ${name}` })
+        return reply.status(412).send({
+          error: 'session_not_attached',
+          detail:
+            `Session ${name} is not attached to any device/profile. ` +
+            `Call PUT /api/v1/sessions/managed/${name}/device with {device_serial, profile_id} first.`,
+        })
       }
       const mapping = mappings[0]
       const { device_serial: serial, profile_id: profileId } = mapping

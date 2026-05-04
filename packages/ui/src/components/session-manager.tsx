@@ -9,6 +9,14 @@ interface SessionWithStatus {
   phoneNumber: string | null
   managed: boolean
   chatwootInboxId: number | null
+  deviceSerial: string | null
+  profileId: number | null
+}
+
+interface DeviceWithProfiles {
+  serial: string
+  status?: string
+  profiles: Array<{ profileId: number; phoneNumber: string | null; packageName: string }>
 }
 
 interface QrData {
@@ -104,11 +112,103 @@ export function SessionManager() {
 
   const [pairing, setPairing] = useState<string | null>(null)
   const [pairSteps, setPairSteps] = useState<string[]>([])
+  const [devices, setDevices] = useState<DeviceWithProfiles[]>([])
+  // Per-session attach selection (pre-pair). Keyed by session name.
+  const [attachSelection, setAttachSelection] = useState<Record<string, { serial: string; profileId: number | null }>>({})
+
+  // Load devices + their profiles once on mount.
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        const r = await fetch(`${CORE_URL}/api/v1/monitor/devices`, { headers: authHeaders() })
+        if (!r.ok) return
+        const list = (await r.json()) as Array<{ serial: string; status?: string }>
+        const out: DeviceWithProfiles[] = await Promise.all(
+          list.map(async (d) => {
+            try {
+              const a = await fetch(
+                `${CORE_URL}/api/v1/monitor/devices/${encodeURIComponent(d.serial)}/accounts`,
+                { headers: authHeaders() },
+              )
+              if (!a.ok) return { serial: d.serial, status: d.status, profiles: [] }
+              const accs = (await a.json()) as Array<{
+                profileId: number
+                packageName: string
+                phoneNumber: string | null
+                stale?: boolean
+              }>
+              const profiles = accs
+                .filter((x) => !x.stale)
+                .map((x) => ({
+                  profileId: x.profileId,
+                  phoneNumber: x.phoneNumber,
+                  packageName: x.packageName,
+                }))
+              return { serial: d.serial, status: d.status, profiles }
+            } catch {
+              return { serial: d.serial, status: d.status, profiles: [] }
+            }
+          }),
+        )
+        if (!cancelled) setDevices(out)
+      } catch { /* ignore */ }
+    }
+    void load()
+    return () => { cancelled = true }
+  }, [])
+
+  const attachSessionToDevice = async (
+    sessionName: string,
+    deviceSerial: string,
+    profileId: number,
+  ): Promise<boolean> => {
+    try {
+      const r = await fetch(
+        `${CORE_URL}/api/v1/sessions/managed/${encodeURIComponent(sessionName)}/device`,
+        {
+          method: 'PUT',
+          headers: authHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ device_serial: deviceSerial, profile_id: profileId }),
+        },
+      )
+      if (!r.ok) {
+        const body = await r.text().catch(() => '')
+        setError(`Falha ao atribuir device (HTTP ${r.status}): ${body.slice(0, 200)}`)
+        return false
+      }
+      await fetchSessions()
+      return true
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'attach failed')
+      return false
+    }
+  }
 
   const handleShowQr = async (name: string) => {
     setPairing(name)
     setPairSteps([t('sessionManager.startingPairing')])
     setError(null)
+
+    // Pre-flight: if the session has no device yet, the operator must
+    // have picked one in the inline dropdown. Push that to the backend
+    // BEFORE asking for the QR — otherwise pair returns 412.
+    const session = sessions.find((s) => s.sessionName === name)
+    if (session && !session.deviceSerial) {
+      const sel = attachSelection[name]
+      if (!sel?.serial || sel.profileId === null) {
+        setError('Selecione device + profile antes de parear esta sessão.')
+        setPairing(null)
+        return
+      }
+      setPairSteps((prev) => [...prev, `Atribuindo ${sel.serial.slice(0, 12)}.../profile ${sel.profileId}...`])
+      const ok = await attachSessionToDevice(name, sel.serial, sel.profileId)
+      if (!ok) {
+        setPairing(null)
+        return
+      }
+      setPairSteps((prev) => [...prev, 'Atribuído. Iniciando pareamento...'])
+    }
 
     try {
       const res = await fetch(`${CORE_URL}/api/v1/waha/sessions/${encodeURIComponent(name)}/pair`, {
@@ -116,6 +216,11 @@ export function SessionManager() {
         headers: authHeaders(),
       })
       const data = await res.json()
+      if (res.status === 412) {
+        setError(data.detail || 'Sessão sem device atribuído. Selecione device + profile.')
+        setPairing(null)
+        return
+      }
 
       if (data.steps) setPairSteps(data.steps)
 
@@ -353,6 +458,13 @@ export function SessionManager() {
                 </div>
                 <div className="text-xs text-zinc-500">
                   {session.phoneNumber ?? t('sessionManager.noPhone')} · {session.wahaStatus}
+                  {session.deviceSerial ? (
+                    <span className="ml-2 text-zinc-600">
+                      · {session.deviceSerial.slice(0, 12)}…/profile {session.profileId}
+                    </span>
+                  ) : session.managed ? (
+                    <span className="ml-2 text-amber-500">· sem device atribuído</span>
+                  ) : null}
                 </div>
               </div>
 
@@ -386,6 +498,55 @@ export function SessionManager() {
                 )}
               </div>
             </div>
+
+            {/* Device + profile picker for managed sessions without
+                an attached device. Shown inline so the operator can
+                pick before clicking Pair. */}
+            {session.managed && !session.deviceSerial && (
+              <div className="mt-2 flex items-center gap-2">
+                <select
+                  value={attachSelection[session.sessionName]?.serial ?? ''}
+                  onChange={(e) =>
+                    setAttachSelection((prev) => ({
+                      ...prev,
+                      [session.sessionName]: { serial: e.target.value, profileId: null },
+                    }))
+                  }
+                  className="rounded bg-zinc-800 border border-zinc-700 px-2 py-1 text-xs text-zinc-200"
+                >
+                  <option value="">— device —</option>
+                  {devices.map((d) => (
+                    <option key={d.serial} value={d.serial} disabled={d.status !== 'online'}>
+                      {d.serial.slice(0, 12)}…
+                      {d.status !== 'online' ? ' (offline)' : ''}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={attachSelection[session.sessionName]?.profileId ?? ''}
+                  onChange={(e) =>
+                    setAttachSelection((prev) => ({
+                      ...prev,
+                      [session.sessionName]: {
+                        serial: prev[session.sessionName]?.serial ?? '',
+                        profileId: e.target.value === '' ? null : Number(e.target.value),
+                      },
+                    }))
+                  }
+                  disabled={!attachSelection[session.sessionName]?.serial}
+                  className="rounded bg-zinc-800 border border-zinc-700 px-2 py-1 text-xs text-zinc-200 disabled:opacity-50"
+                >
+                  <option value="">— profile —</option>
+                  {(devices.find((d) => d.serial === attachSelection[session.sessionName]?.serial)?.profiles ?? [])
+                    .map((p) => (
+                      <option key={p.profileId} value={p.profileId}>
+                        profile {p.profileId}
+                        {p.phoneNumber ? ` · ${p.phoneNumber}` : ' · vazio'}
+                      </option>
+                    ))}
+                </select>
+              </div>
+            )}
 
             {/* Inline inbox name input when creating */}
             {creatingInbox === session.sessionName && (
