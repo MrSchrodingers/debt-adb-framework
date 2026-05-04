@@ -2,10 +2,12 @@ import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import type { InboxAutomation } from '../chatwoot/inbox-automation.js'
 import type { ManagedSessions } from '../chatwoot/managed-sessions.js'
+import type { SenderMapping } from '../engine/sender-mapping.js'
 
 interface SessionDeps {
   inboxAutomation: InboxAutomation | null
   managedSessions: ManagedSessions
+  senderMapping?: SenderMapping
 }
 
 const bulkManagedSchema = z.object({
@@ -14,6 +16,11 @@ const bulkManagedSchema = z.object({
 
 const createInboxSchema = z.object({
   inboxName: z.string().min(1).optional(),
+})
+
+const attachDeviceSchema = z.object({
+  device_serial: z.string().min(1).max(64),
+  profile_id: z.number().int().min(0).max(99),
 })
 
 export function registerSessionRoutes(server: FastifyInstance, deps: SessionDeps): void {
@@ -78,6 +85,59 @@ export function registerSessionRoutes(server: FastifyInstance, deps: SessionDeps
     try {
       managedSessions.setManaged(name, true)
       return { ok: true, session: name, managed: true }
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('not found')) {
+        return reply.status(404).send({ error: 'Session not found' })
+      }
+      throw err
+    }
+  })
+
+  // --- Attach session to device + profile (required before pairing) ---
+  // Pairing flow needs (waha_session, device_serial, profile_id) in
+  // sender_mapping to know which Android user to switch to. This
+  // endpoint pins the session to a (device, profile), persists it on
+  // both managed_sessions and sender_mapping, and unblocks pair/QR.
+  server.put('/api/v1/sessions/managed/:name/device', async (request, reply) => {
+    const { name } = request.params as { name: string }
+    const parsed = attachDeviceSchema.safeParse(request.body ?? {})
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Invalid request', details: parsed.error.issues })
+    }
+    const session = managedSessions.get(name)
+    if (!session) {
+      return reply.status(404).send({ error: 'Session not found' })
+    }
+    try {
+      managedSessions.attachToDevice(name, parsed.data.device_serial, parsed.data.profile_id)
+      // Mirror into sender_mapping so /waha/sessions/:name/pair can
+      // resolve (device, profile). Phone number is a placeholder until
+      // pairing concludes — we use the session name to keep the unique
+      // constraint happy without colliding with real numbers.
+      if (deps.senderMapping) {
+        const placeholder = session.phoneNumber || `pending:${name}`
+        const existing = deps.senderMapping.getByPhone(placeholder)
+        if (existing) {
+          deps.senderMapping.update(placeholder, {
+            deviceSerial: parsed.data.device_serial,
+            profileId: parsed.data.profile_id,
+            wahaSession: name,
+          })
+        } else {
+          deps.senderMapping.create({
+            phoneNumber: placeholder,
+            deviceSerial: parsed.data.device_serial,
+            profileId: parsed.data.profile_id,
+            wahaSession: name,
+          })
+        }
+      }
+      return {
+        ok: true,
+        session: name,
+        device_serial: parsed.data.device_serial,
+        profile_id: parsed.data.profile_id,
+      }
     } catch (err) {
       if (err instanceof Error && err.message.includes('not found')) {
         return reply.status(404).send({ error: 'Session not found' })

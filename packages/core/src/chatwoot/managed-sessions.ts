@@ -32,6 +32,8 @@ export class ManagedSessions {
   private stmtListManaged!: Statement
   private stmtSetManaged!: Statement
   private stmtUpdateInbox!: Statement
+  private stmtAttachDevice!: Statement
+  private stmtSetPhone!: Statement
   private stmtRemove!: Statement
   private stmtFindByPhone!: Statement
   private stmtFindByDevice!: Statement
@@ -62,6 +64,12 @@ export class ManagedSessions {
     this.stmtListManaged = this.db.prepare('SELECT * FROM managed_sessions WHERE managed = 1 ORDER BY session_name')
     this.stmtSetManaged = this.db.prepare('UPDATE managed_sessions SET managed = ? WHERE session_name = ?')
     this.stmtUpdateInbox = this.db.prepare('UPDATE managed_sessions SET chatwoot_inbox_id = ? WHERE session_name = ?')
+    this.stmtAttachDevice = this.db.prepare(
+      'UPDATE managed_sessions SET device_serial = ?, profile_id = ? WHERE session_name = ?',
+    )
+    this.stmtSetPhone = this.db.prepare(
+      'UPDATE managed_sessions SET phone_number = ? WHERE session_name = ?',
+    )
     this.stmtRemove = this.db.prepare('DELETE FROM managed_sessions WHERE session_name = ?')
     this.stmtFindByPhone = this.db.prepare('SELECT * FROM managed_sessions WHERE phone_number = ? ORDER BY session_name')
     this.stmtFindByDevice = this.db.prepare('SELECT * FROM managed_sessions WHERE device_serial = ? ORDER BY session_name')
@@ -110,6 +118,23 @@ export class ManagedSessions {
 
   updateChatwootInboxId(sessionName: string, inboxId: number): void {
     this.stmtUpdateInbox.run(inboxId, sessionName)
+  }
+
+  /**
+   * Pin the session to a specific (device, profile). Without this the
+   * pairing flow has no way to resolve which Android user to switch to,
+   * and `/waha/sessions/:name/pair` returns 412.
+   */
+  attachToDevice(sessionName: string, deviceSerial: string, profileId: number): void {
+    const result = this.stmtAttachDevice.run(deviceSerial, profileId, sessionName)
+    if (result.changes === 0) {
+      throw new Error(`Session ${sessionName} not found`)
+    }
+  }
+
+  /** Update the phone_number after pairing completes. */
+  setPhoneNumber(sessionName: string, phoneNumber: string): void {
+    this.stmtSetPhone.run(phoneNumber, sessionName)
   }
 
   remove(sessionName: string): void {
