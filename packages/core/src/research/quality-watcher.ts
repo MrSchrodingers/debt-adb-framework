@@ -28,6 +28,16 @@ export interface QualityThresholds {
   absolute: number
   /** Pause when (current - past24h) <= deltaWindow24h. Negative number. */
   deltaWindow24h: number
+  /**
+   * Minimum lifetime sent (volumeToday + outboundLast7d) the sender
+   * must accumulate before auto-pause is allowed to fire. Brand-new
+   * senders score low purely because they have no history, not
+   * because they're misbehaving — pausing them on the first tick is
+   * useless and noisy. Default 5: enough to differentiate "it sent
+   * something, and the result was bad" from "it never sent anything
+   * and we're just looking at zero-data defaults".
+   */
+  minSentForPause?: number
 }
 
 export interface QualityAlertEvent {
@@ -87,6 +97,17 @@ export class QualityWatcher {
     }
 
     if (this.deps.isPaused(senderPhone)) {
+      return
+    }
+
+    // Warm-up gate: a sender that has never sent (or barely sent)
+    // can't possibly have a meaningful quality signal — every
+    // component that depends on send history is at its zero-data
+    // default. Pausing these is noise; let them accumulate enough
+    // history first. Default min = 5 lifetime sends.
+    const minSent = this.deps.thresholds.minSentForPause ?? 5
+    const lifetimeSent = (inputs.volumeToday ?? 0) + (inputs.outboundLast7d ?? 0)
+    if (lifetimeSent < minSent) {
       return
     }
 
