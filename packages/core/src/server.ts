@@ -40,6 +40,7 @@ import {
 } from './alerts/notifier.js'
 import { OralsinPlugin } from './plugins/oralsin-plugin.js'
 import { AdbPrecheckPlugin } from './plugins/adb-precheck-plugin.js'
+import { resolvePipeboardBackend } from './plugins/adb-precheck/index.js'
 import { AdbProbeStrategy, WahaCheckStrategy, CacheOnlyStrategy } from './check-strategies/index.js'
 import { ContactValidator } from './validator/contact-validator.js'
 import type { DispatchEventName } from './events/index.js'
@@ -691,6 +692,12 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
           webhookUrl: process.env.PLUGIN_ADB_PRECHECK_WEBHOOK_URL || '',
           pgConnectionString: pgUrl,
           pgMaxConnections: Number(process.env.PLUGIN_ADB_PRECHECK_PG_MAX || 4),
+          backend: resolvePipeboardBackend(process.env),
+          restBaseUrl: process.env.PLUGIN_ADB_PRECHECK_REST_BASE_URL,
+          restApiKey: process.env.PLUGIN_ADB_PRECHECK_REST_API_KEY,
+          restTimeoutMs: process.env.PLUGIN_ADB_PRECHECK_REST_TIMEOUT_MS
+            ? Number(process.env.PLUGIN_ADB_PRECHECK_REST_TIMEOUT_MS)
+            : undefined,
           defaultDeviceSerial: process.env.PLUGIN_ADB_PRECHECK_DEVICE_SERIAL,
           defaultWahaSession: process.env.PLUGIN_ADB_PRECHECK_WAHA_SESSION,
           hmacSecret: process.env.PLUGIN_ADB_PRECHECK_HMAC_SECRET,

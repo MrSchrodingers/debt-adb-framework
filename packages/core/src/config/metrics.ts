@@ -179,6 +179,35 @@ export const senderQuarantined = new Gauge({
   registers: [metricsRegistry],
 })
 
+/**
+ * adb-precheck → Pipeboard REST calls.
+ *
+ *   op:     invalidate | localize | deals | healthz
+ *   status: HTTP status code (200, 401, 409, 429, 5xx, ...) or
+ *           transport error class (network_error, timeout, enqueued).
+ *
+ * `enqueued` is emitted when the call failed with a retryable error
+ * and the writeback was persisted to `pending_writebacks` for later
+ * drain — important to differentiate from outright failure.
+ */
+export const precheckPipeboardRequestTotal = new Counter({
+  name: 'dispatch_precheck_pipeboard_request_total',
+  help: 'adb-precheck plugin requests to Pipeboard router, by op and status',
+  labelNames: ['op', 'status'] as const,
+  registers: [metricsRegistry],
+})
+
+/**
+ * Snapshot of the local pending_writebacks SQLite buffer. A growing
+ * value indicates Pipeboard is unreachable or rejecting with retryable
+ * errors.
+ */
+export const precheckPipeboardPendingWritebacks = new Gauge({
+  name: 'dispatch_precheck_pipeboard_pending_writebacks',
+  help: 'Writebacks queued locally because Pipeboard returned a retryable error',
+  registers: [metricsRegistry],
+})
+
 export async function getMetricsText(): Promise<string> {
   return metricsRegistry.metrics()
 }

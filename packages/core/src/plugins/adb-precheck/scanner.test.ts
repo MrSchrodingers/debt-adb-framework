@@ -47,6 +47,8 @@ interface FakeDeps {
     writeInvalid: ReturnType<typeof vi.fn>
     archiveDealIfEmpty: ReturnType<typeof vi.fn>
     writeLocalizado: ReturnType<typeof vi.fn>
+    applyDealInvalidation: ReturnType<typeof vi.fn>
+    applyDealLocalization: ReturnType<typeof vi.fn>
     listRecentlyScannedKeys?: ReturnType<typeof vi.fn>
   }
   validator: { validate: ReturnType<typeof vi.fn> }
@@ -79,6 +81,18 @@ function buildScanner(
     writeInvalid: vi.fn(async () => 1),
     archiveDealIfEmpty: vi.fn(async () => true),
     writeLocalizado: vi.fn(async () => undefined),
+    applyDealInvalidation: vi.fn(async () => ({
+      requestId: 'sql-fake',
+      idempotent: false,
+      applied: [],
+      archived: true,
+      clearedColumns: [],
+    })),
+    applyDealLocalization: vi.fn(async () => ({
+      requestId: 'sql-fake',
+      idempotent: false,
+      applied: true,
+    })),
   }
   const validator = { validate: vi.fn(async (p: string) => validateImpl(p)) }
   const store = {
@@ -133,20 +147,25 @@ describe('PrecheckScanner — blocklist + archive integration', () => {
 
     await scanner.runJob('job-X', { writeback_invalid: true })
 
-    expect(pg.recordInvalidPhone).toHaveBeenCalledTimes(1)
-    const [key, record] = pg.recordInvalidPhone.mock.calls[0]!
+    expect(pg.applyDealInvalidation).toHaveBeenCalledTimes(1)
+    const [key, payload] = pg.applyDealInvalidation.mock.calls[0]!
     expect(key).toEqual({ pasta: 'PASTA-001', deal_id: 42, contato_tipo: 'PRINCIPAL', contato_id: 7 })
-    expect(record).toMatchObject({
-      telefone: '5543991938235',
+    expect(payload).toMatchObject({
       motivo: 'whatsapp_nao_existe',
-      colunaOrigem: 'telefone_1',
-      invalidadoPor: 'dispatch_adb_precheck',
       jobId: 'job-X',
-      confidence: 0.93,
+      fonte: 'dispatch_adb_precheck',
+      archiveIfEmpty: true,
+      phones: [
+        {
+          telefone: '5543991938235',
+          colunaOrigem: 'telefone_1',
+          confidence: 0.93,
+        },
+      ],
     })
   })
 
-  it('calls archiveDealIfEmpty with motivo=todos_telefones_invalidos when no valid phone survived', async () => {
+  it('passes archiveIfEmpty=true when no valid phone survived', async () => {
     const { scanner, pg } = buildScanner(
       [buildRow()],
       () => ({
@@ -161,14 +180,13 @@ describe('PrecheckScanner — blocklist + archive integration', () => {
 
     await scanner.runJob('job-Y', { writeback_invalid: true })
 
-    expect(pg.writeInvalid).toHaveBeenCalledOnce()
-    expect(pg.archiveDealIfEmpty).toHaveBeenCalledWith(
-      expect.objectContaining({ deal_id: 42 }),
-      'todos_telefones_invalidos',
-    )
+    expect(pg.applyDealInvalidation).toHaveBeenCalledTimes(1)
+    const [key, payload] = pg.applyDealInvalidation.mock.calls[0]!
+    expect(key).toMatchObject({ deal_id: 42 })
+    expect(payload.archiveIfEmpty).toBe(true)
   })
 
-  it('does NOT archive when at least one phone is valid', async () => {
+  it('does NOT request archive when at least one phone is valid', async () => {
     const row = buildRow({ telefone_1: '5543991938235', telefone_2: '5511988887777' })
     const { scanner, pg } = buildScanner([row], (phone) => ({
       exists_on_wa: phone === '5543991938235' ? 0 : 1,
@@ -181,9 +199,11 @@ describe('PrecheckScanner — blocklist + archive integration', () => {
 
     await scanner.runJob('job-Z', { writeback_invalid: true })
 
-    expect(pg.recordInvalidPhone).toHaveBeenCalledTimes(1)
-    expect(pg.archiveDealIfEmpty).not.toHaveBeenCalled()
-    expect(pg.writeInvalid).not.toHaveBeenCalled()
+    expect(pg.applyDealInvalidation).toHaveBeenCalledTimes(1)
+    const [, payload] = pg.applyDealInvalidation.mock.calls[0]!
+    expect(payload.archiveIfEmpty).toBe(false)
+    expect(payload.phones).toHaveLength(1)
+    expect(payload.phones[0]!.telefone).toBe('5543991938235')
   })
 
   it('skips recordInvalidPhone and archive when writeback_invalid is false', async () => {
@@ -201,9 +221,8 @@ describe('PrecheckScanner — blocklist + archive integration', () => {
 
     await scanner.runJob('job-W', { writeback_invalid: false })
 
-    expect(pg.recordInvalidPhone).not.toHaveBeenCalled()
-    expect(pg.archiveDealIfEmpty).not.toHaveBeenCalled()
-    expect(pg.clearInvalidPhone).not.toHaveBeenCalled()
+    expect(pg.applyDealInvalidation).not.toHaveBeenCalled()
+    expect(pg.applyDealLocalization).not.toHaveBeenCalled()
   })
 })
 
@@ -318,7 +337,13 @@ describe('PrecheckScanner — Pipedrive integration', () => {
       confidence: 0.9,
       attempts: [],
     }))
-    pg.archiveDealIfEmpty.mockResolvedValueOnce(true) // first call returns archived
+    pg.applyDealInvalidation.mockResolvedValueOnce({
+      requestId: 'r-1',
+      idempotent: false,
+      applied: [{ telefone: '5543991938235', status: 'applied' }],
+      archived: true,
+      clearedColumns: ['telefone_1'],
+    })
 
     const scannerPipe = new PrecheckScanner({
       ...((scanner as unknown as { deps: ScannerDeps }).deps),
@@ -343,7 +368,13 @@ describe('PrecheckScanner — Pipedrive integration', () => {
       confidence: 0.9,
       attempts: [],
     }))
-    pg.archiveDealIfEmpty.mockResolvedValueOnce(false)
+    pg.applyDealInvalidation.mockResolvedValueOnce({
+      requestId: 'r-2',
+      idempotent: false,
+      applied: [{ telefone: '5543991938235', status: 'duplicate_already_moved' }],
+      archived: false,
+      clearedColumns: [],
+    })
 
     const scannerPipe = new PrecheckScanner({
       ...((scanner as unknown as { deps: ScannerDeps }).deps),

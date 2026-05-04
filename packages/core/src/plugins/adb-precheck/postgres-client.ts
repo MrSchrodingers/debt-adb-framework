@@ -1,32 +1,31 @@
+import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import type { ProvConsultaRow, DealKey, PrecheckScanParams } from './types.js'
 
-/**
- * Thin typed wrapper around the Pipeboard pg pool.
- *
- * Isolation: owns its own `pg.Pool`, never touches Dispatch SQLite. Writes are
- * idempotent (ON CONFLICT DO NOTHING for invalidos).
- */
-/**
- * Columns in tenant_adb.prov_consultas that can hold a phone. Kept in sync
- * with PHONE_COLUMNS in phone-extractor.ts. Used as a whitelist for the
- * `clearInvalidPhone` UPDATE — prevents SQL injection via dynamic column
- * interpolation.
- */
-const PHONE_COLUMNS = [
-  'whatsapp_hot',
-  'telefone_hot_1',
-  'telefone_hot_2',
-  'telefone_1',
-  'telefone_2',
-  'telefone_3',
-  'telefone_4',
-  'telefone_5',
-  'telefone_6',
-] as const
-export type PhoneColumn = (typeof PHONE_COLUMNS)[number]
+function synthRequestId(): string {
+  return `sql-${randomUUID()}`
+}
+import {
+  PHONE_COLUMNS,
+  type IPipeboardClient,
+  type HealthcheckResult,
+  type InvalidPhoneRecord,
+  type DealInvalidationRequest,
+  type DealInvalidationResponse,
+  type DealLocalizationRequest,
+  type DealLocalizationResponse,
+  type AppliedPhone,
+} from './pipeboard-client.js'
 
-export class PipeboardPg {
+export { PHONE_COLUMNS } from './pipeboard-client.js'
+export type { PhoneColumn } from './pipeboard-client.js'
+
+/**
+ * SQL implementation of {@link IPipeboardClient} backed by a `pg.Pool`
+ * over the SSH tunnel (`localhost:25432`). Writes are idempotent
+ * (ON CONFLICT, CASE WHEN guards) so retries and replays are safe.
+ */
+export class PipeboardPg implements IPipeboardClient {
   static readonly PHONE_COLUMNS = PHONE_COLUMNS
 
   private pool: pg.Pool
@@ -40,7 +39,7 @@ export class PipeboardPg {
     })
   }
 
-  async healthcheck(): Promise<{ ok: true; server_time: string } | { ok: false; error: string }> {
+  async healthcheck(): Promise<HealthcheckResult> {
     try {
       const { rows } = await this.pool.query<{ now: string }>('SELECT now() AS now')
       return { ok: true, server_time: rows[0]!.now }
@@ -194,17 +193,7 @@ export class PipeboardPg {
    * `telefone` MUST be the normalized E.164 form (55DD9XXXXXXXX), matching
    * what the ETL stores and compares against.
    */
-  async recordInvalidPhone(
-    key: DealKey,
-    record: {
-      telefone: string
-      motivo: string
-      colunaOrigem: string | null
-      invalidadoPor: string
-      jobId: string | null
-      confidence: number | null
-    },
-  ): Promise<void> {
+  async recordInvalidPhone(key: DealKey, record: InvalidPhoneRecord): Promise<void> {
     const sql = `
       INSERT INTO tenant_adb.prov_telefones_invalidos (
         pasta, deal_id, contato_tipo, contato_id, telefone,
@@ -299,6 +288,61 @@ export class PipeboardPg {
          AND (localizado IS DISTINCT FROM true OR telefone_localizado IS DISTINCT FROM $5)`,
       [key.pasta, key.deal_id, key.contato_tipo, key.contato_id, phone, source],
     )
+  }
+
+  /**
+   * Batch shim that mirrors the REST `phones/invalidate` semantics on
+   * top of the legacy per-phone methods. Not transactional across
+   * phones — only kept to let the scanner uniformly call the batch
+   * interface regardless of backend.
+   *
+   * Returned `request_id` is a synthetic UUID (no audit log lives in
+   * SQL backend).
+   */
+  async applyDealInvalidation(
+    key: DealKey,
+    payload: DealInvalidationRequest,
+  ): Promise<DealInvalidationResponse> {
+    const applied: AppliedPhone[] = []
+    const clearedColumns = new Set<string>()
+    for (const phone of payload.phones) {
+      await this.recordInvalidPhone(key, {
+        telefone: phone.telefone,
+        motivo: payload.motivo,
+        colunaOrigem: phone.colunaOrigem,
+        invalidadoPor: payload.fonte,
+        jobId: payload.jobId,
+        confidence: phone.confidence,
+      })
+      const cleared = await this.clearInvalidPhone(key, phone.telefone)
+      if (cleared > 0 && phone.colunaOrigem) clearedColumns.add(phone.colunaOrigem)
+      await this.clearLocalizadoIfMatches(key, phone.telefone)
+      applied.push({ telefone: phone.telefone, status: 'applied' })
+    }
+    let archived = false
+    if (payload.archiveIfEmpty) {
+      archived = await this.archiveDealIfEmpty(key, 'todos_telefones_invalidos')
+    }
+    return {
+      requestId: synthRequestId(),
+      idempotent: false,
+      applied,
+      archived,
+      clearedColumns: [...clearedColumns],
+    }
+  }
+
+  /** SQL-backend shim for `applyDealLocalization`. */
+  async applyDealLocalization(
+    key: DealKey,
+    payload: DealLocalizationRequest,
+  ): Promise<DealLocalizationResponse> {
+    await this.writeLocalizado(key, payload.telefone, payload.source)
+    return {
+      requestId: synthRequestId(),
+      idempotent: false,
+      applied: true,
+    }
   }
 
   private buildWhere(
