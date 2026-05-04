@@ -256,6 +256,27 @@ export function SessionManager() {
     }
   }
 
+  const [autoAttaching, setAutoAttaching] = useState(false)
+  const handleAutoAttach = async () => {
+    setAutoAttaching(true)
+    setError(null)
+    try {
+      const r = await fetch(`${CORE_URL}/api/v1/sessions/managed/auto-attach`, {
+        method: 'POST',
+        headers: authHeaders(),
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const data = (await r.json()) as { matched?: number; unresolved?: number; alreadyAttached?: number }
+      const msg = `Re-detectar: ${data.matched ?? 0} mapeadas · ${data.alreadyAttached ?? 0} já estavam · ${data.unresolved ?? 0} sem device disponível`
+      setPairSteps([msg])
+      await fetchSessions()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'auto-attach failed')
+    } finally {
+      setAutoAttaching(false)
+    }
+  }
+
   const handleCreateInbox = async (name: string) => {
     setCreatingInbox(name)
     try {
@@ -343,6 +364,15 @@ export function SessionManager() {
             <FilterChip label={`${t('sessionManager.filterManaged')} (${managedCount})`} active={statusFilter === 'MANAGED'} onClick={() => setStatusFilter(statusFilter === 'MANAGED' ? null : 'MANAGED')} color="blue" />
           </div>
           <div className="flex gap-2">
+            <button
+              onClick={handleAutoAttach}
+              disabled={autoAttaching}
+              title="Casa session.phoneNumber com whatsapp_accounts e atribui device + profile automaticamente"
+              className="flex items-center gap-1.5 rounded-lg bg-violet-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-600 disabled:opacity-40 transition-colors"
+            >
+              <Radio className="h-3 w-3" />
+              {autoAttaching ? 'Detectando...' : 'Re-detectar mapeamentos'}
+            </button>
             <button
               onClick={selectAll}
               className="flex items-center gap-1.5 rounded-lg bg-zinc-800 border border-zinc-700/40 px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 transition-colors"
@@ -509,10 +539,14 @@ export function SessionManager() {
               </div>
             </div>
 
-            {/* Device + profile picker for managed sessions without
-                an attached device. Shown inline so the operator can
-                pick before clicking Pair. */}
-            {session.managed && !session.deviceSerial && (
+            {/* Manual attach picker is shown ONLY for fresh sessions
+                that have no phone yet — those genuinely need the
+                operator to pick a vacant Android profile to receive
+                the QR scan. Sessions that already have a phoneNumber
+                are auto-mapped by the server (boot + every mapAccounts
+                cycle); the "Re-detectar" button at the top forces a
+                refresh on demand. */}
+            {session.managed && !session.deviceSerial && !session.phoneNumber && (
               <div className="mt-2 flex items-center gap-2">
                 <select
                   value={attachSelection[session.sessionName]?.serial ?? ''}
@@ -546,40 +580,19 @@ export function SessionManager() {
                   disabled={!attachSelection[session.sessionName]?.serial}
                   className="rounded bg-zinc-800 border border-zinc-700 px-2 py-1 text-xs text-zinc-200 disabled:opacity-50"
                 >
-                  <option value="">— profile —</option>
+                  <option value="">— profile vago —</option>
                   {(() => {
                     const dev = devices.find((d) => d.serial === attachSelection[session.sessionName]?.serial)
                     if (!dev) return null
-                    // Normalize digits-only for phone comparison
-                    // (session.phoneNumber from WAHA may be 12 digits
-                    // BR-style, profile number may be 13 with the 9-prefix).
-                    const sessDigits = (session.phoneNumber ?? '').replace(/\D/g, '')
-                    const matches = (a: string, b: string) => {
-                      if (!a || !b) return false
-                      return a === b || a.endsWith(b) || b.endsWith(a)
+                    const vacant = dev.profiles.filter((p) => !p.phoneNumber)
+                    if (vacant.length === 0) {
+                      return <option disabled value="">(nenhum profile vago neste device)</option>
                     }
-                    return dev.profiles.map((p) => {
-                      const profDigits = (p.phoneNumber ?? '').replace(/\D/g, '')
-                      const isMatch = matches(sessDigits, profDigits)
-                      const isOtherNumber = !!profDigits && !isMatch
-                      let label = `profile ${p.profileId}`
-                      if (!profDigits) {
-                        label += ' · vago (sem WA logado)'
-                      } else if (isMatch) {
-                        label += ` · ✓ casa com sessão (${p.phoneNumber})`
-                      } else {
-                        label += ` · ⚠ ocupado por ${p.phoneNumber}`
-                      }
-                      return (
-                        <option
-                          key={p.profileId}
-                          value={p.profileId}
-                          disabled={isOtherNumber}
-                        >
-                          {label}
-                        </option>
-                      )
-                    })
+                    return vacant.map((p) => (
+                      <option key={p.profileId} value={p.profileId}>
+                        profile {p.profileId} · pronto para QR
+                      </option>
+                    ))
                   })()}
                 </select>
               </div>
