@@ -33,11 +33,14 @@ servers:
     description: |
       Internal vhost (Dispatch + admin). Geo-restricted to BR + admin
       whitelist via `$allow_final`. Cert Let's Encrypt, HTTP/2.
+      Used by `dispatch_adb_precheck` (intern_admin key) — rate
+      limit 5000 req/min.
   - url: https://adb.debt.com.br/api/v1
     description: |
       External vhost (provider integrations). Edge whitelist limits
       paths to /precheck/*; everything else returns 404. HSTS preload,
-      X-Frame-Options DENY, body cap 1 MiB.
+      X-Frame-Options DENY, body cap 1 MiB. Used by
+      `debt_adb_provider` keys — rate limit 1000 req/min default.
 
 security:
   - apiKey: []
@@ -460,8 +463,23 @@ components:
           enum:
             - applied
             - duplicate_already_moved
-            - rejected_invalid_format
-            - rejected_not_in_deal
+            - rejected_invalid_input
+            - rejected_no_match
+          description: |
+            - `applied`: first time this phone was blocked.
+            - `duplicate_already_moved`: phone already in blocklist
+              before this call. Treat as success — idempotent.
+            - `rejected_invalid_input`: server-side validation failed
+              (malformed E.164, etc).
+            - `rejected_no_match`: phone is not present in
+              `prov_consultas` for the given deal.
+        cleared_from:
+          type: array
+          items: { type: string }
+          description: |
+            Names of `prov_consultas` columns that were NULLified for
+            this phone (e.g. `["telefone_3"]`). Empty when status
+            is anything other than `applied`.
 
     InvalidateResponse:
       type: object

@@ -65,12 +65,18 @@ export interface DealInvalidationRequest {
 export type AppliedPhoneStatus =
   | 'applied'
   | 'duplicate_already_moved'
-  | 'rejected_invalid_format'
-  | 'rejected_not_in_deal'
+  | 'rejected_invalid_input'
+  | 'rejected_no_match'
 
 export interface AppliedPhone {
   telefone: string
   status: AppliedPhoneStatus
+  /**
+   * `prov_consultas` columns NULLified for this phone (e.g.
+   * `["telefone_3"]`). Empty when status != 'applied'. Mirrors the
+   * server-side `cleared_from` field.
+   */
+  clearedFrom?: string[]
 }
 
 /** Successful response from `applyDealInvalidation`. */
