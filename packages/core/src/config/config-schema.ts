@@ -63,6 +63,10 @@ const envSchema = z
     PLUGIN_ADB_PRECHECK_HMAC_SECRET: z.string().optional(),
     PLUGIN_ADB_PRECHECK_PG_URL: z.string().optional(),
     PLUGIN_ADB_PRECHECK_PG_MAX: z.coerce.number().int().min(1).max(50).default(4),
+    PLUGIN_ADB_PRECHECK_BACKEND: z.enum(['sql', 'rest']).default('sql'),
+    PLUGIN_ADB_PRECHECK_REST_BASE_URL: z.string().optional(),
+    PLUGIN_ADB_PRECHECK_REST_API_KEY: z.string().optional(),
+    PLUGIN_ADB_PRECHECK_REST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).optional(),
     PLUGIN_ADB_PRECHECK_DEVICE_SERIAL: z.string().optional(),
     PLUGIN_ADB_PRECHECK_WAHA_SESSION: z.string().optional(),
 
@@ -103,8 +107,19 @@ const envSchema = z
       if (!data.PLUGIN_ADB_PRECHECK_HMAC_SECRET) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'PLUGIN_ADB_PRECHECK_HMAC_SECRET required when adb-precheck plugin enabled', path: ['PLUGIN_ADB_PRECHECK_HMAC_SECRET'] })
       }
-      if (!data.PLUGIN_ADB_PRECHECK_PG_URL) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'PLUGIN_ADB_PRECHECK_PG_URL required when adb-precheck plugin enabled (Pipeboard postgres URL)', path: ['PLUGIN_ADB_PRECHECK_PG_URL'] })
+      // Backend-conditional: sql needs PG_URL (SSH tunnel),
+      // rest needs REST_BASE_URL + REST_API_KEY (Pipeboard router).
+      if (data.PLUGIN_ADB_PRECHECK_BACKEND === 'sql') {
+        if (!data.PLUGIN_ADB_PRECHECK_PG_URL) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'PLUGIN_ADB_PRECHECK_PG_URL required when adb-precheck BACKEND=sql (Pipeboard postgres URL via SSH tunnel)', path: ['PLUGIN_ADB_PRECHECK_PG_URL'] })
+        }
+      } else {
+        if (!data.PLUGIN_ADB_PRECHECK_REST_BASE_URL) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'PLUGIN_ADB_PRECHECK_REST_BASE_URL required when adb-precheck BACKEND=rest', path: ['PLUGIN_ADB_PRECHECK_REST_BASE_URL'] })
+        }
+        if (!data.PLUGIN_ADB_PRECHECK_REST_API_KEY) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'PLUGIN_ADB_PRECHECK_REST_API_KEY required when adb-precheck BACKEND=rest', path: ['PLUGIN_ADB_PRECHECK_REST_API_KEY'] })
+        }
       }
     }
     if (plugins.length > 0 && !data.DISPATCH_WEBHOOK_ALLOWED_DOMAINS) {

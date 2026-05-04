@@ -22,8 +22,13 @@ export type { PhoneColumn } from './pipeboard-client.js'
 
 /**
  * SQL implementation of {@link IPipeboardClient} backed by a `pg.Pool`
- * over the SSH tunnel (`localhost:25432`). Writes are idempotent
- * (ON CONFLICT, CASE WHEN guards) so retries and replays are safe.
+ * directly connected to the Pipeboard Postgres (historically over an
+ * SSH tunnel — see ADR 0002 for the REST migration). Writes are
+ * idempotent (ON CONFLICT, CASE WHEN guards) so retries and replays
+ * are safe.
+ *
+ * Selected by `PLUGIN_ADB_PRECHECK_BACKEND=sql`. The REST counterpart
+ * is `PipeboardRest` in `pipeboard-rest.ts`.
  */
 export class PipeboardPg implements IPipeboardClient {
   static readonly PHONE_COLUMNS = PHONE_COLUMNS

@@ -51,6 +51,20 @@ const scanParamsSchema = z
      * (so the lifecycle is honoured even if the UI is closed mid-scan).
      */
     hygienization_mode: z.boolean().optional(),
+    /**
+     * Override which connected device performs the L3 ADB probe for this
+     * job. When omitted, falls back to PLUGIN_ADB_PRECHECK_DEVICE_SERIAL.
+     * Must match an `adb devices` serial currently online — otherwise the
+     * probe step throws and the scanner records `error` outcomes.
+     */
+    device_serial: z.string().min(1).max(64).optional(),
+    /**
+     * Override which WAHA session performs the L2 tiebreaker. When
+     * omitted, falls back to PLUGIN_ADB_PRECHECK_WAHA_SESSION. Pair
+     * naturally with `device_serial` when the operator wants both legs
+     * of the validation routed through the same WhatsApp account.
+     */
+    waha_session: z.string().min(1).max(64).optional(),
   })
   .strict()
 
@@ -407,8 +421,20 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
 
     let poolTotal: number | null
     let poolError: string | null = null
+    let poolUnsupported = false
     try {
-      poolTotal = await this.pg.countPool({})
+      const v = await this.pg.countPool({})
+      // PipeboardRest returns -1 when COUNT is not exposed by the
+      // backend (the REST contract intentionally omits it for
+      // performance — see ADR 0002). Treat that as "unknown" exactly
+      // like a thrown error, so derived metrics (pending, coverage)
+      // collapse to null instead of producing negative values.
+      if (v < 0) {
+        poolTotal = null
+        poolUnsupported = true
+      } else {
+        poolTotal = v
+      }
     } catch (e) {
       poolTotal = null
       poolError = e instanceof Error ? e.message : String(e)
@@ -418,18 +444,20 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     const { fresh, total: scannedTotal } = this.store.countScannedSince(thresholdIso)
     const stale = Math.max(0, scannedTotal - fresh)
     const pending = poolTotal !== null ? Math.max(0, poolTotal - fresh) : null
-    const coveragePercent = poolTotal && poolTotal > 0 ? (scannedTotal / poolTotal) * 100 : 0
+    const coveragePercent =
+      poolTotal !== null && poolTotal > 0 ? (scannedTotal / poolTotal) * 100 : null
 
     return r.status(200).send({
       recheck_after_days: recheckAfterDays,
       threshold_iso: thresholdIso,
       pool_total: poolTotal,
       pool_error: poolError,
+      pool_unsupported: poolUnsupported,
       scanned_total: scannedTotal,
       fresh_count: fresh,
       stale_count: stale,
       pending_count: pending,
-      coverage_percent: Number(coveragePercent.toFixed(2)),
+      coverage_percent: coveragePercent !== null ? Number(coveragePercent.toFixed(2)) : null,
     })
   }
 

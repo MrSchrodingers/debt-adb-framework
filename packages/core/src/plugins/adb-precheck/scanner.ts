@@ -335,8 +335,8 @@ export class PrecheckScanner {
               const r = await this.deps.validator.validate(p.normalized, {
                 triggered_by: 'pre_check',
                 useWahaTiebreaker: true,
-                device_serial: this.deps.deviceSerial,
-                waha_session: this.deps.wahaSession,
+                device_serial: params.device_serial ?? this.deps.deviceSerial,
+                waha_session: params.waha_session ?? this.deps.wahaSession,
               })
               if (r.from_cache) cacheHits++
               const outcome = r.exists_on_wa === 1 ? 'valid' : r.exists_on_wa === 0 ? 'invalid' : 'error'

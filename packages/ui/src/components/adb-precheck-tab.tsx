@@ -153,7 +153,7 @@ export function AdbPrecheckTab() {
       />
 
       {status === 'inactive' ? (
-        <InlineError message="Plugin indisponivel (404). Verifique se adb-precheck esta em DISPATCH_PLUGINS e se PLUGIN_ADB_PRECHECK_PG_URL esta configurado." />
+        <InlineError message="Plugin indisponivel (404). Verifique se adb-precheck esta em DISPATCH_PLUGINS e se PLUGIN_ADB_PRECHECK_BACKEND esta configurado (sql exige PLUGIN_ADB_PRECHECK_PG_URL; rest exige PLUGIN_ADB_PRECHECK_REST_BASE_URL + PLUGIN_ADB_PRECHECK_REST_API_KEY)." />
       ) : null}
 
       {activeSubTab === 'overview' ? <OverviewPanel onStartScan={() => setActiveSubTab('scan')} />
@@ -280,12 +280,55 @@ function OverviewSkeleton() {
 
 // ── New Scan ───────────────────────────────────────────────────────────────
 
+interface DeviceOption {
+  serial: string
+  status?: string
+  primary_account?: string | null
+}
+
 function NewScanPanel({ onDone }: { onDone: () => void }) {
   const [limit, setLimit] = useState('100')
   const [pastaPrefix, setPastaPrefix] = useState('')
   const [pipelineNome, setPipelineNome] = useState('')
   const [writebackInvalid, setWritebackInvalid] = useState(false)
   const [writebackLocalizado, setWritebackLocalizado] = useState(false)
+  const [deviceSerial, setDeviceSerial] = useState('')
+  const [wahaSession, setWahaSession] = useState('')
+  const [devices, setDevices] = useState<DeviceOption[]>([])
+  const [devicesLoading, setDevicesLoading] = useState(false)
+
+  // Load connected devices for the picker. Each device may have a
+  // primary WA account associated; we surface that as a hint so the
+  // operator knows whose phone the L3 probe will route through.
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      setDevicesLoading(true)
+      try {
+        const r = await fetch(`${CORE_URL}/api/v1/monitor/devices`, { headers: authHeaders() })
+        if (!r.ok) return
+        const list = (await r.json()) as Array<{ serial: string; status?: string }>
+        const opts: DeviceOption[] = await Promise.all(
+          list.map(async (d) => {
+            try {
+              const a = await fetch(`${CORE_URL}/api/v1/monitor/devices/${encodeURIComponent(d.serial)}/accounts`, { headers: authHeaders() })
+              if (!a.ok) return { serial: d.serial, status: d.status, primary_account: null }
+              const accs = (await a.json()) as Array<{ phone_number?: string; numero?: string }>
+              const primary = accs[0]?.phone_number ?? accs[0]?.numero ?? null
+              return { serial: d.serial, status: d.status, primary_account: primary }
+            } catch {
+              return { serial: d.serial, status: d.status, primary_account: null }
+            }
+          }),
+        )
+        if (!cancelled) setDevices(opts)
+      } finally {
+        if (!cancelled) setDevicesLoading(false)
+      }
+    }
+    void load()
+    return () => { cancelled = true }
+  }, [])
   // Per-job Pipedrive opt-in. Default ON — operators can flip it OFF for
   // dry-run scans that should not pollute the CRM.
   const [pipedriveEnabled, setPipedriveEnabled] = useState(true)
@@ -311,6 +354,8 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
         writeback_localizado: writebackLocalizado,
         pipedrive_enabled: pipedriveEnabled,
         hygienization_mode: hygienizationMode,
+        device_serial: deviceSerial || undefined,
+        waha_session: wahaSession || undefined,
       }
       const r = await fetch(`${PLUGIN_BASE}/scan`, {
         method: 'POST',
@@ -362,6 +407,37 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
                 value={pipelineNome}
                 onChange={(e) => setPipelineNome(e.target.value)}
                 placeholder="ex: Localizacao"
+                className="w-full rounded-md bg-zinc-950 border border-zinc-800 px-3 py-1.5 text-sm text-zinc-100 focus:outline-none focus:border-sky-500/40"
+              />
+            </Field>
+          </div>
+        </Section>
+
+        <Section title="Device de probe" description="Escolha qual telefone (de qual device conectado) executa a verificação ADB. Vazio = usa o default do plugin.">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
+            <Field label="Device (ADB serial)" hint={devicesLoading ? 'carregando...' : `${devices.length} conectados`}>
+              <select
+                value={deviceSerial}
+                onChange={(e) => setDeviceSerial(e.target.value)}
+                disabled={devicesLoading}
+                className="w-full rounded-md bg-zinc-950 border border-zinc-800 px-3 py-1.5 text-sm text-zinc-100 focus:outline-none focus:border-sky-500/40 disabled:opacity-60"
+              >
+                <option value="">— usar default do plugin —</option>
+                {devices.map((d) => (
+                  <option key={d.serial} value={d.serial}>
+                    {d.serial}
+                    {d.primary_account ? ` · ${d.primary_account}` : ''}
+                    {d.status && d.status !== 'online' ? ` (${d.status})` : ''}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="WAHA session (L2 tiebreaker)" hint="opcional · pareie com o device acima">
+              <input
+                type="text"
+                value={wahaSession}
+                onChange={(e) => setWahaSession(e.target.value)}
+                placeholder="ex: 5543991938235"
                 className="w-full rounded-md bg-zinc-950 border border-zinc-800 px-3 py-1.5 text-sm text-zinc-100 focus:outline-none focus:border-sky-500/40"
               />
             </Field>
