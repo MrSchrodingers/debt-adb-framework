@@ -280,10 +280,17 @@ function OverviewSkeleton() {
 
 // ── New Scan ───────────────────────────────────────────────────────────────
 
+interface DeviceAccount {
+  phoneNumber: string
+  packageName: string
+  profileId: number
+}
+
 interface DeviceOption {
   serial: string
   status?: string
-  primary_account?: string | null
+  /** Mapped accounts (phoneNumber !== null). Primary account is the first one. */
+  accounts: DeviceAccount[]
 }
 
 function NewScanPanel({ onDone }: { onDone: () => void }) {
@@ -296,9 +303,9 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
   const [devices, setDevices] = useState<DeviceOption[]>([])
   const [devicesLoading, setDevicesLoading] = useState(false)
 
-  // Load connected devices for the picker. Each device may have a
-  // primary WA account associated; we surface that as a hint so the
-  // operator knows whose phone the L3 probe will route through.
+  // Load connected devices + their mapped WA accounts in one shot so
+  // the WAHA-session picker can react instantly when the operator
+  // changes the device.
   useEffect(() => {
     let cancelled = false
     const load = async () => {
@@ -310,13 +317,31 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
         const opts: DeviceOption[] = await Promise.all(
           list.map(async (d) => {
             try {
-              const a = await fetch(`${CORE_URL}/api/v1/monitor/devices/${encodeURIComponent(d.serial)}/accounts`, { headers: authHeaders() })
-              if (!a.ok) return { serial: d.serial, status: d.status, primary_account: null }
-              const accs = (await a.json()) as Array<{ phone_number?: string; numero?: string }>
-              const primary = accs[0]?.phone_number ?? accs[0]?.numero ?? null
-              return { serial: d.serial, status: d.status, primary_account: primary }
+              const a = await fetch(
+                `${CORE_URL}/api/v1/monitor/devices/${encodeURIComponent(d.serial)}/accounts`,
+                { headers: authHeaders() },
+              )
+              if (!a.ok) return { serial: d.serial, status: d.status, accounts: [] }
+              const raw = (await a.json()) as Array<{
+                phoneNumber: string | null
+                packageName: string
+                profileId: number
+              }>
+              // Only keep entries with a real number — empty/null means
+              // the WA install is present but unmapped, which we cannot
+              // route a probe through.
+              const accounts: DeviceAccount[] = raw
+                .filter((x): x is { phoneNumber: string; packageName: string; profileId: number } =>
+                  Boolean(x.phoneNumber),
+                )
+                .map((x) => ({
+                  phoneNumber: x.phoneNumber,
+                  packageName: x.packageName,
+                  profileId: x.profileId,
+                }))
+              return { serial: d.serial, status: d.status, accounts }
             } catch {
-              return { serial: d.serial, status: d.status, primary_account: null }
+              return { serial: d.serial, status: d.status, accounts: [] }
             }
           }),
         )
@@ -328,6 +353,20 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
     void load()
     return () => { cancelled = true }
   }, [])
+
+  // When the operator switches device, the previously-selected WAHA
+  // session may not exist on the new device — clear it.
+  useEffect(() => {
+    if (!deviceSerial) return
+    const dev = devices.find((d) => d.serial === deviceSerial)
+    if (!dev) return
+    if (wahaSession && !dev.accounts.some((a) => a.phoneNumber === wahaSession)) {
+      setWahaSession('')
+    }
+  }, [deviceSerial, devices, wahaSession])
+
+  const selectedDevice = devices.find((d) => d.serial === deviceSerial) ?? null
+  const availableAccounts = selectedDevice?.accounts ?? []
   // Per-job Pipedrive opt-in. Default ON — operators can flip it OFF for
   // dry-run scans that should not pollute the CRM.
   const [pipedriveEnabled, setPipedriveEnabled] = useState(true)
@@ -429,23 +468,48 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
               className={`${inputCls} disabled:opacity-60`}
             >
               <option value="">— usar default do plugin —</option>
-              {devices.map((d) => (
-                <option key={d.serial} value={d.serial}>
-                  {d.serial}
-                  {d.primary_account ? ` · ${d.primary_account}` : ''}
-                  {d.status && d.status !== 'online' ? ` (${d.status})` : ''}
+              {devices.map((d) => {
+                const primary = d.accounts[0]?.phoneNumber
+                const offline = d.status && d.status !== 'online'
+                return (
+                  <option key={d.serial} value={d.serial}>
+                    {d.serial}
+                    {primary ? ` · ${primary}` : ''}
+                    {d.accounts.length > 1 ? ` (+${d.accounts.length - 1})` : ''}
+                    {offline ? ` [${d.status}]` : ''}
+                  </option>
+                )
+              })}
+            </select>
+          </Field>
+          <Field
+            label="Número do sender (WAHA session)"
+            hint={
+              !deviceSerial
+                ? 'escolha um device primeiro'
+                : availableAccounts.length === 0
+                ? 'nenhum número mapeado neste device'
+                : `${availableAccounts.length} mapeado${availableAccounts.length > 1 ? 's' : ''}`
+            }
+          >
+            <select
+              value={wahaSession}
+              onChange={(e) => setWahaSession(e.target.value)}
+              disabled={!deviceSerial || availableAccounts.length === 0}
+              className={`${inputCls} disabled:opacity-60`}
+            >
+              <option value="">— usar default do plugin —</option>
+              {availableAccounts.map((a) => (
+                <option
+                  key={`${a.profileId}|${a.packageName}|${a.phoneNumber}`}
+                  value={a.phoneNumber}
+                >
+                  {a.phoneNumber}
+                  {a.packageName === 'com.whatsapp.w4b' ? ' · WA Business' : ''}
+                  {a.profileId > 0 ? ` · profile ${a.profileId}` : ''}
                 </option>
               ))}
             </select>
-          </Field>
-          <Field label="WAHA session (L2 tiebreaker)" hint="opcional · pareie com o device acima">
-            <input
-              type="text"
-              value={wahaSession}
-              onChange={(e) => setWahaSession(e.target.value)}
-              placeholder="ex: 5543991938235"
-              className={inputCls}
-            />
           </Field>
         </div>
       </Section>
