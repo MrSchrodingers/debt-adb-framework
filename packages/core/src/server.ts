@@ -642,7 +642,15 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       senderPhone, db, chips: chipRegistry, warmup: senderWarmup, now: Date.now(),
       fleetMedianReadRatio: getFleetMedian(),
     }),
-    listSenders: () => senderMapping.listAll().map((r) => r.phone_number).filter((p): p is string => Boolean(p)),
+    listSenders: () =>
+      senderMapping
+        .listAll()
+        .map((r) => r.phone_number)
+        // Skip placeholders (`99999*` — managed sessions awaiting QR
+        // pairing). They're metadata for /pair flow, not real
+        // sendable accounts; running quality scoring on them
+        // produces phantom "Crítico" pauses with zero data.
+        .filter((p): p is string => Boolean(p) && !p.startsWith('99999')),
     pauseSender: (phone, reason) => senderMapping.pauseSender(phone, reason),
     isPaused: (phone) => senderMapping.isPaused(phone),
     alert: (e) => {
