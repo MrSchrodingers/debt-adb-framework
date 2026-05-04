@@ -1,6 +1,11 @@
 import type { ContactValidator } from '../../validator/contact-validator.js'
 import type { PluginLogger } from '../types.js'
-import type { PipeboardPg } from './postgres-client.js'
+import type {
+  BatchInvalidPhone,
+  IPipeboardClient,
+  InvalidationFonte,
+} from './pipeboard-client.js'
+import type { PendingWritebacks } from './pending-writebacks.js'
 import type { PrecheckJobStore } from './job-store.js'
 import { extractPhones } from './phone-extractor.js'
 import type { PipedrivePublisher } from './pipedrive-publisher.js'
@@ -51,7 +56,7 @@ const INVALID_MOTIVO = 'whatsapp_nao_existe'
 const MAX_PG_EXCLUDED_KEYS = 5000
 
 export interface ScannerDeps {
-  pg: PipeboardPg
+  pg: IPipeboardClient
   store: PrecheckJobStore
   validator: ContactValidator
   logger: PluginLogger
@@ -77,6 +82,32 @@ export interface ScannerDeps {
   pipedrive?: PipedrivePublisher
   /** TTL hint for the cache footer in Pipedrive notes (days). */
   pipedriveCacheTtlDays?: number
+  /**
+   * When true, the scanner skips deal-level Pipedrive Activities
+   * (`deal_all_fail`) because Pipeboard now generates them server-side
+   * via Temporal after each `phones/invalidate` call. The end-of-scan
+   * `pasta_summary` Note is still emitted from Dispatch (Pipeboard
+   * does not aggregate it).
+   *
+   * Should be set whenever the plugin runs with `BACKEND=rest`.
+   */
+  skipPipedriveDealActivity?: boolean
+  /**
+   * Optional fail-closed buffer. When present, every batch writeback
+   * goes through `pendingWritebacks.submit*` so retryable failures are
+   * persisted to SQLite and drained later. When absent, calls hit
+   * `pg.applyDeal*` directly and any retryable failure surfaces as a
+   * scanner-level warning (current SQL backend behaviour).
+   *
+   * Required for production runs with BACKEND=rest.
+   */
+  pendingWritebacks?: PendingWritebacks
+  /**
+   * `fonte` value sent in batch invalidations / localizations. Defaults
+   * to `dispatch_adb_precheck` (matches Pipeboard router_api_keys
+   * vocabulary).
+   */
+  fonte?: InvalidationFonte
   /**
    * Optional pause-state proxy. When the job has `hygienization_mode = true`,
    * the scanner pauses the global circuit breaker before iterating and
@@ -358,72 +389,58 @@ export class PrecheckScanner {
           store.upsertDeal(jobId, result)
 
           if (params.writeback_invalid) {
-            // For each invalid phone, in order:
-            //   1. record it in prov_telefones_invalidos (authoritative blocklist
-            //      consumed by the Pipeboard ETL on next sync)
-            //   2. NULL the column in prov_consultas (immediate effect for jobs
-            //      already in flight; the ETL will reconcile on next pass)
-            //   3. clear telefone_localizado if it pointed at this number
-            //
-            // Dedupe by normalized phone — first occurrence wins for column
-            // attribution. Map preserves insertion order, so the first hit
-            // (highest-priority column per PHONE_COLUMNS) is what we record.
+            // Dedupe by normalized phone — first occurrence wins for
+            // column attribution (highest-priority column per
+            // PHONE_COLUMNS).
             const dedupedInvalids = new Map<string, PhoneResult>()
             for (const p of phoneResults) {
               if (p.outcome === 'invalid' && !dedupedInvalids.has(p.normalized)) {
                 dedupedInvalids.set(p.normalized, p)
               }
             }
+            const allInvalid = validCount === 0 && phoneResults.length > 0
 
-            let nulledCells = 0
-            for (const p of dedupedInvalids.values()) {
-              try {
-                await pg.recordInvalidPhone(key, {
+            if (dedupedInvalids.size > 0) {
+              const phones: BatchInvalidPhone[] = [...dedupedInvalids.values()].map(
+                (p) => ({
                   telefone: p.normalized,
-                  motivo: INVALID_MOTIVO,
-                  colunaOrigem: p.column,
-                  invalidadoPor: 'dispatch_adb_precheck',
-                  jobId,
+                  colunaOrigem: p.column as BatchInvalidPhone['colunaOrigem'],
                   confidence: p.confidence,
-                })
-                nulledCells += await pg.clearInvalidPhone(key, p.raw)
-                nulledCells += await pg.clearLocalizadoIfMatches(key, p.raw)
-              } catch (e) {
-                logger.warn('invalid phone writeback failed', {
-                  jobId,
-                  key,
-                  telefone: p.normalized,
-                  error: e instanceof Error ? e.message : String(e),
-                })
-              }
-            }
-            if (nulledCells > 0) {
-              logger.debug('invalid phones cleared', { jobId, key, nulledCells })
-            }
-
-            // Deal-level: when NO valid phone survived, write the legacy marker
-            // (prov_invalidos — preserves Oralsin/downstream semantics) AND
-            // archive the empty row to prov_consultas_snapshot so the working
-            // set never accumulates phantom rows. Both are idempotent.
-            if (validCount === 0 && phoneResults.length > 0) {
-              await pg.writeInvalid(key, INVALID_MOTIVO)
+                }),
+              )
+              const fonte = this.deps.fonte ?? 'dispatch_adb_precheck'
+              const archiveIfEmpty = allInvalid
               try {
-                const archived = await pg.archiveDealIfEmpty(
-                  key,
-                  'todos_telefones_invalidos',
-                )
-                if (archived) {
+                const result = this.deps.pendingWritebacks
+                  ? await this.deps.pendingWritebacks.submitInvalidation(key, {
+                      motivo: INVALID_MOTIVO,
+                      jobId,
+                      fonte,
+                      phones,
+                      archiveIfEmpty,
+                    })
+                  : await pg.applyDealInvalidation(key, {
+                      motivo: INVALID_MOTIVO,
+                      jobId,
+                      fonte,
+                      phones,
+                      archiveIfEmpty,
+                    })
+                if ('archived' in result && result.archived) {
                   logger.info('deal archived (no valid phones)', { jobId, key })
-                  // Pipedrive Scenario B: deal-level all-fail intent (only on
-                  // SUCCESSFUL archive, so we don't double-fire on retry).
-                  if (pipedrive) {
-                    const phoneEntries: PipedrivePhoneEntry[] = phoneResults.map((pr) => ({
-                      phone: pr.normalized,
-                      column: pr.column,
-                      outcome: pr.outcome,
-                      strategy: pr.source,
-                      confidence: pr.confidence,
-                    }))
+                  // Pipedrive Scenario B: only on successful archive.
+                  // When BACKEND=rest, Pipeboard fires Pipedrive
+                  // server-side via Temporal — gate by skip flag.
+                  if (pipedrive && !this.deps.skipPipedriveDealActivity) {
+                    const phoneEntries: PipedrivePhoneEntry[] = phoneResults.map(
+                      (pr) => ({
+                        phone: pr.normalized,
+                        column: pr.column,
+                        outcome: pr.outcome,
+                        strategy: pr.source,
+                        confidence: pr.confidence,
+                      }),
+                    )
                     pipedrive.enqueueDealAllFail({
                       scenario: 'deal_all_fail',
                       deal_id: row.deal_id,
@@ -435,17 +452,49 @@ export class PrecheckScanner {
                     })
                   }
                 }
+                if ('enqueued' in result) {
+                  logger.warn('invalidation enqueued (Pipeboard unreachable)', {
+                    jobId,
+                    key,
+                    pendingId: result.pendingId,
+                  })
+                }
               } catch (e) {
-                logger.warn('archiveDealIfEmpty failed', {
+                logger.warn('invalid phones writeback failed', {
                   jobId,
                   key,
+                  count: dedupedInvalids.size,
                   error: e instanceof Error ? e.message : String(e),
                 })
               }
             }
           }
           if (params.writeback_localizado && primaryValid) {
-            await pg.writeLocalizado(key, primaryValid, 'dispatch_adb_precheck')
+            const fonte = this.deps.fonte ?? 'dispatch_adb_precheck'
+            try {
+              if (this.deps.pendingWritebacks) {
+                await this.deps.pendingWritebacks.submitLocalization(key, {
+                  telefone: primaryValid,
+                  source: 'adb',
+                  jobId,
+                  fonte,
+                })
+              } else {
+                await pg.applyDealLocalization(key, {
+                  telefone: primaryValid,
+                  source: 'adb',
+                  jobId,
+                  fonte,
+                })
+              }
+            } catch (e) {
+              logger.warn('localization writeback failed', {
+                jobId,
+                key,
+                phone: primaryValid,
+                error: e instanceof Error ? e.message : String(e),
+              })
+            }
           }
 
           // Pasta-level aggregation for Scenario C (pasta summary Note).

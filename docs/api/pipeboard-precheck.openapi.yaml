@@ -1,0 +1,567 @@
+openapi: 3.1.0
+info:
+  title: Pipeboard Precheck API
+  version: 0.3.0
+  summary: REST surface consumed by Dispatch's adb-precheck plugin.
+  description: |
+    Authenticated REST surface implemented by the Pipeboard router
+    (Go) against schema `tenant_adb`. Replaces the raw-SQL-over-SSH
+    access pattern documented in ADR 0002.
+
+    Auth: per-route header `X-API-Key` (managed in
+    `public.router_api_keys`). Scopes are checked by the
+    `requireScope` middleware:
+
+      - `precheck:write` — phones/invalidate, deals/localize
+      - `precheck:read`  — deals (GET), healthz (no scope)
+      - `precheck:admin` — phones/{telefone}/revalidate
+
+    Audit: every mutating call writes one row per phone to
+    `tenant_adb.prov_telefones_invalidos_requests` (or
+    `prov_telefones_localizados_requests` for /localize). Replays
+    with the same `Idempotency-Key` and identical body return the
+    original response with `idempotent: true`.
+
+    All five endpoints are live (`x-status: live`).
+
+  contact:
+    name: Dispatch / debt-adb-framework
+    url: https://github.com/MrSchrodingers/debt-adb-framework
+
+servers:
+  - url: https://pipelineanalytics.debt.com.br/api/v1
+    description: |
+      Internal vhost (Dispatch + admin). Geo-restricted to BR + admin
+      whitelist via `$allow_final`. Cert Let's Encrypt, HTTP/2.
+  - url: https://adb.debt.com.br/api/v1
+    description: |
+      External vhost (provider integrations). Edge whitelist limits
+      paths to /precheck/*; everything else returns 404. HSTS preload,
+      X-Frame-Options DENY, body cap 1 MiB.
+
+security:
+  - apiKey: []
+
+tags:
+  - name: precheck
+    description: Read and writeback operations on prov_consultas.
+  - name: audit
+    description: Audit log queries.
+  - name: ops
+    description: Liveness and operational endpoints.
+
+paths:
+  /{tenant}/precheck/healthz:
+    get:
+      x-status: live
+      tags: [ops]
+      summary: Liveness probe (no auth, gated by tenant existence)
+      operationId: getHealthz
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/PathTenant'
+      responses:
+        '200':
+          description: Router and DB reachable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthcheckResult'
+        '503':
+          description: DB unreachable or tenant schema missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthcheckResult'
+
+  /{tenant}/precheck/deals:
+    get:
+      x-status: live
+      tags: [precheck]
+      summary: Iterate the deal pool with keyset pagination
+      description: |
+        Replaces the SQL-side `countPool` and `iterateDeals`
+        currently issued via the SSH tunnel. The cursor is
+        **base64url-encoded JSON** (Pipeboard internal format) and
+        MUST be treated as opaque by the client — never parse or
+        construct it, just pass it back verbatim.
+
+        Only rows the ETL has not soft-archived are returned.
+      operationId: listDeals
+      parameters:
+        - $ref: '#/components/parameters/PathTenant'
+        - $ref: '#/components/parameters/PastaPrefix'
+        - $ref: '#/components/parameters/PipelineNome'
+        - in: query
+          name: exclude_after
+          description: |
+            Server-side recheck filter. Returns only deals whose
+            `update_time` is older than this timestamp. Equivalent
+            to the scanner-side `recheck_after_days` knob.
+          schema: { type: string, format: date-time }
+        - in: query
+          name: cursor
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 200
+      responses:
+        '200':
+          description: Page of deals.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DealsPage'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /{tenant}/precheck/phones/invalidate:
+    post:
+      x-status: live
+      tags: [precheck]
+      summary: Invalidate one or more phones for a single deal
+      description: |
+        Atomic mutation in a SERIALIZABLE transaction:
+
+          1. INSERT into `prov_telefones_invalidos` (ON CONFLICT
+             DO NOTHING; existing block produces
+             `duplicate_already_moved`).
+          2. UPDATE `prov_consultas` NULLifying the 9 phone columns
+             plus `telefone_localizado`.
+          3. Append one row per phone to
+             `prov_telefones_invalidos_requests`.
+          4. Optional archive to `prov_consultas_snapshot` with
+             `motivo='todos_telefones_invalidos'` when
+             `archive_if_empty=true` and the deal ends up phoneless.
+          5. After commit, fires
+             `Temporal.PipedrivePhoneInvalidationWorkflow` with
+             workflow_id `precheck-pipedrive-{scenario}-{request_id}`.
+
+        Idempotent: replays with the same `Idempotency-Key` and
+        identical body return the original response with
+        `idempotent: true`. Same key + different body = 409.
+
+        Batch: up to 50 phones per call. The scanner SHOULD group
+        per (pasta, deal_id, contato_tipo, contato_id).
+      operationId: invalidatePhones
+      parameters:
+        - $ref: '#/components/parameters/PathTenant'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvalidateRequest'
+      responses:
+        '200':
+          description: Mutations applied (or replay served).
+          headers:
+            X-Request-Id:
+              schema: { type: string, format: uuid }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvalidateResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: |
+            Idempotency-Key reused with a different body hash.
+            Caller bug — generate a new key.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /{tenant}/precheck/deals/localize:
+    post:
+      x-status: live
+      tags: [precheck]
+      summary: Mark first valid phone found for a deal
+      description: |
+        Positive-side counterpart to phones/invalidate. Updates
+        `prov_consultas.localizado=true`,
+        `telefone_localizado=$telefone`, `encontrado_por=$source`,
+        `encontrado_em=now()`. One row per call appended to
+        `prov_telefones_localizados_requests`.
+
+        Returns `applied: true` on a real mutation, or
+        `noop_already_localized` when the UPDATE affected 0 rows
+        (deal missing, or already localized to the same phone).
+        Both are success — treat identically.
+      operationId: localizeDeal
+      parameters:
+        - $ref: '#/components/parameters/PathTenant'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LocalizeRequest'
+      responses:
+        '200':
+          description: Localization applied (or replay served).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalizeResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: |
+            Two distinct cases — discriminate via `error.message`:
+
+              - "Idempotency-Key collision" → caller bug, generate a new key.
+              - "telefone is in prov_telefones_invalidos and cannot be
+                localized" → guardrail rejection. Phone is blocked;
+                cannot be promoted to `telefone_localizado`. Treat as
+                permanent failure for that phone.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /{tenant}/precheck/phones/{telefone}/revalidate:
+    post:
+      x-status: live
+      tags: [precheck]
+      summary: Mark forensic intent to revalidate (admin-only)
+      description: |
+        Sets `revalidado_em/por` on `prov_telefones_invalidos`. The
+        guardrail trigger on `prov_consultas` STILL blocks this
+        number — revalidation is forensic, not restoration. Real
+        un-blocking is a manual DELETE with dual approval.
+      operationId: revalidatePhone
+      parameters:
+        - $ref: '#/components/parameters/PathTenant'
+        - in: path
+          name: telefone
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{12,13}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevalidateRequest'
+      responses:
+        '200':
+          description: Forensic mark applied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevalidateResponse'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: Phone has no active block.
+
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        Per-caller key issued by Pipeboard
+        (`public.router_api_keys`). Scope checked per route by
+        the `requireScope` middleware.
+
+  parameters:
+    PathTenant:
+      in: path
+      name: tenant
+      required: true
+      schema: { type: string, example: adb }
+    PastaPrefix:
+      in: query
+      name: pasta_prefix
+      schema: { type: string, minLength: 1, maxLength: 255 }
+    PipelineNome:
+      in: query
+      name: pipeline_nome
+      schema: { type: string, minLength: 1, maxLength: 255 }
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: true
+      description: |
+        sha256(jobId + dealKey + payloadHash) for invalidate;
+        UUID v4 for one-off provider calls. Replays return the
+        original response.
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+
+  responses:
+    BadRequest:
+      description: Malformed request.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid X-API-Key.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Key valid but lacking the required scope.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: Caller exceeded its rate_limit window.
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    HealthcheckResult:
+      type: object
+      required: [status, tenant]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down]
+        tenant: { type: string, example: adb }
+        schema_check:
+          type: integer
+          description: Number of expected schemas successfully reachable.
+        schema_expected:
+          type: integer
+          description: Number of schemas the router expects to find.
+        db_latency_ms: { type: integer }
+        version: { type: string }
+
+    DealKeyFields:
+      type: object
+      required: [pasta, deal_id, contato_tipo, contato_id]
+      properties:
+        pasta: { type: string }
+        deal_id: { type: integer, format: int64 }
+        contato_tipo: { type: string }
+        contato_id: { type: integer, format: int64 }
+
+    Deal:
+      allOf:
+        - $ref: '#/components/schemas/DealKeyFields'
+        - type: object
+          properties:
+            contato_nome:        { type: [string, 'null'] }
+            contato_relacao:     { type: [string, 'null'] }
+            stage_nome:          { type: [string, 'null'] }
+            pipeline_nome:       { type: [string, 'null'] }
+            whatsapp_hot:        { type: [string, 'null'] }
+            telefone_hot_1:      { type: [string, 'null'] }
+            telefone_hot_2:      { type: [string, 'null'] }
+            telefone_1:          { type: [string, 'null'] }
+            telefone_2:          { type: [string, 'null'] }
+            telefone_3:          { type: [string, 'null'] }
+            telefone_4:          { type: [string, 'null'] }
+            telefone_5:          { type: [string, 'null'] }
+            telefone_6:          { type: [string, 'null'] }
+            localizado:          { type: [boolean, 'null'] }
+            telefone_localizado: { type: [string, 'null'] }
+
+    DealsPage:
+      type: object
+      required: [items, has_more]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Deal' }
+        next_cursor:
+          type: [string, 'null']
+          description: Pass to `cursor=` on the next call. `null` ends iteration.
+        has_more:
+          type: boolean
+          description: |
+            True when more pages exist. The client SHOULD treat this
+            as the canonical end-of-stream signal (next_cursor=null
+            also indicates end). No `total_estimate` is returned —
+            COUNT(*) over filtered prov_consultas would be too
+            expensive per-page.
+
+    InvalidPhonePayload:
+      type: object
+      required: [telefone]
+      properties:
+        telefone:
+          type: string
+          pattern: '^\d{12,13}$'
+        coluna_origem:
+          type: [string, 'null']
+          enum:
+            - whatsapp_hot
+            - telefone_hot_1
+            - telefone_hot_2
+            - telefone_1
+            - telefone_2
+            - telefone_3
+            - telefone_4
+            - telefone_5
+            - telefone_6
+            - null
+        confidence:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 1
+
+    InvalidateRequest:
+      type: object
+      required: [fonte, deal_id, pasta, contato_tipo, contato_id, motivo, phones]
+      properties:
+        fonte:
+          type: string
+          enum:
+            - dispatch_adb_precheck
+            - debt_adb_intern_admin
+            - debt_adb_provider
+            - oralsin_callback
+            - manual_backfill
+        deal_id: { type: integer, format: int64 }
+        pasta: { type: string }
+        contato_tipo: { type: string }
+        contato_id: { type: integer, format: int64 }
+        motivo: { type: string, example: whatsapp_nao_existe }
+        job_id: { type: [string, 'null'] }
+        phones:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: { $ref: '#/components/schemas/InvalidPhonePayload' }
+        archive_if_empty:
+          type: boolean
+          default: false
+
+    AppliedPhone:
+      type: object
+      required: [telefone, status]
+      properties:
+        telefone: { type: string }
+        status:
+          type: string
+          enum:
+            - applied
+            - duplicate_already_moved
+            - rejected_invalid_format
+            - rejected_not_in_deal
+
+    InvalidateResponse:
+      type: object
+      required: [request_id, idempotent, applied]
+      properties:
+        request_id: { type: string, format: uuid }
+        idempotent:
+          type: boolean
+          description: True when this response was served from the audit log.
+        applied:
+          type: array
+          items: { $ref: '#/components/schemas/AppliedPhone' }
+        deal_archived:
+          type: boolean
+          description: |
+            True when the deal ended phoneless and was archived to
+            `prov_consultas_snapshot` (only when `archive_if_empty=true`
+            in the request and all phones invalid).
+        cleared_columns:
+          type: array
+          items: { type: string }
+          description: |
+            Phone columns NULLed by this call. May be omitted by the
+            current router build — treat as best-effort hint.
+        pipedrive:
+          type: object
+          description: Indicates a Pipedrive activity workflow was scheduled server-side.
+          properties:
+            scenario:
+              type: string
+              enum: [batch_per_pasta, per_phone]
+            workflow_id: { type: string }
+
+    LocalizeRequest:
+      type: object
+      required: [fonte, deal_id, pasta, contato_tipo, contato_id, telefone, source]
+      properties:
+        fonte:
+          type: string
+          enum:
+            - dispatch_adb_precheck
+            - debt_adb_intern_admin
+            - manual_backfill
+        deal_id: { type: integer, format: int64 }
+        pasta: { type: string }
+        contato_tipo: { type: string }
+        contato_id: { type: integer, format: int64 }
+        telefone:
+          type: string
+          pattern: '^\d{12,13}$'
+        source:
+          type: string
+          enum: [cache, adb, waha, manual]
+        job_id: { type: [string, 'null'] }
+
+    LocalizeResponse:
+      type: object
+      required: [request_id, idempotent, status]
+      properties:
+        request_id: { type: string, format: uuid }
+        idempotent: { type: boolean }
+        status:
+          type: string
+          enum: [applied, noop_already_localized]
+          description: |
+            `applied` = UPDATE affected the row.
+            `noop_already_localized` = UPDATE matched 0 rows (deal
+            missing or already localized to the same phone). Both
+            are success.
+        applied:
+          type: boolean
+          deprecated: true
+          description: Legacy alias for `status === 'applied'`. Prefer the enum.
+
+    RevalidateRequest:
+      type: object
+      required: [revalidado_por]
+      properties:
+        revalidado_por: { type: string }
+        motivo: { type: string }
+
+    RevalidateResponse:
+      type: object
+      required: [request_id, marked, warning]
+      properties:
+        request_id: { type: string, format: uuid }
+        marked: { type: boolean }
+        warning:
+          type: string
+          example: phone remains permanently blocked by trigger; this endpoint only marks forensic intent
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            request_id: { type: string, format: uuid }
+            details: { type: object, additionalProperties: true }

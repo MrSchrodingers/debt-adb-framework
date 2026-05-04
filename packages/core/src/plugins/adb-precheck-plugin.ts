@@ -16,12 +16,17 @@ import type { DispatchEventName } from '../events/index.js'
 import type { DispatchEmitter } from '../events/dispatch-emitter.js'
 import {
   PipeboardPg,
+  PipeboardRest,
+  PendingWritebacks,
   PrecheckJobStore,
   PrecheckScanner,
   PipedriveClient,
   PipedriveActivityStore,
   PipedrivePublisher,
   registerPipedrivePluginRoutes,
+  resolvePipeboardBackend,
+  type IPipeboardClient,
+  type PipeboardBackend,
 } from './adb-precheck/index.js'
 
 const scanParamsSchema = z
@@ -77,7 +82,9 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   webhookUrl: string
 
   private ctx: PluginContext | null = null
-  private pg: PipeboardPg
+  private pg: IPipeboardClient
+  private pipeboardBackend: PipeboardBackend = 'sql'
+  private pendingWritebacks: PendingWritebacks | null = null
   private store: PrecheckJobStore
   private validator: ContactValidator
   private scanner: PrecheckScanner | null = null
@@ -99,6 +106,23 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       webhookUrl: string
       pgConnectionString: string
       pgMaxConnections?: number
+      /**
+       * Selects the Pipeboard backend. `sql` uses the legacy SSH-tunnelled
+       * `pg.Pool`; `rest` calls the Pipeboard router endpoints. The two
+       * are mutually exclusive — Pipeboard's blocklist trigger silently
+       * NULLifies any SQL UPDATE that would reintroduce a blocked phone,
+       * so a SQL fallback during rest mode would corrupt mutations.
+       *
+       * Defaults to `sql` until the cutover gate. Set to `rest` only after
+       * `restApiKey` and `restBaseUrl` are configured.
+       */
+      backend?: PipeboardBackend
+      /** Base URL of the Pipeboard router including tenant segment, e.g. http://pipeboard-router:18080/api/v1/adb */
+      restBaseUrl?: string
+      /** API key (X-API-Key header) for Pipeboard. Required when backend=rest. */
+      restApiKey?: string
+      /** Per-request timeout in ms (default 15s). */
+      restTimeoutMs?: number
       /** Default device serial to route ADB probes through. */
       defaultDeviceSerial?: string
       /** Default WAHA session for L2 tiebreaker. */
@@ -151,7 +175,22 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     this.defaultWahaSession = opts.defaultWahaSession
     this.hmacSecret = opts.hmacSecret
     this.onInvalidPhoneCb = opts.onInvalidPhone
-    this.pg = new PipeboardPg(opts.pgConnectionString, opts.pgMaxConnections ?? 4)
+    const backend: PipeboardBackend = opts.backend ?? 'sql'
+    if (backend === 'rest') {
+      if (!opts.restBaseUrl || !opts.restApiKey) {
+        throw new Error(
+          'adb-precheck: backend=rest requires restBaseUrl and restApiKey',
+        )
+      }
+      this.pg = new PipeboardRest({
+        baseUrl: opts.restBaseUrl,
+        apiKey: opts.restApiKey,
+        timeoutMs: opts.restTimeoutMs,
+      })
+    } else {
+      this.pg = new PipeboardPg(opts.pgConnectionString, opts.pgMaxConnections ?? 4)
+    }
+    this.pipeboardBackend = backend
     this.store = new PrecheckJobStore(db)
     this.pipedriveCacheTtlDays = opts.pipedrive?.cacheTtlDays
     this.pipedriveCompanyDomain = opts.pipedrive?.companyDomain ?? null
@@ -206,6 +245,19 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
         companyDomain: this.pipedriveCompanyDomain ?? '(unset — links disabled)',
       })
     }
+    // Fail-closed buffer for retryable Pipeboard failures. Always
+    // wired — the SQL backend rarely fails in a retryable way, but
+    // when it does (network blip on the SSH tunnel, transient PG)
+    // queueing locally is the safe choice. For BACKEND=rest this is
+    // the *only* safe path: a SQL fallback would be silently zeroed
+    // by Pipeboard's blocklist trigger.
+    this.pendingWritebacks = new PendingWritebacks(this.db, {
+      client: this.pg,
+      logger: ctx.logger,
+    })
+    this.pendingWritebacks.initialize()
+    this.pendingWritebacks.startDrain()
+
     this.scanner = new PrecheckScanner({
       pg: this.pg,
       store: this.store,
@@ -218,6 +270,12 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       onInvalidPhone: this.onInvalidPhoneCb,
       pipedrive: this.pipedrivePublisher ?? undefined,
       pipedriveCacheTtlDays: this.pipedriveCacheTtlDays,
+      // Pipeboard generates deal-level Pipedrive activities server-side
+      // when running on the REST backend, so skip the Dispatch-side
+      // `deal_all_fail` to avoid duplicates. `pasta_summary` is still
+      // emitted from Dispatch — Pipeboard does not aggregate it.
+      skipPipedriveDealActivity: this.pipeboardBackend === 'rest',
+      pendingWritebacks: this.pendingWritebacks,
       // Hygienization mode wiring — DispatchPauseState satisfies ScannerPauseState
       // structurally so we can pass it directly. When omitted, the scanner
       // logs a warning and runs without pausing global sends.
@@ -261,6 +319,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
         })
       }
     }
+    this.pendingWritebacks?.stopDrain()
     await this.pg.close()
     this.ctx?.logger.info('ADB pre-check plugin destroyed')
     this.ctx = null
