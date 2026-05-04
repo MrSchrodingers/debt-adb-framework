@@ -291,7 +291,6 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
   const [pastaPrefix, setPastaPrefix] = useState('')
   const [pipelineNome, setPipelineNome] = useState('')
   const [writebackInvalid, setWritebackInvalid] = useState(false)
-  const [writebackLocalizado, setWritebackLocalizado] = useState(false)
   const [deviceSerial, setDeviceSerial] = useState('')
   const [wahaSession, setWahaSession] = useState('')
   const [devices, setDevices] = useState<DeviceOption[]>([])
@@ -341,7 +340,7 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
   const [submitting, setSubmitting] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  const hasWriteback = writebackInvalid || writebackLocalizado
+  const hasWriteback = writebackInvalid
 
   const submit = async () => {
     setSubmitting(true); setErr(null)
@@ -351,7 +350,6 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
         pasta_prefix: pastaPrefix || undefined,
         pipeline_nome: pipelineNome || undefined,
         writeback_invalid: writebackInvalid,
-        writeback_localizado: writebackLocalizado,
         pipedrive_enabled: pipedriveEnabled,
         hygienization_mode: hygienizationMode,
         device_serial: deviceSerial || undefined,
@@ -379,86 +377,91 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
     else submit()
   }
 
+  const inputCls =
+    'w-full rounded-md bg-zinc-950 border border-zinc-800 px-3 py-1.5 text-sm text-zinc-100 focus:outline-none focus:border-sky-500/40'
+
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-      <div className="lg:col-span-2 space-y-4">
-        <Section title="Filtro" description="Restringe o pool de leads a escanear.">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
-            <Field label="Limite de leads" hint="1–100000">
-              <input
-                type="number"
-                value={limit}
-                onChange={(e) => setLimit(e.target.value)}
-                className="w-full rounded-md bg-zinc-950 border border-zinc-800 px-3 py-1.5 text-sm text-zinc-100 focus:outline-none focus:border-sky-500/40"
-              />
-            </Field>
-            <Field label="Prefixo de pasta" hint="opcional">
-              <input
-                type="text"
-                value={pastaPrefix}
-                onChange={(e) => setPastaPrefix(e.target.value)}
-                placeholder="ex: 1857"
-                className="w-full rounded-md bg-zinc-950 border border-zinc-800 px-3 py-1.5 text-sm text-zinc-100 focus:outline-none focus:border-sky-500/40"
-              />
-            </Field>
-            <Field label="Pipeline" hint="pipeline_nome exato">
-              <input
-                type="text"
-                value={pipelineNome}
-                onChange={(e) => setPipelineNome(e.target.value)}
-                placeholder="ex: Localizacao"
-                className="w-full rounded-md bg-zinc-950 border border-zinc-800 px-3 py-1.5 text-sm text-zinc-100 focus:outline-none focus:border-sky-500/40"
-              />
-            </Field>
-          </div>
-        </Section>
+    <div className="space-y-4">
+      <Section title="Filtro" description="Restringe o pool de leads a escanear.">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
+          <Field label="Limite de leads" hint="1–100000">
+            <input
+              type="number"
+              value={limit}
+              onChange={(e) => setLimit(e.target.value)}
+              className={inputCls}
+            />
+          </Field>
+          <Field label="Prefixo de pasta" hint="opcional">
+            <input
+              type="text"
+              value={pastaPrefix}
+              onChange={(e) => setPastaPrefix(e.target.value)}
+              placeholder="ex: 1857"
+              className={inputCls}
+            />
+          </Field>
+          <Field label="Pipeline" hint="pipeline_nome exato">
+            <input
+              type="text"
+              value={pipelineNome}
+              onChange={(e) => setPipelineNome(e.target.value)}
+              placeholder="ex: Localizacao"
+              className={inputCls}
+            />
+          </Field>
+        </div>
+      </Section>
 
-        <Section title="Device de probe" description="Escolha qual telefone (de qual device conectado) executa a verificação ADB. Vazio = usa o default do plugin.">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
-            <Field label="Device (ADB serial)" hint={devicesLoading ? 'carregando...' : `${devices.length} conectados`}>
-              <select
-                value={deviceSerial}
-                onChange={(e) => setDeviceSerial(e.target.value)}
-                disabled={devicesLoading}
-                className="w-full rounded-md bg-zinc-950 border border-zinc-800 px-3 py-1.5 text-sm text-zinc-100 focus:outline-none focus:border-sky-500/40 disabled:opacity-60"
-              >
-                <option value="">— usar default do plugin —</option>
-                {devices.map((d) => (
-                  <option key={d.serial} value={d.serial}>
-                    {d.serial}
-                    {d.primary_account ? ` · ${d.primary_account}` : ''}
-                    {d.status && d.status !== 'online' ? ` (${d.status})` : ''}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="WAHA session (L2 tiebreaker)" hint="opcional · pareie com o device acima">
-              <input
-                type="text"
-                value={wahaSession}
-                onChange={(e) => setWahaSession(e.target.value)}
-                placeholder="ex: 5543991938235"
-                className="w-full rounded-md bg-zinc-950 border border-zinc-800 px-3 py-1.5 text-sm text-zinc-100 focus:outline-none focus:border-sky-500/40"
-              />
-            </Field>
-          </div>
-        </Section>
+      <Section
+        title="Device de probe"
+        description="Escolha qual telefone (de qual device conectado) executa a verificação ADB. Vazio = usa o default do plugin."
+      >
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
+          <Field
+            label="Device (ADB serial)"
+            hint={devicesLoading ? 'carregando...' : `${devices.length} conectados`}
+          >
+            <select
+              value={deviceSerial}
+              onChange={(e) => setDeviceSerial(e.target.value)}
+              disabled={devicesLoading}
+              className={`${inputCls} disabled:opacity-60`}
+            >
+              <option value="">— usar default do plugin —</option>
+              {devices.map((d) => (
+                <option key={d.serial} value={d.serial}>
+                  {d.serial}
+                  {d.primary_account ? ` · ${d.primary_account}` : ''}
+                  {d.status && d.status !== 'online' ? ` (${d.status})` : ''}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="WAHA session (L2 tiebreaker)" hint="opcional · pareie com o device acima">
+            <input
+              type="text"
+              value={wahaSession}
+              onChange={(e) => setWahaSession(e.target.value)}
+              placeholder="ex: 5543991938235"
+              className={inputCls}
+            />
+          </Field>
+        </div>
+      </Section>
 
-        <Section title="Writeback no Pipeboard" description="O plugin só escreve de volta no pg quando explicitamente habilitado.">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Section
+          title="Writeback no Pipeboard"
+          description="O plugin só escreve de volta no Pipeboard quando explicitamente habilitado."
+        >
           <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
             <Toggle
               checked={writebackInvalid}
               onChange={setWritebackInvalid}
               label="Limpar telefones invalidos em prov_consultas"
-              hint="cada telefone invalido vira NULL na sua coluna de origem; deals sem nenhum valido recebem marca em prov_invalidos (motivo='whatsapp_nao_existe')"
+              hint="cada telefone invalido vira NULL na sua coluna de origem; deals sem nenhum valido recebem marca em prov_invalidos (motivo='whatsapp_nao_existe'). A decisão de qual telefone é o 'localizado' é do provedor — não do precheck."
               icon={<Ban className="h-4 w-4 text-rose-400" />}
-            />
-            <Toggle
-              checked={writebackLocalizado}
-              onChange={setWritebackLocalizado}
-              label="Escrever telefone valido em prov_consultas.telefone_localizado"
-              hint="encontrado_por='dispatch_adb_precheck' · so atualiza se mudou"
-              icon={<BadgeCheck className="h-4 w-4 text-emerald-400" />}
             />
             {hasWriteback ? (
               <div className="mt-3 rounded-md border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-amber-300 flex items-start gap-2">
@@ -466,7 +469,7 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
                 <div>
                   <div className="font-medium">Writeback habilitado</div>
                   <p className="mt-0.5 text-amber-300/80">
-                    Este scan vai alterar dados em <code className="text-amber-200">tenant_adb</code> no Pipeboard. Uma confirmacao adicional sera pedida antes de enfileirar.
+                    Este scan vai alterar dados em <code className="text-amber-200">tenant_adb</code> no Pipeboard. Confirmação adicional será pedida antes de enfileirar.
                   </p>
                 </div>
               </div>
@@ -474,78 +477,58 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
           </div>
         </Section>
 
-        <Section title="Pipedrive" description="Atividades / notas no CRM por scan. Quando o token nao esta configurado o flag eh ignorado silenciosamente.">
-          <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
+        <Section
+          title="Pipedrive"
+          description="Atividades / notas no CRM por scan. Quando o token não está configurado o flag é ignorado silenciosamente."
+        >
+          <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
             <Toggle
               checked={pipedriveEnabled}
               onChange={setPipedriveEnabled}
               label="Criar atividades no Pipedrive"
-              hint="cobre os 3 cenarios — phone fail, deal all-fail, pasta summary; desligue para scans dry-run"
-              icon={<svg className="h-4 w-4 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>}
+              hint="cobre os cenários — phone fail, deal all-fail, pasta summary; desligue para scans dry-run"
+              icon={<BadgeCheck className="h-4 w-4 text-sky-400" />}
             />
           </div>
         </Section>
-
-        <Section title="Modo Higienização (segurança)" description="Para varreduras grandes (>100 deals). Pausa o envio em produção pelo tempo do scan e usa rate conservador.">
-          <div className="space-y-2 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4">
-            <Toggle
-              checked={hygienizationMode}
-              onChange={setHygienizationMode}
-              label="Pausar envio prod e usar rate conservador"
-              hint="recheck_after_days será forçado para no mínimo 30; durante o scan, NENHUMA mensagem prod sai. Auto-resume ao terminar."
-              icon={<svg className="h-4 w-4 text-amber-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>}
-            />
-            {hygienizationMode ? (
-              <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200 flex items-start gap-2">
-                <CircleAlert className="h-4 w-4 shrink-0 mt-0.5" />
-                <div>
-                  <div className="font-medium">Pausa global será aplicada</div>
-                  <p className="mt-0.5 text-amber-200/80">
-                    Recomendado para scans de varredura ampla. Confirmação adicional será pedida antes de iniciar.
-                  </p>
-                </div>
-              </div>
-            ) : null}
-          </div>
-        </Section>
-
-        {err ? <InlineError message={`Erro: ${err}`} /> : null}
-
-        <div className="flex items-center gap-3">
-          <AccentButton accent={ACCENT} onClick={handleStart} disabled={submitting} icon={Play}>
-            {submitting ? 'Enfileirando…' : 'Iniciar Scan'}
-          </AccentButton>
-          <p className="text-xs text-zinc-500">
-            Pool-based · idempotente por external_ref · cache compartilhado com Oralsin
-          </p>
-        </div>
       </div>
 
-      <aside className="space-y-3">
-        <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
-          <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-zinc-500">
-            <Zap className="h-3.5 w-3.5" /> Como funciona
-          </div>
-          <ol className="mt-3 space-y-2 text-xs text-zinc-300 list-decimal list-inside">
-            <li>Itera <code className="text-zinc-100">tenant_adb.prov_consultas</code> em paginas keyset.</li>
-            <li>Extrai ate 9 telefones por lead, normaliza para E.164 BR e dedup.</li>
-            <li>Valida via L1 cache · L3 ADB probe · L2 WAHA tiebreaker.</li>
-            <li>Salva per-deal em SQLite + reaproveita via <code className="text-zinc-100">wa_contacts</code>.</li>
-            <li>Opcionalmente grava em <code className="text-zinc-100">prov_invalidos</code> / <code className="text-zinc-100">prov_consultas</code>.</li>
-            <li>Callback HMAC para <code className="text-zinc-100">PLUGIN_ADB_PRECHECK_WEBHOOK_URL</code> ao fim.</li>
-          </ol>
+      <Section
+        title="Modo Higienização (segurança)"
+        description="Para varreduras grandes (>100 deals). Pausa o envio em produção pelo tempo do scan e usa rate conservador."
+      >
+        <div className="space-y-2 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4">
+          <Toggle
+            checked={hygienizationMode}
+            onChange={setHygienizationMode}
+            label="Pausar envio prod e usar rate conservador"
+            hint="recheck_after_days será forçado para no mínimo 30; durante o scan, NENHUMA mensagem prod sai. Auto-resume ao terminar."
+            icon={<CircleAlert className="h-4 w-4 text-amber-300" />}
+          />
+          {hygienizationMode ? (
+            <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200 flex items-start gap-2">
+              <CircleAlert className="h-4 w-4 shrink-0 mt-0.5" />
+              <div>
+                <div className="font-medium">Pausa global será aplicada</div>
+                <p className="mt-0.5 text-amber-200/80">
+                  Recomendado para scans de varredura ampla. Confirmação adicional será pedida antes de iniciar.
+                </p>
+              </div>
+            </div>
+          ) : null}
         </div>
+      </Section>
 
-        <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
-          <div className="text-xs uppercase tracking-wide text-zinc-500">Isolamento</div>
-          <ul className="mt-2 space-y-1 text-xs text-zinc-400">
-            <li className="flex items-start gap-2"><CheckCircle2 className="h-3.5 w-3.5 mt-0.5 text-emerald-400" />Pool pg proprio</li>
-            <li className="flex items-start gap-2"><CheckCircle2 className="h-3.5 w-3.5 mt-0.5 text-emerald-400" />Tabelas <code>adb_precheck_*</code></li>
-            <li className="flex items-start gap-2"><CheckCircle2 className="h-3.5 w-3.5 mt-0.5 text-emerald-400" />Rotas namespaced</li>
-            <li className="flex items-start gap-2"><CheckCircle2 className="h-3.5 w-3.5 mt-0.5 text-emerald-400" />Env prefix <code>PLUGIN_ADB_PRECHECK_*</code></li>
-          </ul>
-        </div>
-      </aside>
+      {err ? <InlineError message={`Erro: ${err}`} /> : null}
+
+      <div className="flex items-center gap-3 pt-2">
+        <AccentButton accent={ACCENT} onClick={handleStart} disabled={submitting} icon={Play}>
+          {submitting ? 'Enfileirando…' : 'Iniciar Scan'}
+        </AccentButton>
+        <p className="text-xs text-zinc-500">
+          Pool-based · idempotente por external_ref · cache compartilhado com Oralsin
+        </p>
+      </div>
 
       {confirming ? (
         <ConfirmModal
@@ -553,7 +536,6 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
           onConfirm={submit}
           submitting={submitting}
           writebackInvalid={writebackInvalid}
-          writebackLocalizado={writebackLocalizado}
         />
       ) : null}
 
@@ -625,13 +607,11 @@ function ConfirmModal({
   onConfirm,
   submitting,
   writebackInvalid,
-  writebackLocalizado,
 }: {
   onCancel: () => void
   onConfirm: () => void
   submitting: boolean
   writebackInvalid: boolean
-  writebackLocalizado: boolean
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
@@ -647,10 +627,11 @@ function ConfirmModal({
             </p>
             <ul className="mt-3 space-y-1 text-xs text-zinc-300">
               {writebackInvalid ? (
-                <li className="flex items-start gap-2"><Ban className="h-3.5 w-3.5 mt-0.5 text-rose-400" /><span>INSERT em <code>prov_invalidos</code> com motivo=whatsapp_nao_existe</span></li>
-              ) : null}
-              {writebackLocalizado ? (
-                <li className="flex items-start gap-2"><BadgeCheck className="h-3.5 w-3.5 mt-0.5 text-emerald-400" /><span>UPDATE em <code>prov_consultas</code> marcando telefone_localizado</span></li>
+                <>
+                  <li className="flex items-start gap-2"><Ban className="h-3.5 w-3.5 mt-0.5 text-rose-400" /><span>UPSERT em <code>prov_telefones_invalidos</code> (blocklist autoritativa)</span></li>
+                  <li className="flex items-start gap-2"><Ban className="h-3.5 w-3.5 mt-0.5 text-rose-400" /><span>UPDATE em <code>prov_consultas</code> NULLificando colunas dos invalidos</span></li>
+                  <li className="flex items-start gap-2"><Ban className="h-3.5 w-3.5 mt-0.5 text-rose-400" /><span>INSERT em <code>prov_invalidos</code> + archive p/ snapshot quando deal fica vazio</span></li>
+                </>
               ) : null}
             </ul>
           </div>

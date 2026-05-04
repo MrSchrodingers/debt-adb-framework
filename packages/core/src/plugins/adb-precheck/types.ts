@@ -108,7 +108,13 @@ export interface PrecheckScanParams {
   pipeline_nome?: string
   /** If true, also write invalid phones back to prov_invalidos. */
   writeback_invalid?: boolean
-  /** If true, update prov_consultas.telefone_localizado / localizado. */
+  /**
+   * @deprecated Removed from Dispatch's responsibility — "telefone
+   * localizado" is decided by the provider (which holds the actual
+   * delivery answer), not by the existence check Dispatch performs.
+   * Kept on the type for back-compat with stored params_json blobs;
+   * the scanner ignores it.
+   */
   writeback_localizado?: boolean
   /**
    * Per-job opt-in for Pipedrive activity creation. When false the scanner
