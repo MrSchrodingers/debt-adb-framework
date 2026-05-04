@@ -1,8 +1,8 @@
 import type Database from 'better-sqlite3'
 import type { WhatsAppAccount, AdbShellAdapter } from './types.js'
 import { normalizeBrPhone, type PhoneNormalizerLogger } from './phone-normalizer.js'
+import { extractPhonesViaRoot, isDeviceRooted } from './wa-phone-extractor-root.js'
 
-const PROFILES = [0, 10, 11, 12]
 const WA_PACKAGES = ['com.whatsapp', 'com.whatsapp.w4b'] as const
 
 const PREFS_FILE: Record<string, string> = {
@@ -32,30 +32,110 @@ export class WaAccountMapper {
     `)
   }
 
+  /**
+   * Map WhatsApp accounts on a device. The result is the AUTHORITATIVE
+   * snapshot of (profile, package) → phoneNumber for the serial — any
+   * row in `whatsapp_accounts` for this device that is not produced by
+   * the current scan is pruned, so a phone removed from the device
+   * (or a profile that was deleted) disappears from the mapping
+   * instead of lingering as stale data.
+   *
+   * Discovery:
+   *   1. `pm list users` (dynamic — never assume profile IDs).
+   *   2. On rooted devices, use `extractPhonesViaRoot` (reads
+   *      `shared_prefs/registration_jid` directly, distinguishes
+   *      `not_installed` from `logged_out`).
+   *   3. On non-rooted devices, fall back to the contacts content
+   *      provider (existing logic).
+   */
   async mapAccounts(serial: string): Promise<WhatsAppAccount[]> {
     const accounts: WhatsAppAccount[] = []
+    const rooted = await isDeviceRooted(this.adb, serial).catch(() => false)
 
-    for (const profileId of PROFILES) {
-      const output = await this.adb.shell(serial, `pm list packages --user ${profileId} whatsapp`)
-      const installed = output
-        .split('\n')
-        .map((line) => line.replace('package:', '').trim())
-        .filter((pkg): pkg is (typeof WA_PACKAGES)[number] =>
-          (WA_PACKAGES as readonly string[]).includes(pkg),
-        )
-
-      // Extract phone numbers via contacts content provider (works without root)
-      const phonesByType = await this.extractPhoneNumbers(serial, profileId)
-
-      for (const pkg of installed) {
-        const accountType = pkg // com.whatsapp or com.whatsapp.w4b
-        const phoneNumber = phonesByType[accountType] ?? null
-        accounts.push({ deviceSerial: serial, profileId, packageName: pkg, phoneNumber })
+    if (rooted) {
+      // Single sweep: root extractor is authoritative.
+      const rootResults = await extractPhonesViaRoot(this.adb, serial)
+      for (const r of rootResults) {
+        // We persist EVERY (profile, package) the device exposes —
+        // including null phoneNumber rows for `not_installed` /
+        // `logged_out`. This lets the UI show "WA present but no
+        // account" explicitly, and lets prune stay sound.
+        accounts.push({
+          deviceSerial: serial,
+          profileId: r.profile_id,
+          packageName: r.package_name,
+          phoneNumber: r.phone ?? null,
+        })
+      }
+    } else {
+      // Non-rooted fallback: dynamic profile discovery via `pm list
+      // users` (no root needed) + content provider.
+      let profiles: number[]
+      try {
+        profiles = await this.listProfilesViaPm(serial)
+      } catch {
+        profiles = [0]
+      }
+      if (profiles.length === 0) profiles = [0]
+      for (const profileId of profiles) {
+        const output = await this.adb
+          .shell(serial, `pm list packages --user ${profileId} whatsapp`)
+          .catch(() => '')
+        const installed = output
+          .split('\n')
+          .map((line) => line.replace('package:', '').trim())
+          .filter((pkg): pkg is (typeof WA_PACKAGES)[number] =>
+            (WA_PACKAGES as readonly string[]).includes(pkg),
+          )
+        const phonesByType = await this.extractPhoneNumbers(serial, profileId)
+        for (const pkg of installed) {
+          accounts.push({
+            deviceSerial: serial,
+            profileId,
+            packageName: pkg,
+            phoneNumber: phonesByType[pkg] ?? null,
+          })
+        }
       }
     }
 
     this.upsertAccounts(serial, accounts)
+    this.pruneStaleAccounts(serial, accounts)
     return accounts
+  }
+
+  /**
+   * Delete persisted rows for this device that the current scan did
+   * NOT touch. Keeps the table consistent with the device reality —
+   * profiles deleted, WA uninstalled, etc.
+   */
+  /** Dynamic profile discovery without root: parses `pm list users`. */
+  private async listProfilesViaPm(serial: string): Promise<number[]> {
+    const out = await this.adb.shell(serial, 'pm list users')
+    const ids = new Set<number>()
+    for (const m of out.matchAll(/UserInfo\{(\d+):/g)) {
+      const id = parseInt(m[1]!, 10)
+      if (!Number.isNaN(id)) ids.add(id)
+    }
+    return Array.from(ids).sort((a, b) => a - b)
+  }
+
+  private pruneStaleAccounts(serial: string, current: WhatsAppAccount[]): void {
+    const keep = new Set(current.map((a) => `${a.profileId}|${a.packageName}`))
+    const all = this.db
+      .prepare('SELECT profile_id, package_name FROM whatsapp_accounts WHERE device_serial = ?')
+      .all(serial) as Array<{ profile_id: number; package_name: string }>
+    const del = this.db.prepare(
+      'DELETE FROM whatsapp_accounts WHERE device_serial = ? AND profile_id = ? AND package_name = ?',
+    )
+    const txn = this.db.transaction(() => {
+      for (const row of all) {
+        if (!keep.has(`${row.profile_id}|${row.package_name}`)) {
+          del.run(serial, row.profile_id, row.package_name)
+        }
+      }
+    })
+    txn()
   }
 
   getAccountsByDevice(serial: string): WhatsAppAccount[] {

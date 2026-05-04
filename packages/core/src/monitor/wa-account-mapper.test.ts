@@ -76,14 +76,23 @@ describe('WaAccountMapper', () => {
       expect(packages).toContain('com.whatsapp.w4b')
     })
 
-    it('iterates user profiles 0, 10, 11, 12', async () => {
+    it('iterates user profiles discovered via pm list users', async () => {
       const profilesSeen = new Set<string>()
       fakeShell.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd === 'pm list users') {
+          return [
+            'Users:',
+            '\tUserInfo{0:Main:4c13} running',
+            '\tUserInfo{10:Work:410}',
+            '\tUserInfo{11:Profile2:410}',
+            '\tUserInfo{12:Profile3:410}',
+          ].join('\n')
+        }
         const userMatch = cmd.match(/--user (\d+)/)
         if (userMatch) profilesSeen.add(userMatch[1])
         if (cmd.includes('pm list packages') && cmd.includes('--user 10'))
           return 'package:com.whatsapp'
-        if (cmd.includes('content query') && cmd.includes("account_type='com.whatsapp") && cmd.includes("content query") && cmd.includes('--user 10'))
+        if (cmd.includes('content query') && cmd.includes("account_type='com.whatsapp") && cmd.includes('--user 10'))
           return 'Row: 0 sync1=5543968350095@s.whatsapp.net'
         return ''
       })
