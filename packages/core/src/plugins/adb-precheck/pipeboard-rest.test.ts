@@ -41,9 +41,10 @@ describe('PipeboardRest.applyDealInvalidation', () => {
       jsonResponse(200, {
         request_id: 'req-1',
         idempotent: false,
-        applied: [{ telefone: '5543991938235', status: 'applied' }],
+        applied: [
+          { telefone: '5543991938235', status: 'applied', cleared_from: ['telefone_1'] },
+        ],
         deal_archived: false,
-        cleared_columns: ['telefone_1'],
       }),
     )
     const c = makeClient(fetchImpl)
@@ -55,7 +56,10 @@ describe('PipeboardRest.applyDealInvalidation', () => {
       archiveIfEmpty: false,
     })
     expect(res.requestId).toBe('req-1')
-    expect(res.applied).toEqual([{ telefone: '5543991938235', status: 'applied' }])
+    expect(res.applied).toEqual([
+      { telefone: '5543991938235', status: 'applied', clearedFrom: ['telefone_1'] },
+    ])
+    expect(res.clearedColumns).toEqual(['telefone_1'])
     const metricLines = await metricsRegistry.metrics()
     expect(metricLines).toContain('op="invalidate"')
     expect(metricLines).toContain('status="200"')
@@ -175,6 +179,36 @@ describe('PipeboardRest.applyDealInvalidation', () => {
       expect((e as PipeboardRestError).status).toBe(429)
       expect((e as PipeboardRestError).isRetryable).toBe(true)
     }
+  })
+
+  it('parses rejected_no_match + rejected_invalid_input statuses', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        request_id: 'req-x',
+        idempotent: false,
+        applied: [
+          { telefone: '5500000000001', status: 'rejected_no_match' },
+          { telefone: 'bogus', status: 'rejected_invalid_input' },
+        ],
+        deal_archived: false,
+      }),
+    )
+    const c = makeClient(fetchImpl)
+    const res = await c.applyDealInvalidation(KEY, {
+      motivo: 'm',
+      jobId: 'j',
+      fonte: 'dispatch_adb_precheck',
+      phones: [
+        { telefone: '5500000000001', colunaOrigem: null, confidence: null },
+        { telefone: 'bogus', colunaOrigem: null, confidence: null },
+      ],
+      archiveIfEmpty: false,
+    })
+    expect(res.applied.map((p) => p.status)).toEqual([
+      'rejected_no_match',
+      'rejected_invalid_input',
+    ])
+    expect(res.clearedColumns).toEqual([])
   })
 
   it('503 server error → retryable', async () => {

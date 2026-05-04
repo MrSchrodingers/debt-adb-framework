@@ -99,7 +99,11 @@ export class PipeboardRest implements IPipeboardClient {
     const json = (await res.json()) as {
       request_id: string
       idempotent: boolean
-      applied: AppliedPhone[]
+      applied: Array<{
+        telefone: string
+        status: AppliedPhone['status']
+        cleared_from?: string[]
+      }>
       // Pipeboard returns `deal_archived` in its current response;
       // accept the legacy `archived` alias defensively.
       deal_archived?: boolean
@@ -107,12 +111,27 @@ export class PipeboardRest implements IPipeboardClient {
       cleared_columns?: string[]
       pipedrive?: { scenario?: string; workflow_id?: string }
     }
+    const applied: AppliedPhone[] = (json.applied ?? []).map((p) => ({
+      telefone: p.telefone,
+      status: p.status,
+      clearedFrom: p.cleared_from ?? [],
+    }))
+    // Aggregate cleared_from across phones for the legacy
+    // clearedColumns top-level field, falling back to the deprecated
+    // server-side `cleared_columns` if no per-phone data exists.
+    const aggregatedCleared = new Set<string>()
+    for (const p of applied) {
+      for (const c of p.clearedFrom ?? []) aggregatedCleared.add(c)
+    }
+    const clearedColumns = aggregatedCleared.size > 0
+      ? [...aggregatedCleared]
+      : (json.cleared_columns ?? [])
     return {
       requestId: json.request_id,
       idempotent: Boolean(json.idempotent),
-      applied: json.applied ?? [],
+      applied,
       archived: Boolean(json.deal_archived ?? json.archived),
-      clearedColumns: json.cleared_columns ?? [],
+      clearedColumns,
     }
   }
 
