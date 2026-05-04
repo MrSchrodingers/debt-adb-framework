@@ -49,3 +49,57 @@ describe('PrecheckJobStore.countScannedSince', () => {
     expect(store.countScannedSince('2026-04-15T00:00:00.000Z').fresh).toBe(1)
   })
 })
+
+describe('PrecheckJobStore.reapOrphanedRunningJobs', () => {
+  let db: ReturnType<typeof Database>
+  let store: PrecheckJobStore
+
+  beforeEach(() => {
+    db = new Database(':memory:')
+    store = new PrecheckJobStore(db)
+    store.initialize()
+  })
+
+  function insertJob(id: string, status: string): void {
+    db.prepare(
+      `INSERT INTO adb_precheck_jobs (id, status, params_json) VALUES (?,?,?)`,
+    ).run(id, status, '{}')
+  }
+
+  it('marks every running job as failed with the given reason', () => {
+    insertJob('a', 'running')
+    insertJob('b', 'running')
+    insertJob('c', 'completed')
+    const reaped = store.reapOrphanedRunningJobs('test-reason')
+    expect(reaped).toBe(2)
+    const rows = db
+      .prepare('SELECT id, status, last_error FROM adb_precheck_jobs ORDER BY id')
+      .all() as Array<{ id: string; status: string; last_error: string | null }>
+    expect(rows).toEqual([
+      { id: 'a', status: 'failed', last_error: 'test-reason' },
+      { id: 'b', status: 'failed', last_error: 'test-reason' },
+      { id: 'c', status: 'completed', last_error: null },
+    ])
+  })
+
+  it('is a no-op when nothing is running', () => {
+    insertJob('a', 'completed')
+    insertJob('b', 'failed')
+    expect(store.reapOrphanedRunningJobs()).toBe(0)
+  })
+
+  it('is idempotent across repeated calls', () => {
+    insertJob('a', 'running')
+    expect(store.reapOrphanedRunningJobs()).toBe(1)
+    expect(store.reapOrphanedRunningJobs()).toBe(0)
+  })
+
+  it('uses the default reason when none provided', () => {
+    insertJob('a', 'running')
+    store.reapOrphanedRunningJobs()
+    const row = db
+      .prepare('SELECT last_error FROM adb_precheck_jobs WHERE id = ?')
+      .get('a') as { last_error: string }
+    expect(row.last_error).toBe('orphaned by service restart')
+  })
+})

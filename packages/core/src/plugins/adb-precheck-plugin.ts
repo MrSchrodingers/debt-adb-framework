@@ -245,6 +245,15 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   async init(ctx: PluginContext): Promise<void> {
     this.ctx = ctx
     this.store.initialize()
+    // Boot-time watchdog: anything still flagged `running` in the job
+    // table belongs to a previous process that died without finishing.
+    // Mark them as failed so the UI / metrics don't carry phantom
+    // "in flight" jobs forever (this was how the 4-day-old 42/50 job
+    // got stuck before).
+    const reaped = this.store.reapOrphanedRunningJobs()
+    if (reaped > 0) {
+      ctx.logger.warn('reaped orphaned precheck jobs from prior run', { count: reaped })
+    }
     if (this.pipedriveClient) {
       this.pipedriveActivityStore = new PipedriveActivityStore(this.db)
       this.pipedriveActivityStore.initialize()

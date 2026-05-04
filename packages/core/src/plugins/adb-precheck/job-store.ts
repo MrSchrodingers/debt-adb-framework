@@ -83,6 +83,20 @@ export class PrecheckJobStore {
     }
   }
 
+  /** Mark every job left in `running` state as failed. */
+  reapOrphanedRunningJobs(reason = 'orphaned by service restart'): number {
+    const result = this.db
+      .prepare(
+        `UPDATE adb_precheck_jobs
+            SET status = 'failed',
+                finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                last_error = ?
+          WHERE status = 'running'`,
+      )
+      .run(reason)
+    return result.changes ?? 0
+  }
+
   createJob(
     params: PrecheckScanParams,
     externalRef?: string,
