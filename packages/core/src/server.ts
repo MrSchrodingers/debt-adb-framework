@@ -564,6 +564,18 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // ── Sender Mapping (DP-1) ──
   const senderMapping = new SenderMapping(db, senderScoring, senderHealth)
   senderMapping.initialize()
+  // Boot-time reconcile: kill any sender row whose (device, profile,
+  // package) no longer holds the same number in whatsapp_accounts —
+  // those are phantoms left by previous scans (the most common case
+  // is a number that was logged out / replaced on the device).
+  try {
+    const reapResult = senderMapping.reconcileFromWhatsappAccounts()
+    if (reapResult.inserted + reapResult.updated + reapResult.deleted > 0) {
+      server.log.warn({ ...reapResult }, 'sender_mapping boot reconciliation')
+    }
+  } catch (err) {
+    server.log.error({ err }, 'sender_mapping boot reconciliation failed')
+  }
   // Late-binding: the session routes registered earlier read this in
   // request handlers (not at boot), so wiring it now is safe.
   sessionDeps.senderMapping = senderMapping
@@ -1520,6 +1532,18 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       } catch (err) {
         server.log.error({ err, serial: device.serial }, 'WA account mapping failed for device')
       }
+    }
+    // After re-scanning every device, propagate the new truth to
+    // sender_mapping. Removes phantoms (number left the device),
+    // inserts new senders (account paired since last cycle), and
+    // refreshes (device, profile, package) when an account moved.
+    try {
+      const r = senderMapping.reconcileFromWhatsappAccounts()
+      if (r.inserted + r.updated + r.deleted > 0) {
+        server.log.info({ ...r }, 'sender_mapping reconciled with whatsapp_accounts')
+      }
+    } catch (err) {
+      server.log.error({ err }, 'sender_mapping reconciliation failed')
     }
   }
   emitter.on('device:connected', () => {
