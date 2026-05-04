@@ -139,6 +139,20 @@ export interface PrecheckScanParams {
    * walks the pool with conservative rate limits.
    */
   hygienization_mode?: boolean
+  /**
+   * Per-job ADB device override. When set, the scanner routes the L3
+   * probe to this serial instead of the plugin's default
+   * (`PLUGIN_ADB_PRECHECK_DEVICE_SERIAL`). Useful when multiple devices
+   * are connected and the operator wants the validation phone to come
+   * from a specific WhatsApp account.
+   */
+  device_serial?: string
+  /**
+   * Per-job WAHA session override for the L2 tiebreaker. Pair with
+   * `device_serial` when both legs of validation should target the
+   * same WhatsApp account.
+   */
+  waha_session?: string
 }
 
 // ── Pipedrive integration intents ─────────────────────────────────────────

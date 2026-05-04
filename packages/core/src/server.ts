@@ -669,9 +669,13 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const pluginMap: Record<string, () => DispatchPlugin> = {
     oralsin: () => new OralsinPlugin(process.env.PLUGIN_ORALSIN_WEBHOOK_URL || 'http://localhost:8000/api/webhooks/dispatch/'),
     'adb-precheck': () => {
-      const pgUrl = process.env.PLUGIN_ADB_PRECHECK_PG_URL
-      if (!pgUrl) {
-        throw new Error('PLUGIN_ADB_PRECHECK_PG_URL is required when adb-precheck plugin is enabled')
+      // Backend selection — config-schema already validated the matching
+      // credentials exist for whichever backend was chosen. Here we
+      // just route the values to the plugin constructor.
+      const backend = resolvePipeboardBackend(process.env)
+      const pgUrl = process.env.PLUGIN_ADB_PRECHECK_PG_URL ?? ''
+      if (backend === 'sql' && !pgUrl) {
+        throw new Error('PLUGIN_ADB_PRECHECK_PG_URL is required when adb-precheck BACKEND=sql')
       }
       // Optional WAHA client for L2 tiebreaker — reuse env from core WAHA config.
       const wahaApiUrl = process.env.WAHA_API_URL
@@ -692,7 +696,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
           webhookUrl: process.env.PLUGIN_ADB_PRECHECK_WEBHOOK_URL || '',
           pgConnectionString: pgUrl,
           pgMaxConnections: Number(process.env.PLUGIN_ADB_PRECHECK_PG_MAX || 4),
-          backend: resolvePipeboardBackend(process.env),
+          backend,
           restBaseUrl: process.env.PLUGIN_ADB_PRECHECK_REST_BASE_URL,
           restApiKey: process.env.PLUGIN_ADB_PRECHECK_REST_API_KEY,
           restTimeoutMs: process.env.PLUGIN_ADB_PRECHECK_REST_TIMEOUT_MS
