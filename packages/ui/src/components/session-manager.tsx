@@ -138,13 +138,23 @@ export function SessionManager() {
                 phoneNumber: string | null
                 stale?: boolean
               }>
-              const profiles = accs
-                .filter((x) => !x.stale)
-                .map((x) => ({
-                  profileId: x.profileId,
-                  phoneNumber: x.phoneNumber,
-                  packageName: x.packageName,
-                }))
+              // Collapse the (com.whatsapp + com.whatsapp.w4b) pair
+              // per profile into a single entry: each Android user has
+              // ONE physical phone slot, regardless of which WA flavor
+              // is logged in. Prefer com.whatsapp; fall back to w4b.
+              const byProfile = new Map<number, { profileId: number; phoneNumber: string | null; packageName: string }>()
+              for (const x of accs) {
+                if (x.stale) continue
+                const cur = byProfile.get(x.profileId)
+                if (!cur || (x.packageName === 'com.whatsapp' && cur.packageName !== 'com.whatsapp')) {
+                  byProfile.set(x.profileId, {
+                    profileId: x.profileId,
+                    phoneNumber: x.phoneNumber,
+                    packageName: x.packageName,
+                  })
+                }
+              }
+              const profiles = [...byProfile.values()].sort((a, b) => a.profileId - b.profileId)
               return { serial: d.serial, status: d.status, profiles }
             } catch {
               return { serial: d.serial, status: d.status, profiles: [] }
@@ -537,13 +547,40 @@ export function SessionManager() {
                   className="rounded bg-zinc-800 border border-zinc-700 px-2 py-1 text-xs text-zinc-200 disabled:opacity-50"
                 >
                   <option value="">— profile —</option>
-                  {(devices.find((d) => d.serial === attachSelection[session.sessionName]?.serial)?.profiles ?? [])
-                    .map((p) => (
-                      <option key={p.profileId} value={p.profileId}>
-                        profile {p.profileId}
-                        {p.phoneNumber ? ` · ${p.phoneNumber}` : ' · vazio'}
-                      </option>
-                    ))}
+                  {(() => {
+                    const dev = devices.find((d) => d.serial === attachSelection[session.sessionName]?.serial)
+                    if (!dev) return null
+                    // Normalize digits-only for phone comparison
+                    // (session.phoneNumber from WAHA may be 12 digits
+                    // BR-style, profile number may be 13 with the 9-prefix).
+                    const sessDigits = (session.phoneNumber ?? '').replace(/\D/g, '')
+                    const matches = (a: string, b: string) => {
+                      if (!a || !b) return false
+                      return a === b || a.endsWith(b) || b.endsWith(a)
+                    }
+                    return dev.profiles.map((p) => {
+                      const profDigits = (p.phoneNumber ?? '').replace(/\D/g, '')
+                      const isMatch = matches(sessDigits, profDigits)
+                      const isOtherNumber = !!profDigits && !isMatch
+                      let label = `profile ${p.profileId}`
+                      if (!profDigits) {
+                        label += ' · vago (sem WA logado)'
+                      } else if (isMatch) {
+                        label += ` · ✓ casa com sessão (${p.phoneNumber})`
+                      } else {
+                        label += ` · ⚠ ocupado por ${p.phoneNumber}`
+                      }
+                      return (
+                        <option
+                          key={p.profileId}
+                          value={p.profileId}
+                          disabled={isOtherNumber}
+                        >
+                          {label}
+                        </option>
+                      )
+                    })
+                  })()}
                 </select>
               </div>
             )}
