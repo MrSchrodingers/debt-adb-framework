@@ -1,8 +1,24 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
+import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import type { InboxAutomation } from '../chatwoot/inbox-automation.js'
 import type { ManagedSessions } from '../chatwoot/managed-sessions.js'
 import type { SenderMapping } from '../engine/sender-mapping.js'
+
+/**
+ * Generates a 13-digit numeric placeholder for a session that has not
+ * yet been paired. Format: `99999` + 8 digits derived from sha256(
+ * sessionName). Looks Brazilian (13 digits, 9-prefix), survives the
+ * sender_mapping `normalizePhone` step (which strips non-digits), and
+ * the `99999` prefix lets the reconciler tell placeholders apart from
+ * real numbers so it never deletes them.
+ */
+function placeholderPhoneFor(sessionName: string): string {
+  const hash = createHash('sha256').update(sessionName).digest('hex')
+  // First 8 hex chars → integer → 8-digit zero-padded decimal slice.
+  const n = parseInt(hash.slice(0, 8), 16) % 100_000_000
+  return '99999' + String(n).padStart(8, '0')
+}
 
 interface SessionDeps {
   inboxAutomation: InboxAutomation | null
@@ -115,7 +131,7 @@ export function registerSessionRoutes(server: FastifyInstance, deps: SessionDeps
       // pairing concludes — we use the session name to keep the unique
       // constraint happy without colliding with real numbers.
       if (deps.senderMapping) {
-        const placeholder = session.phoneNumber || `pending:${name}`
+        const placeholder = session.phoneNumber || placeholderPhoneFor(name)
         const existing = deps.senderMapping.getByPhone(placeholder)
         if (existing) {
           deps.senderMapping.update(placeholder, {

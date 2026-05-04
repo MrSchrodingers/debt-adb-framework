@@ -203,6 +203,116 @@ export class SenderMapping {
   }
 
   /**
+   * Reconcile sender_mapping with the truth in whatsapp_accounts.
+   *
+   * Rules:
+   *   - For every (device, profile, package) in whatsapp_accounts with
+   *     a real phone: ensure a sender_mapping row exists with the
+   *     correct phone. If a row already exists for the same
+   *     (device, profile, package) with a DIFFERENT phone, it's stale
+   *     (account was switched on the device) — delete it and insert
+   *     the fresh one.
+   *   - For every sender_mapping row whose phone_number is "real"
+   *     (does NOT start with the placeholder prefix) and whose
+   *     (device, profile, package) is NOT present in whatsapp_accounts
+   *     with that exact phone → DELETE. The phone left the device.
+   *   - Placeholder rows (`PLACEHOLDER_PREFIX` below) are PRESERVED:
+   *     they belong to managed sessions waiting for QR scan.
+   *
+   * Returns counts so the caller can log a reconciliation summary.
+   */
+  reconcileFromWhatsappAccounts(): { inserted: number; updated: number; deleted: number } {
+    const PLACEHOLDER_PREFIX = '99999'
+    const truth = this.db
+      .prepare(
+        `SELECT device_serial, profile_id, package_name, phone_number
+           FROM whatsapp_accounts
+          WHERE phone_number IS NOT NULL AND phone_number != ''`,
+      )
+      .all() as Array<{
+        device_serial: string
+        profile_id: number
+        package_name: string
+        phone_number: string
+      }>
+
+    const truthByDevProfPkg = new Map<string, string>()
+    for (const t of truth) {
+      truthByDevProfPkg.set(`${t.device_serial}|${t.profile_id}|${t.package_name}`, t.phone_number)
+    }
+
+    const existing = this.db
+      .prepare(
+        `SELECT id, phone_number, device_serial, profile_id, app_package, waha_session
+           FROM sender_mapping WHERE active = 1`,
+      )
+      .all() as Array<{
+        id: string
+        phone_number: string
+        device_serial: string
+        profile_id: number
+        app_package: string
+        waha_session: string | null
+      }>
+
+    let inserted = 0
+    let updated = 0
+    let deleted = 0
+    const txn = this.db.transaction(() => {
+      // Pass 1: delete stale rows whose (dev, prof, pkg) no longer
+      // matches truth. Placeholders are preserved unconditionally.
+      for (const e of existing) {
+        if (e.phone_number.startsWith(PLACEHOLDER_PREFIX)) continue
+        const key = `${e.device_serial}|${e.profile_id}|${e.app_package}`
+        const truthPhone = truthByDevProfPkg.get(key)
+        if (truthPhone !== e.phone_number) {
+          this.db.prepare('DELETE FROM sender_mapping WHERE id = ?').run(e.id)
+          deleted++
+        }
+      }
+
+      // Pass 2: ensure every truth row has a matching sender_mapping.
+      const stmtCheck = this.db.prepare(
+        'SELECT id FROM sender_mapping WHERE phone_number = ? AND active = 1',
+      )
+      for (const t of truth) {
+        const row = stmtCheck.get(t.phone_number) as { id: string } | undefined
+        if (row) {
+          // Already exists — make sure (device, profile, package) is correct.
+          const r = this.db
+            .prepare(
+              `UPDATE sender_mapping
+                  SET device_serial = ?, profile_id = ?, app_package = ?,
+                      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE phone_number = ?
+                  AND (device_serial != ? OR profile_id != ? OR app_package != ?)`,
+            )
+            .run(
+              t.device_serial,
+              t.profile_id,
+              t.package_name,
+              t.phone_number,
+              t.device_serial,
+              t.profile_id,
+              t.package_name,
+            )
+          if ((r.changes ?? 0) > 0) updated++
+        } else {
+          this.create({
+            phoneNumber: t.phone_number,
+            deviceSerial: t.device_serial,
+            profileId: t.profile_id,
+            appPackage: t.package_name as 'com.whatsapp' | 'com.whatsapp.w4b',
+          })
+          inserted++
+        }
+      }
+    })
+    txn()
+    return { inserted, updated, deleted }
+  }
+
+  /**
    * Resolve the best available sender from the chain.
    *
    * With scoring injected (smart path):
