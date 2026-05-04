@@ -469,33 +469,11 @@ export class PrecheckScanner {
               }
             }
           }
-          if (params.writeback_localizado && primaryValid) {
-            const fonte = this.deps.fonte ?? 'dispatch_adb_precheck'
-            try {
-              if (this.deps.pendingWritebacks) {
-                await this.deps.pendingWritebacks.submitLocalization(key, {
-                  telefone: primaryValid,
-                  source: 'adb',
-                  jobId,
-                  fonte,
-                })
-              } else {
-                await pg.applyDealLocalization(key, {
-                  telefone: primaryValid,
-                  source: 'adb',
-                  jobId,
-                  fonte,
-                })
-              }
-            } catch (e) {
-              logger.warn('localization writeback failed', {
-                jobId,
-                key,
-                phone: primaryValid,
-                error: e instanceof Error ? e.message : String(e),
-              })
-            }
-          }
+          // `writeback_localizado` was removed from Dispatch — deciding
+          // which phone is "the" valid one is the provider's
+          // responsibility (delivery answer), not ours (existence
+          // check). The Pipeboard /deals/localize endpoint stays open
+          // for the provider to call directly.
 
           // Pasta-level aggregation for Scenario C (pasta summary Note).
           // Records first deal_id (lowest), counts, strategy distribution,

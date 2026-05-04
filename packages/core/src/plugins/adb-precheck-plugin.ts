@@ -36,7 +36,6 @@ const scanParamsSchema = z
     pasta_prefix: z.string().min(1).max(255).optional(),
     pipeline_nome: z.string().min(1).max(255).optional(),
     writeback_invalid: z.boolean().default(false),
-    writeback_localizado: z.boolean().default(false),
     external_ref: z.string().min(1).max(128).optional(),
     /**
      * Per-job Pipedrive opt-in. Undefined → default to `true` if integration
