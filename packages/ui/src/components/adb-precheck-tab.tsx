@@ -326,13 +326,16 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
                 phoneNumber: string | null
                 packageName: string
                 profileId: number
+                stale?: boolean
               }>
-              // Only keep entries with a real number — empty/null means
-              // the WA install is present but unmapped, which we cannot
-              // route a probe through.
+              // Only keep entries with a real number AND fresh data —
+              // empty phoneNumber = WA present but unmapped; stale =
+              // older than 7 days, likely outdated since the previous
+              // scan. Either way, we can't route a probe through them.
               const accounts: DeviceAccount[] = raw
-                .filter((x): x is { phoneNumber: string; packageName: string; profileId: number } =>
-                  Boolean(x.phoneNumber),
+                .filter(
+                  (x): x is { phoneNumber: string; packageName: string; profileId: number; stale?: boolean } =>
+                    Boolean(x.phoneNumber) && !x.stale,
                 )
                 .map((x) => ({
                   phoneNumber: x.phoneNumber,

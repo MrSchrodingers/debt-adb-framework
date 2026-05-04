@@ -43,10 +43,22 @@ export function registerMonitorRoutes(server: FastifyInstance, deps: MonitorDeps
     return healthCollector.getHistory(serial, h)
   })
 
-  // WA accounts for device
+  // WA accounts for device — surfaces updated_at + a `stale` flag
+  // (accounts older than 7 days are likely from a previous device
+  // state and should not be trusted blindly by callers).
   server.get('/api/v1/monitor/devices/:serial/accounts', async (request) => {
     const { serial } = request.params as { serial: string }
-    return waMapper.getAccountsByDevice(serial)
+    const STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000
+    const now = Date.now()
+    const raw = waMapper.getAccountsRawByDevice(serial)
+    return raw.map((a) => ({
+      deviceSerial: serial,
+      profileId: a.profileId,
+      packageName: a.packageName,
+      phoneNumber: a.phoneNumber,
+      updatedAt: a.updatedAt,
+      stale: now - new Date(a.updatedAt).getTime() > STALE_AFTER_MS,
+    }))
   })
 
   // Reboot device — with serial validation + send-lock guard
