@@ -218,6 +218,15 @@ export class SenderMapping {
    *     with that exact phone → DELETE. The phone left the device.
    *   - Placeholder rows (`PLACEHOLDER_PREFIX` below) are PRESERVED:
    *     they belong to managed sessions waiting for QR scan.
+   *   - Operator-pinned rows (waha_session IS NOT NULL) are also
+   *     PRESERVED. The attach endpoint creates these the moment the
+   *     operator pins a session to (device, profile) — frequently for
+   *     a profile whose WhatsApp hasn't been opened yet, so
+   *     whatsapp_accounts has nothing to match. Without this guard the
+   *     5-minute mapAllAccounts cycle silently wipes the pin and the
+   *     operator's choice vanishes from the senders list. The DELETE
+   *     /sessions/managed/:name/device endpoint is the proper way to
+   *     clean these up.
    *
    * Returns counts so the caller can log a reconciliation summary.
    */
@@ -260,9 +269,13 @@ export class SenderMapping {
     let deleted = 0
     const txn = this.db.transaction(() => {
       // Pass 1: delete stale rows whose (dev, prof, pkg) no longer
-      // matches truth. Placeholders are preserved unconditionally.
+      // matches truth. Placeholders AND operator-pinned (waha_session
+      // set) rows are preserved unconditionally — both represent
+      // intent that hasn't yet materialized as a paired phone in
+      // whatsapp_accounts.
       for (const e of existing) {
         if (e.phone_number.startsWith(PLACEHOLDER_PREFIX)) continue
+        if (e.waha_session) continue
         const key = `${e.device_serial}|${e.profile_id}|${e.app_package}`
         const truthPhone = truthByDevProfPkg.get(key)
         if (truthPhone !== e.phone_number) {

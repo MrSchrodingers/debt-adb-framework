@@ -16,7 +16,18 @@ interface SessionWithStatus {
 interface DeviceWithProfiles {
   serial: string
   status?: string
-  profiles: Array<{ profileId: number; phoneNumber: string | null; packageName: string }>
+  profiles: Array<{
+    profileId: number
+    phoneNumber: string | null
+    packageName: string
+    profileName: string | null
+    profileRunning: boolean
+  }>
+}
+
+const profileLabel = (p: { profileId: number; profileName: string | null } | undefined): string => {
+  if (!p) return 'profile —'
+  return p.profileName ? `${p.profileName} (profile ${p.profileId})` : `profile ${p.profileId}`
 }
 
 interface QrData {
@@ -116,57 +127,62 @@ export function SessionManager() {
   // Per-session attach selection (pre-pair). Keyed by session name.
   const [attachSelection, setAttachSelection] = useState<Record<string, { serial: string; profileId: number | null }>>({})
 
-  // Load devices + their profiles once on mount.
-  useEffect(() => {
-    let cancelled = false
-    const load = async () => {
-      try {
-        const r = await fetch(`${CORE_URL}/api/v1/monitor/devices`, { headers: authHeaders() })
-        if (!r.ok) return
-        const list = (await r.json()) as Array<{ serial: string; status?: string }>
-        const out: DeviceWithProfiles[] = await Promise.all(
-          list.map(async (d) => {
-            try {
-              const a = await fetch(
-                `${CORE_URL}/api/v1/monitor/devices/${encodeURIComponent(d.serial)}/accounts`,
-                { headers: authHeaders() },
-              )
-              if (!a.ok) return { serial: d.serial, status: d.status, profiles: [] }
-              const accs = (await a.json()) as Array<{
-                profileId: number
-                packageName: string
-                phoneNumber: string | null
-                stale?: boolean
-              }>
-              // Collapse the (com.whatsapp + com.whatsapp.w4b) pair
-              // per profile into a single entry: each Android user has
-              // ONE physical phone slot, regardless of which WA flavor
-              // is logged in. Prefer com.whatsapp; fall back to w4b.
-              const byProfile = new Map<number, { profileId: number; phoneNumber: string | null; packageName: string }>()
-              for (const x of accs) {
-                if (x.stale) continue
-                const cur = byProfile.get(x.profileId)
-                if (!cur || (x.packageName === 'com.whatsapp' && cur.packageName !== 'com.whatsapp')) {
-                  byProfile.set(x.profileId, {
-                    profileId: x.profileId,
-                    phoneNumber: x.phoneNumber,
-                    packageName: x.packageName,
-                  })
-                }
+  // Load devices + their profiles. Re-runs after attach/detach/auto-attach
+  // so the vacant-profile dropdown reflects new mappings without a manual
+  // page reload.
+  const fetchDevices = useCallback(async () => {
+    try {
+      const r = await fetch(`${CORE_URL}/api/v1/monitor/devices`, { headers: authHeaders() })
+      if (!r.ok) return
+      const list = (await r.json()) as Array<{ serial: string; status?: string }>
+      const out: DeviceWithProfiles[] = await Promise.all(
+        list.map(async (d) => {
+          try {
+            const a = await fetch(
+              `${CORE_URL}/api/v1/monitor/devices/${encodeURIComponent(d.serial)}/accounts`,
+              { headers: authHeaders() },
+            )
+            if (!a.ok) return { serial: d.serial, status: d.status, profiles: [] }
+            const accs = (await a.json()) as Array<{
+              profileId: number
+              packageName: string
+              phoneNumber: string | null
+              profileName?: string | null
+              profileRunning?: boolean
+              stale?: boolean
+            }>
+            // Collapse the (com.whatsapp + com.whatsapp.w4b) pair
+            // per profile into a single entry: each Android user has
+            // ONE physical phone slot, regardless of which WA flavor
+            // is logged in. Prefer com.whatsapp; fall back to w4b.
+            const byProfile = new Map<number, DeviceWithProfiles['profiles'][number]>()
+            for (const x of accs) {
+              if (x.stale) continue
+              const cur = byProfile.get(x.profileId)
+              if (!cur || (x.packageName === 'com.whatsapp' && cur.packageName !== 'com.whatsapp')) {
+                byProfile.set(x.profileId, {
+                  profileId: x.profileId,
+                  phoneNumber: x.phoneNumber,
+                  packageName: x.packageName,
+                  profileName: x.profileName ?? null,
+                  profileRunning: x.profileRunning ?? false,
+                })
               }
-              const profiles = [...byProfile.values()].sort((a, b) => a.profileId - b.profileId)
-              return { serial: d.serial, status: d.status, profiles }
-            } catch {
-              return { serial: d.serial, status: d.status, profiles: [] }
             }
-          }),
-        )
-        if (!cancelled) setDevices(out)
-      } catch { /* ignore */ }
-    }
-    void load()
-    return () => { cancelled = true }
+            const profiles = [...byProfile.values()].sort((a, b) => a.profileId - b.profileId)
+            return { serial: d.serial, status: d.status, profiles }
+          } catch {
+            return { serial: d.serial, status: d.status, profiles: [] }
+          }
+        }),
+      )
+      setDevices(out)
+    } catch { /* ignore */ }
   }, [])
+
+  useEffect(() => {
+    void fetchDevices()
+  }, [fetchDevices])
 
   const attachSessionToDevice = async (
     sessionName: string,
@@ -187,11 +203,39 @@ export function SessionManager() {
         setError(`Falha ao atribuir device (HTTP ${r.status}): ${body.slice(0, 200)}`)
         return false
       }
-      await fetchSessions()
+      // Vacant profiles changed (one just got pinned) — refresh both
+      // sessions and the devices list so the next dropdown render is
+      // accurate.
+      await Promise.all([fetchSessions(), fetchDevices()])
       return true
     } catch (err) {
       setError(err instanceof Error ? err.message : 'attach failed')
       return false
+    }
+  }
+
+  const handleDetach = async (sessionName: string) => {
+    setError(null)
+    try {
+      const r = await fetch(
+        `${CORE_URL}/api/v1/sessions/managed/${encodeURIComponent(sessionName)}/device`,
+        { method: 'DELETE', headers: authHeaders() },
+      )
+      if (!r.ok) {
+        const body = await r.text().catch(() => '')
+        setError(`Falha ao desatachar (HTTP ${r.status}): ${body.slice(0, 200)}`)
+        return
+      }
+      // Clear any stale picker selection so the operator gets a fresh
+      // dropdown if they immediately re-attach to a different profile.
+      setAttachSelection((prev) => {
+        const next = { ...prev }
+        delete next[sessionName]
+        return next
+      })
+      await Promise.all([fetchSessions(), fetchDevices()])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'detach failed')
     }
   }
 
@@ -269,7 +313,9 @@ export function SessionManager() {
       const data = (await r.json()) as { matched?: number; unresolved?: number; alreadyAttached?: number }
       const msg = `Re-detectar: ${data.matched ?? 0} mapeadas · ${data.alreadyAttached ?? 0} já estavam · ${data.unresolved ?? 0} sem device disponível`
       setPairSteps([msg])
-      await fetchSessions()
+      // Both sessions and vacant-profile dropdown need to reflect the
+      // freshly attached pairs.
+      await Promise.all([fetchSessions(), fetchDevices()])
     } catch (err) {
       setError(err instanceof Error ? err.message : 'auto-attach failed')
     } finally {
@@ -500,7 +546,16 @@ export function SessionManager() {
                   {session.phoneNumber ?? t('sessionManager.noPhone')} · {session.wahaStatus}
                   {session.deviceSerial ? (
                     <span className="ml-2 text-zinc-600">
-                      · {session.deviceSerial.slice(0, 12)}…/profile {session.profileId}
+                      · {session.deviceSerial.slice(0, 12)}…/
+                      {(() => {
+                        const dev = devices.find((d) => d.serial === session.deviceSerial)
+                        const prof = dev?.profiles.find((p) => p.profileId === session.profileId)
+                        return profileLabel(
+                          prof ?? (session.profileId !== null
+                            ? { profileId: session.profileId, profileName: null }
+                            : undefined),
+                        )
+                      })()}
                     </span>
                   ) : session.managed ? (
                     <span className="ml-2 text-amber-500">· sem device atribuído</span>
@@ -528,6 +583,15 @@ export function SessionManager() {
                     {creatingInbox === session.sessionName ? '...' : t('sessionManager.createInbox')}
                   </button>
                 )}
+                {session.managed && session.deviceSerial && (
+                  <button
+                    onClick={() => handleDetach(session.sessionName)}
+                    title="Limpa device + profile e remove o sender_mapping criado pelo attach. Use para mover a sessão para outro device/profile."
+                    className="rounded bg-amber-900/60 px-2 py-1 text-xs text-amber-200 hover:bg-amber-800"
+                  >
+                    Desatachar
+                  </button>
+                )}
                 {session.managed && (
                   <button
                     onClick={() => handleUnmanage(session.sessionName)}
@@ -539,15 +603,20 @@ export function SessionManager() {
               </div>
             </div>
 
-            {/* Manual attach picker is shown ONLY for fresh sessions
-                that have no phone yet — those genuinely need the
-                operator to pick a vacant Android profile to receive
-                the QR scan. Sessions that already have a phoneNumber
-                are auto-mapped by the server (boot + every mapAccounts
-                cycle); the "Re-detectar" button at the top forces a
-                refresh on demand. */}
-            {session.managed && !session.deviceSerial && !session.phoneNumber && (
-              <div className="mt-2 flex items-center gap-2">
+            {/* Manual attach picker. Shown for ANY managed session that
+                isn't pinned yet — including those whose phoneNumber
+                exists in WAHA but couldn't auto-attach because no
+                connected device profile holds that number locally.
+                That's the dominant case during pair onboarding: the
+                Android user exists but its WhatsApp has never been
+                opened, so shared_prefs is empty and phone-match has
+                nothing to match. Hiding the picker for those left
+                operators with no path forward — they could only stare
+                at "sem device atribuído" and wait. The "Re-detectar"
+                button still handles the auto-flow when the data is
+                already there. */}
+            {session.managed && !session.deviceSerial && (
+              <div className="mt-2 flex items-center gap-2 flex-wrap">
                 <select
                   value={attachSelection[session.sessionName]?.serial ?? ''}
                   onChange={(e) =>
@@ -578,23 +647,43 @@ export function SessionManager() {
                     }))
                   }
                   disabled={!attachSelection[session.sessionName]?.serial}
-                  className="rounded bg-zinc-800 border border-zinc-700 px-2 py-1 text-xs text-zinc-200 disabled:opacity-50"
+                  className="rounded bg-zinc-800 border border-zinc-700 px-2 py-1 text-xs text-zinc-200 disabled:opacity-50 min-w-[14rem]"
                 >
                   <option value="">— profile vago —</option>
                   {(() => {
                     const dev = devices.find((d) => d.serial === attachSelection[session.sessionName]?.serial)
                     if (!dev) return null
+                    // Vacant = no local WA phone yet, i.e. the user
+                    // can still receive a QR scan on that profile.
+                    // Profiles already paired with a different number
+                    // are NOT vacant — pinning would overwrite truth.
                     const vacant = dev.profiles.filter((p) => !p.phoneNumber)
                     if (vacant.length === 0) {
                       return <option disabled value="">(nenhum profile vago neste device)</option>
                     }
                     return vacant.map((p) => (
                       <option key={p.profileId} value={p.profileId}>
-                        profile {p.profileId} · pronto para QR
+                        {profileLabel(p)} · pronto para QR{p.profileRunning ? ' · running' : ''}
                       </option>
                     ))
                   })()}
                 </select>
+                {/* Inline confirm so the operator doesn't need to
+                    juggle a second click on "Pair" just to commit the
+                    attach choice. Pair still works, but this lets them
+                    pin without immediately starting the QR flow. */}
+                {(() => {
+                  const sel = attachSelection[session.sessionName]
+                  if (!sel?.serial || sel.profileId === null) return null
+                  return (
+                    <button
+                      onClick={() => attachSessionToDevice(session.sessionName, sel.serial, sel.profileId!)}
+                      className="rounded bg-emerald-700 px-2 py-1 text-xs text-emerald-50 hover:bg-emerald-600"
+                    >
+                      Atribuir
+                    </button>
+                  )
+                })()}
               </div>
             )}
 

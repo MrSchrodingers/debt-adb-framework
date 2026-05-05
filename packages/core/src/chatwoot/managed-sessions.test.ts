@@ -213,4 +213,42 @@ describe('ManagedSessions', () => {
       expect(found).toHaveLength(2)
     })
   })
+
+  describe('detachFromDevice', () => {
+    it('clears device_serial and profile_id of an attached session', () => {
+      sessions.add({
+        sessionName: 'oralsin_2_1',
+        phoneNumber: '554396835095',
+        deviceSerial: 'POCO-001',
+        profileId: 10,
+        chatwootInboxId: null,
+      })
+
+      sessions.detachFromDevice('oralsin_2_1')
+
+      const r = sessions.get('oralsin_2_1')
+      expect(r!.deviceSerial).toBeNull()
+      expect(r!.profileId).toBeNull()
+      // Phone and managed flag stay intact — detach only undoes the pin.
+      expect(r!.phoneNumber).toBe('554396835095')
+      expect(r!.managed).toBe(true)
+    })
+
+    it('is idempotent on a session that is already unattached', () => {
+      sessions.add({
+        sessionName: 'oralsin_2_3',
+        phoneNumber: '',
+        deviceSerial: null,
+        profileId: null,
+        chatwootInboxId: null,
+      })
+      // First call: no-op (nothing to clear) but must not throw.
+      expect(() => sessions.detachFromDevice('oralsin_2_3')).not.toThrow()
+      expect(() => sessions.detachFromDevice('oralsin_2_3')).not.toThrow()
+    })
+
+    it('throws when the session does not exist', () => {
+      expect(() => sessions.detachFromDevice('does_not_exist')).toThrow(/not found/)
+    })
+  })
 })

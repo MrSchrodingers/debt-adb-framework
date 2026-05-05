@@ -133,6 +133,47 @@ export function registerSessionRoutes(server: FastifyInstance, deps: SessionDeps
     return reply.status(200).send(result)
   })
 
+  // --- Detach: clear the (device, profile) pin and the matching
+  // sender_mapping row (placeholder OR real-phone) created by attach.
+  // Used when an operator targeted the wrong device or wants to move a
+  // session to a different one. Without this they can only overwrite,
+  // not undo, leaving stale rows behind.
+  server.delete('/api/v1/sessions/managed/:name/device', async (request, reply) => {
+    const { name } = request.params as { name: string }
+    const session = managedSessions.get(name)
+    if (!session) {
+      return reply.status(404).send({ error: 'Session not found' })
+    }
+    try {
+      managedSessions.detachFromDevice(name)
+      // The attach endpoint creates a sender_mapping row keyed by either
+      // the real phone (when WAHA already paired it) or a synthetic
+      // placeholder ('99999...'). Either way, the row was created FOR
+      // this session — clear it on detach so the senders list reflects
+      // reality and reconcile doesn't trip over orphaned entries.
+      let removedSender: string | null = null
+      if (deps.senderMapping) {
+        const candidatePhone = session.phoneNumber || placeholderPhoneFor(name)
+        const existing = deps.senderMapping.getByPhone(candidatePhone)
+        if (existing && existing.waha_session === name) {
+          deps.senderMapping.remove(candidatePhone)
+          removedSender = candidatePhone
+        }
+      }
+      return {
+        ok: true,
+        session: name,
+        detached: true,
+        removed_sender_mapping: removedSender,
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('not found')) {
+        return reply.status(404).send({ error: 'Session not found' })
+      }
+      throw err
+    }
+  })
+
   // --- Attach session to device + profile (required before pairing) ---
   // Pairing flow needs (waha_session, device_serial, profile_id) in
   // sender_mapping to know which Android user to switch to. This

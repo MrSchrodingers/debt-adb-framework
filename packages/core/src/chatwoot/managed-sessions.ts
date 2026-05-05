@@ -33,6 +33,7 @@ export class ManagedSessions {
   private stmtSetManaged!: Statement
   private stmtUpdateInbox!: Statement
   private stmtAttachDevice!: Statement
+  private stmtDetachDevice!: Statement
   private stmtSetPhone!: Statement
   private stmtRemove!: Statement
   private stmtFindByPhone!: Statement
@@ -66,6 +67,9 @@ export class ManagedSessions {
     this.stmtUpdateInbox = this.db.prepare('UPDATE managed_sessions SET chatwoot_inbox_id = ? WHERE session_name = ?')
     this.stmtAttachDevice = this.db.prepare(
       'UPDATE managed_sessions SET device_serial = ?, profile_id = ? WHERE session_name = ?',
+    )
+    this.stmtDetachDevice = this.db.prepare(
+      'UPDATE managed_sessions SET device_serial = NULL, profile_id = NULL WHERE session_name = ?',
     )
     this.stmtSetPhone = this.db.prepare(
       'UPDATE managed_sessions SET phone_number = ? WHERE session_name = ?',
@@ -129,6 +133,27 @@ export class ManagedSessions {
     const result = this.stmtAttachDevice.run(deviceSerial, profileId, sessionName)
     if (result.changes === 0) {
       throw new Error(`Session ${sessionName} not found`)
+    }
+  }
+
+  /**
+   * Reverse of `attachToDevice`. Used when an operator picked the wrong
+   * device/profile pair (or a device is being decommissioned) and needs
+   * to free the session before re-attaching elsewhere.
+   *
+   * No-ops when the session is already unattached, but still raises when
+   * the session itself does not exist — the caller almost certainly has
+   * a stale name otherwise.
+   */
+  detachFromDevice(sessionName: string): void {
+    const result = this.stmtDetachDevice.run(sessionName)
+    if (result.changes === 0) {
+      // changes=0 either means the session doesn't exist OR it was
+      // already unattached. Disambiguate so callers get a real 404 only
+      // when the session is missing.
+      if (!this.get(sessionName)) {
+        throw new Error(`Session ${sessionName} not found`)
+      }
     }
   }
 

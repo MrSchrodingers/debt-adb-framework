@@ -46,14 +46,39 @@ export function registerMonitorRoutes(server: FastifyInstance, deps: MonitorDeps
   // WA accounts for device — surfaces updated_at + a `stale` flag
   // (accounts older than 7 days are likely from a previous device
   // state and should not be trusted blindly by callers).
+  //
+  // Also enriches each row with the Android user nickname (e.g.
+  // "Main Oralsin 2", "Oralsin 2 1") via `pm list users`. The session
+  // attach/pair UI uses this so operators see human-friendly profile
+  // labels instead of bare profile_id integers — critical when a single
+  // device hosts 8+ users and integers alone don't tell them apart.
   server.get('/api/v1/monitor/devices/:serial/accounts', async (request) => {
     const { serial } = request.params as { serial: string }
     const STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000
     const now = Date.now()
     const raw = waMapper.getAccountsRawByDevice(serial)
+
+    // Best-effort enrich with user names. Device offline → empty map →
+    // UI falls back to bare profile id, which matches the previous
+    // contract.
+    const userInfo = new Map<number, { name: string; running: boolean }>()
+    try {
+      const out = await adb.shell(serial, 'pm list users')
+      for (const m of out.matchAll(/UserInfo\{(\d+):([^:]+):\w+\}\s*(running)?/g)) {
+        userInfo.set(Number(m[1]!), {
+          name: m[2]!.trim(),
+          running: m[3] === 'running',
+        })
+      }
+    } catch {
+      // ignore — device may be offline
+    }
+
     return raw.map((a) => ({
       deviceSerial: serial,
       profileId: a.profileId,
+      profileName: userInfo.get(a.profileId)?.name ?? null,
+      profileRunning: userInfo.get(a.profileId)?.running ?? false,
       packageName: a.packageName,
       phoneNumber: a.phoneNumber,
       updatedAt: a.updatedAt,
