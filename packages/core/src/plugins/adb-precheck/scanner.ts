@@ -66,6 +66,19 @@ export interface ScannerDeps {
   deviceSerial?: string
   /** Routes WAHA tiebreaker probes to this session. Required for L2. */
   wahaSession?: string
+  /**
+   * Resolves a `(device_serial, phone_number)` pair to the Android
+   * user id (`whatsapp_accounts.profile_id`) that owns that WhatsApp
+   * account. Without this the L3 ADB probe runs in whichever user is
+   * in foreground — usually profile 0 — even though the operator
+   * picked a different sender, so the answer comes from the wrong
+   * account.
+   *
+   * Optional: when omitted (or returning null), the probe falls back
+   * to the foreground-user behaviour for backwards compat. Production
+   * wiring (server.ts) always supplies this lookup.
+   */
+  resolveProfileForSender?: (deviceSerial: string, phoneNumber: string) => number | null
   /** Called after each finished job (completed/cancelled/failed). */
   onJobFinished?: (jobId: string) => Promise<void>
   /**
@@ -330,13 +343,23 @@ export class PrecheckScanner {
           let cacheHits = 0
           let primaryValid: string | null = null
 
+          // Resolve once per deal — same (device, sender) for every
+          // phone in the row, no need to lookup repeatedly.
+          const probeDevice = params.device_serial ?? this.deps.deviceSerial
+          const probeSender = params.waha_session ?? this.deps.wahaSession
+          const probeProfile =
+            probeDevice && probeSender && this.deps.resolveProfileForSender
+              ? this.deps.resolveProfileForSender(probeDevice, probeSender) ?? undefined
+              : undefined
+
           for (const p of phones) {
             try {
               const r = await this.deps.validator.validate(p.normalized, {
                 triggered_by: 'pre_check',
                 useWahaTiebreaker: true,
-                device_serial: params.device_serial ?? this.deps.deviceSerial,
-                waha_session: params.waha_session ?? this.deps.wahaSession,
+                device_serial: probeDevice,
+                waha_session: probeSender,
+                profile_id: probeProfile,
               })
               if (r.from_cache) cacheHits++
               const outcome = r.exists_on_wa === 1 ? 'valid' : r.exists_on_wa === 0 ? 'invalid' : 'error'

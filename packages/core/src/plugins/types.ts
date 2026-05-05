@@ -40,6 +40,18 @@ export interface PluginContext {
    * rejected-due-to-ban items in their own response bodies.
    */
   isBlacklisted(phone: string): boolean
+  /**
+   * Acquire/release the same per-device lock the WorkerOrchestrator
+   * uses. Plugins that issue ADB intents (e.g. adb-precheck's wa.me
+   * probe) MUST take this lock before mutating UI on the device,
+   * otherwise the worker can be in the middle of `input text` when
+   * the intent fires and WhatsApp moves the half-typed body into
+   * the previous chat as a draft. Optional in PluginContext so tests
+   * can omit it; production plugins should always wire through.
+   */
+  deviceMutex?: {
+    acquire(deviceSerial: string): Promise<() => void>
+  }
 }
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'

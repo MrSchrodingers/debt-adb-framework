@@ -100,6 +100,10 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   private pendingWritebacks: PendingWritebacks | null = null
   private store: PrecheckJobStore
   private validator: ContactValidator
+  // Strategy refs kept so init() can rebuild the validator with a
+  // mutex-aware AdbProbeStrategy without rewiring everything else.
+  private cacheStrategy!: CacheOnlyStrategy
+  private wahaStrategy!: WahaCheckStrategy
   private scanner: PrecheckScanner | null = null
   private defaultDeviceSerial: string | undefined
   private defaultWahaSession: string | undefined
@@ -226,6 +230,11 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     // Strategies are owned by the plugin, independent from the worker's
     // pre-check path. Probes go through the same ContactRegistry so findings
     // accrue to the shared WhatsApp validity cache (benefits Oralsin too).
+    //
+    // The AdbProbeStrategy is rebuilt in init() once we have ctx.deviceMutex,
+    // so probe runs serialise against worker sends. Until init we use a
+    // mutex-less strategy so unit-test instantiations of the plugin keep
+    // working without needing a fake context.
     const cacheStrategy = new CacheOnlyStrategy(this.registry)
     const adbStrategy = new AdbProbeStrategy(this.adb)
     // L2 tiebreaker is active only when a WAHA client + session are provided.
@@ -239,11 +248,26 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       },
       () => Boolean(wahaClient && this.defaultWahaSession),
     )
+    this.cacheStrategy = cacheStrategy
+    this.wahaStrategy = wahaStrategy
     this.validator = new ContactValidator(this.registry, adbStrategy, wahaStrategy, cacheStrategy)
   }
 
   async init(ctx: PluginContext): Promise<void> {
     this.ctx = ctx
+    // Rebuild the L3 ADB probe strategy with the shared device mutex
+    // so probes serialise with worker sends. Without this, an active
+    // scan races the SendEngine on the same physical screen and any
+    // half-typed Oralsin message becomes a draft.
+    if (ctx.deviceMutex) {
+      const adbStrategy = new AdbProbeStrategy(this.adb, undefined, ctx.deviceMutex)
+      this.validator = new ContactValidator(
+        this.registry,
+        adbStrategy,
+        this.wahaStrategy,
+        this.cacheStrategy,
+      )
+    }
     this.store.initialize()
     // Boot-time watchdog: anything still flagged `running` in the job
     // table belongs to a previous process that died without finishing.
@@ -288,6 +312,25 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       shouldCancel: (jobId) => this.store.isCancelRequested(jobId),
       deviceSerial: this.defaultDeviceSerial,
       wahaSession: this.defaultWahaSession,
+      // Resolve which Android user owns the chosen sender on the
+      // chosen device, so the L3 ADB probe targets the right WA.
+      // Falls back to whatsapp_accounts (truth from the device) and
+      // tolerates the BR 9-prefix gap by digit-suffix matching.
+      resolveProfileForSender: (device, phone) => {
+        const digits = phone.replace(/\D/g, '')
+        if (!digits) return null
+        const row = this.db
+          .prepare(
+            `SELECT profile_id FROM whatsapp_accounts
+              WHERE device_serial = ?
+                AND package_name = 'com.whatsapp'
+                AND phone_number IS NOT NULL
+                AND (phone_number = ? OR phone_number LIKE ? OR ? LIKE '%' || phone_number)
+              ORDER BY profile_id ASC LIMIT 1`,
+          )
+          .get(device, digits, `%${digits}`, digits) as { profile_id: number } | undefined
+        return row?.profile_id ?? null
+      },
       onJobFinished: (jobId) => this.deliverJobCompletedCallback(jobId),
       onInvalidPhone: this.onInvalidPhoneCb,
       pipedrive: this.pipedrivePublisher ?? undefined,

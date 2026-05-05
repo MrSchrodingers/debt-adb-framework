@@ -7,6 +7,13 @@ export interface ValidateOptions {
   triggered_by: TriggeredBy
   device_serial?: string
   waha_session?: string
+  /**
+   * Android user id that owns the WhatsApp account selected for the
+   * probe. Resolved upstream from the operator's sender choice
+   * (sender_mapping.profile_id keyed by waha_session phone). Without
+   * it the probe runs in whatever user is in foreground.
+   */
+  profile_id?: number
   /** Include WAHA as tiebreaker for ambiguous DDDs (grill D8). Defaults to true. */
   useWahaTiebreaker?: boolean
 }
@@ -72,6 +79,7 @@ export class ContactValidator {
       const variant = norm.variants[i]
       const adbResult = await this.adbStrategy.probe(variant, {
         deviceSerial: opts.device_serial,
+        profileId: opts.profile_id,
       })
       attempts.push(adbResult)
 

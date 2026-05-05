@@ -47,6 +47,12 @@ export class PluginLoader {
     private senderMapping?: SenderMapping,
     private sendEngine?: SendEngine,
     private idempotencyCache?: IdempotencyCache,
+    /**
+     * Per-device lock shared with WorkerOrchestrator. When supplied,
+     * plugins receive it via PluginContext.deviceMutex so their ADB
+     * intents do not race the worker's typing/send sequence.
+     */
+    private deviceMutex?: { acquire(deviceSerial: string): Promise<() => void> },
   ) {
     this.loggerFactory = logger ?? {
       child: (bindings) => ({
@@ -222,6 +228,8 @@ export class PluginLoader {
       isBlacklisted: (phone: string): boolean => {
         return this.queue.isBlacklisted(phone)
       },
+
+      deviceMutex: this.deviceMutex,
     }
   }
 }

@@ -63,6 +63,15 @@ export interface WorkerOrchestratorDeps {
   circuitBreaker?: DeviceCircuitBreaker
   contactRegistry?: ContactRegistry
   pauseState?: import('./dispatch-pause-state.js').DispatchPauseState
+  /**
+   * Per-device lock shared with plugins (e.g. AdbProbeStrategy).
+   * When supplied, tickDevice acquires it before running a send so a
+   * concurrent probe waits for the worker to finish. Without this
+   * coordination, probes can fire `am start ... wa.me/X` mid-typing
+   * and WhatsApp drops the half-typed body into the previous chat as
+   * a draft. Optional for backwards compat with legacy tests.
+   */
+  deviceMutex?: { acquire(deviceSerial: string): Promise<() => void> }
 }
 
 export class WorkerOrchestrator {
@@ -301,10 +310,31 @@ export class WorkerOrchestrator {
     if (this.devicesRunning.has(deviceSerial)) return
     this.devicesRunning.add(deviceSerial)
 
+    // Acquire the shared device mutex BEFORE doing anything that
+    // mutates the device's UI (switch user, intent, input text). The
+    // adb-precheck plugin acquires the same mutex around its wa.me
+    // probe so a probe in flight delays the next send instead of
+    // racing the worker mid-typing — that race is what was producing
+    // half-typed Oralsin drafts on the device.
+    let releaseDevice: (() => void) | null = null
+    if (this.deps.deviceMutex) {
+      try {
+        releaseDevice = await this.deps.deviceMutex.acquire(deviceSerial)
+      } catch (err) {
+        this.deps.logger.warn(
+          { device: deviceSerial, err: err instanceof Error ? err.message : String(err) },
+          'Worker: deviceMutex acquire failed, skipping tick',
+        )
+        this.devicesRunning.delete(deviceSerial)
+        return
+      }
+    }
+
     // Circuit breaker: skip if device circuit is open
     if (this.deps.circuitBreaker && !this.deps.circuitBreaker.canUse(deviceSerial)) {
       this.deps.logger.warn({ device: deviceSerial, state: this.deps.circuitBreaker.getState(deviceSerial) },
         'Worker: device circuit breaker open, skipping tick')
+      releaseDevice?.()
       this.devicesRunning.delete(deviceSerial)
       return
     }
@@ -317,6 +347,7 @@ export class WorkerOrchestrator {
           { device: deviceSerial, scope: decision.match?.scope, key: decision.match?.key, reason: decision.match?.reason },
           'Worker: dispatch paused for this scope, skipping tick',
         )
+        releaseDevice?.()
         this.devicesRunning.delete(deviceSerial)
         return
       }
@@ -334,6 +365,7 @@ export class WorkerOrchestrator {
         { device: deviceSerial },
         'Worker: serial is in RESEARCH_SACRIFICIAL_SERIALS, refusing to dispatch',
       )
+      releaseDevice?.()
       this.devicesRunning.delete(deviceSerial)
       return
     }
@@ -475,6 +507,7 @@ export class WorkerOrchestrator {
       }
     } finally {
       if (releaseMutex) releaseMutex()
+      releaseDevice?.()
       this.devicesRunning.delete(deviceSerial)
     }
   }

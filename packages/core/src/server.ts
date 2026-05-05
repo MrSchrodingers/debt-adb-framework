@@ -7,7 +7,7 @@ import Database from 'better-sqlite3'
 import { Server as SocketIOServer } from 'socket.io'
 import { MessageQueue, IdempotencyCache } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
-import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, WahaFallback, SenderHealth, SenderScoring, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender } from './engine/index.js'
+import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, DeviceMutex, WahaFallback, SenderHealth, SenderScoring, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender } from './engine/index.js'
 import { DispatchPauseState, type PauseScope } from './engine/dispatch-pause-state.js'
 import { DispatchEmitter } from './events/index.js'
 import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes, registerMessageTimelineRoutes, registerAdminMessageRoutes, registerInsightsHeatmapRoutes, registerAckRateRoutes, registerQualityRoutes, registerFleetRoutes, registerSetupWizardRoutes } from './api/index.js'
@@ -606,6 +606,11 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   // ── WAHA Fallback + Account Mutex (DP-3) ──
   const accountMutex = new AccountMutex()
+  // Per-device lock shared with plugins. Worker takes it during a
+  // send batch; AdbProbeStrategy (adb-precheck) takes it around each
+  // wa.me intent — together they prevent the probe from interrupting
+  // a half-typed message and turning it into a draft.
+  const deviceMutex = new DeviceMutex()
   const wahaFallback = new WahaFallback(senderMapping, queue, fetch, process.env.WAHA_API_KEY)
 
   // ── Manual circuit breaker (pause state) — global/plugin/sender/device/chain/message ──
@@ -713,7 +718,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   const callbackDelivery = new CallbackDelivery(db, pluginRegistry, fetch)
   const pinoLogger = { child: (bindings: Record<string, unknown>) => ({ info: server.log.info.bind(server.log), warn: server.log.warn.bind(server.log), error: server.log.error.bind(server.log), debug: server.log.debug.bind(server.log) }) }
-  const pluginLoader = new PluginLoader(pluginRegistry, pluginEventBus, queue, db, pinoLogger, senderMapping, engine, idempotencyCache)
+  const pluginLoader = new PluginLoader(pluginRegistry, pluginEventBus, queue, db, pinoLogger, senderMapping, engine, idempotencyCache, deviceMutex)
 
   // Load plugins from config
   const pluginNames = (process.env.DISPATCH_PLUGINS || '').split(',').map(s => s.trim()).filter(Boolean)
@@ -1795,6 +1800,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     circuitBreaker,
     contactRegistry,
     pauseState,
+    deviceMutex,
   })
   const workerInterval = setInterval(() => orchestrator.tick(), 5_000)
   const metadataCleanupInterval = setInterval(() => orchestrator.cleanupMetadata(), 60_000)
