@@ -426,13 +426,50 @@ export class PrecheckScanner {
             if (dedupedInvalids.size > 0) {
               const phones: BatchInvalidPhone[] = [...dedupedInvalids.values()].map(
                 (p) => ({
-                  telefone: p.normalized,
+                  // Send the literal column digits, not the canonicalized
+                  // BR E.164 form. Pipeboard's NULLIF clears columns by
+                  // exact-string match against the original value, and it
+                  // intentionally does not canonicalize on its side
+                  // (numbers legitimately starting with `55` would be
+                  // ambiguous). Sending `p.normalized` here turned 11-digit
+                  // entries like `55996960878` into `5555996960878`
+                  // (double-prefixed by the BR_CC rule in
+                  // phone-extractor.normalizeBrPhone) — Pipeboard then
+                  // failed every NULLIF on those rows and the malformed
+                  // `5555…` strings landed in the blocklist instead. Using
+                  // the raw column digits preserves the contract whatever
+                  // shape the source ETL chose.
+                  telefone: p.raw.replace(/\D/g, ''),
                   colunaOrigem: p.column as BatchInvalidPhone['colunaOrigem'],
                   confidence: p.confidence,
                 }),
               )
               const fonte = this.deps.fonte ?? 'dispatch_adb_precheck'
-              const archiveIfEmpty = allInvalid
+              // Only ask Pipeboard to archive when we are certain the
+              // contato will be empty after our NULLIF. extractPhones
+              // already iterates every known column (whatsapp_hot,
+              // telefone_hot_*, telefone_1..6) on the row Pipeboard
+              // returned, so phoneResults.length is the column count
+              // we observed. If any of those came back as `error`
+              // (inconclusive probe), the column might still hold a
+              // valid phone — sending archive_if_empty=true would be
+              // wrong. Restrict the flag to the strict case where
+              // every column we saw was probed and definitively
+              // invalid. Pipeboard's archive logic is a no-op when
+              // residuals remain (HTTP 200 + deal_archived=false), so
+              // the conservative gate just avoids noisy "asked-but-
+              // skipped" entries in the audit log.
+              const populatedColumnsInRow = phoneResults.length
+              const probeCoveredEverything = invalidCount === populatedColumnsInRow
+              const archiveIfEmpty = allInvalid && probeCoveredEverything
+              if (allInvalid && !probeCoveredEverything) {
+                logger.warn('skipping archive_if_empty: not every column came back invalid', {
+                  jobId, key,
+                  populatedColumnsInRow,
+                  invalidCount,
+                  errorCount,
+                })
+              }
               try {
                 const result = this.deps.pendingWritebacks
                   ? await this.deps.pendingWritebacks.submitInvalidation(key, {
