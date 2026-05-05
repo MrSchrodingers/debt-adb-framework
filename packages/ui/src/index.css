@@ -63,6 +63,16 @@ html, body, #root {
   50%      { opacity: 1;    transform: scale(1.04); }
 }
 
+/* Used by ProgressBar in indeterminate mode (streaming jobs whose
+   total is not known until completion). The thumb is a 1/3-width pill
+   that slides left-to-right and back, signalling activity without
+   pretending to know progress percent. */
+@keyframes indeterminate-progress {
+  0%   { transform: translateX(-100%); }
+  50%  { transform: translateX(150%); }
+  100% { transform: translateX(-100%); }
+}
+
 /* ── Light theme ────────────────────────────────────────────────────────────
    Activated by data-theme="light" on <html> (set via preferences-menu.tsx).
    Overrides the dark-first palette with neutral warm-whites.                */

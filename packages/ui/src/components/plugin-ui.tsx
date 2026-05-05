@@ -177,12 +177,21 @@ export function ProgressBar({
   accent = 'sky',
   showLabel = true,
   label,
+  indeterminate = false,
 }: {
   value: number
   total: number
   accent?: Accent
   showLabel?: boolean
   label?: string
+  /**
+   * Render an animated indeterminate bar when the total is unknown
+   * (e.g. streaming scans where the API reports total=-1 until the
+   * final tally lands). Caller still passes `value` so the operator
+   * sees the running count, but the percentage and proportional fill
+   * are suppressed in favour of a moving gradient.
+   */
+  indeterminate?: boolean
 }) {
   const pct = total > 0 ? Math.min(100, Math.round((value / total) * 100)) : 0
   return (
@@ -192,16 +201,23 @@ export function ProgressBar({
           <span className="text-zinc-400">{label ?? 'Progresso'}</span>
           <span className="tabular-nums text-zinc-300">
             {value.toLocaleString('pt-BR')}
-            {total > 0 ? ` / ${total.toLocaleString('pt-BR')}` : ''}
-            {total > 0 ? ` · ${pct}%` : ''}
+            {!indeterminate && total > 0 ? ` / ${total.toLocaleString('pt-BR')}` : ''}
+            {!indeterminate && total > 0 ? ` · ${pct}%` : ''}
+            {indeterminate ? ' · em andamento…' : ''}
           </span>
         </div>
       ) : null}
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
-        <div
-          className={`h-full ${ACCENT_BAR[accent]} transition-all duration-500`}
-          style={{ width: `${pct}%` }}
-        />
+        {indeterminate ? (
+          <div
+            className={`h-full w-1/3 ${ACCENT_BAR[accent]} animate-[indeterminate-progress_1.4s_ease-in-out_infinite] rounded-full`}
+          />
+        ) : (
+          <div
+            className={`h-full ${ACCENT_BAR[accent]} transition-all duration-500`}
+            style={{ width: `${pct}%` }}
+          />
+        )}
       </div>
     </div>
   )

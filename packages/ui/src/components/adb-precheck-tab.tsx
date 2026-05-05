@@ -748,8 +748,28 @@ function JobsPanel() {
 
 function JobCard({ job, compact = false }: { job: PrecheckJob; compact?: boolean }) {
   const [expanded, setExpanded] = useState(false)
-  const total = job.total_deals ?? 0
-  const progressPct = total > 0 ? Math.round((job.scanned_deals / total) * 100) : 0
+  // Backend reports total_deals=-1 when the scan is streaming and the
+  // upstream pool size is not knowable upfront. That left the bar
+  // pinned at 0% even on completed jobs (operator sees an empty track
+  // and assumes the UI broke). Two derived values fix it:
+  //   • `reportedTotal`: raw value from the API, may be -1 / 0 / N
+  //   • `effectiveTotal`: what the bar actually divides by — when the
+  //     job is in a terminal status (completed/failed/cancelled) and
+  //     the reported total is missing, scanned_deals IS the final
+  //     count, so use it (bar pegs at 100%).
+  //   • `indeterminate`: only true while running with no known total —
+  //     ProgressBar then renders an animated thumb instead of a static
+  //     0% fill.
+  const reportedTotal = job.total_deals ?? 0
+  const isTerminal =
+    job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled'
+  const effectiveTotal = reportedTotal > 0
+    ? reportedTotal
+    : isTerminal
+      ? job.scanned_deals
+      : 0
+  const indeterminate = !isTerminal && effectiveTotal <= 0
+
   const elapsedMs = useMemo(() => {
     const s = job.started_at ?? job.created_at
     const e = job.finished_at ?? new Date().toISOString()
@@ -759,8 +779,8 @@ function JobCard({ job, compact = false }: { job: PrecheckJob; compact?: boolean
   const rate = elapsedMs > 0 && job.scanned_deals > 0
     ? job.scanned_deals / (elapsedMs / 1000)
     : 0
-  const eta = rate > 0 && total > 0 && job.status === 'running'
-    ? Math.round((total - job.scanned_deals) / rate)
+  const eta = rate > 0 && effectiveTotal > 0 && job.status === 'running'
+    ? Math.round((effectiveTotal - job.scanned_deals) / rate)
     : null
 
   return (
@@ -778,7 +798,7 @@ function JobCard({ job, compact = false }: { job: PrecheckJob; compact?: boolean
             <span className="text-xs text-zinc-500">{fmtWhen(job.started_at ?? job.created_at)}</span>
             {eta != null ? <Pill tone="sky">ETA {fmtDuration(eta * 1000)}</Pill> : null}
           </div>
-          {!compact ? <div className="mt-2"><ProgressBar accent={jobAccent(job.status)} value={job.scanned_deals} total={total} label="Leads scanned" /></div> : null}
+          {!compact ? <div className="mt-2"><ProgressBar accent={jobAccent(job.status)} value={job.scanned_deals} total={effectiveTotal} indeterminate={indeterminate} label="Leads scanned" /></div> : null}
           <div className={`mt-${compact ? 1 : 2} flex items-center gap-3 text-xs text-zinc-500 flex-wrap`}>
             <span className="flex items-center gap-1"><PhoneCall className="h-3 w-3" />{job.total_phones.toLocaleString('pt-BR')} checados</span>
             <span className="flex items-center gap-1 text-emerald-400"><BadgeCheck className="h-3 w-3" />{job.valid_phones}</span>
