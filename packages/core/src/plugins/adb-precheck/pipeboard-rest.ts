@@ -91,6 +91,15 @@ export class PipeboardRest implements IPipeboardClient {
         confidence: p.confidence,
       })),
       archive_if_empty: payload.archiveIfEmpty,
+      // Pipeboard's Temporal worker used to emit a per-deal Pipedrive
+      // activity titled "📵 Telefones invalidados — N números removidos
+      // do deal" after every successful invalidate. The wording confused
+      // CRM operators (the phones were removed from prov_consultas, not
+      // from Pipedrive) and we keep only the per-pasta `pasta_summary`
+      // from the Dispatch side. The router team added this flag (along
+      // with /deals/count) to suppress the emission per request — older
+      // routers ignore it, so it's safe to send unconditionally.
+      emit_pipedrive_deal_summary: false,
     }
     const idempotencyKey = buildIdempotencyKey(payload.jobId, key, body)
     const res = await this.request('POST', '/precheck/phones/invalidate', body, {
@@ -155,17 +164,28 @@ export class PipeboardRest implements IPipeboardClient {
   }
 
   /**
-   * Pool count is not directly exposed by Pipeboard's REST surface —
-   * `GET /deals` returns `has_more` (boolean) but no total. Returning
-   * `-1` signals "unknown" so the scanner falls back to streaming the
-   * keyset until exhausted instead of using the value for a progress
-   * bar denominator.
+   * Pool size from Pipeboard's `GET /precheck/deals/count`. Pipeboard
+   * returns `{ total_estimate: number, method: string, last_analyze:
+   * string }` — `method` is typically `pg_class.reltuples` (cheap, ±10%
+   * accuracy) or `count_exact` if/when they enable the precise path.
    *
-   * If a precise count is needed in the future, ask Pipeboard to add
-   * a `total_estimate` field (cheap COUNT(*) over the same WHERE).
+   * Returning `-1` keeps the legacy "unknown" contract so the scanner
+   * and the /stats/global endpoint fall back to absolute counts when
+   * the route is missing (older Pipeboard build) or the request fails
+   * — the UI already collapses denominators to `null` in that path.
    */
   async countPool(_params: PrecheckScanParams): Promise<number> {
-    return -1
+    try {
+      const res = await this.request('GET', '/precheck/deals/count', null)
+      const json = (await res.json()) as { total_estimate?: number }
+      const n = json.total_estimate
+      if (typeof n === 'number' && Number.isFinite(n) && n >= 0) return n
+      return -1
+    } catch {
+      // 404 (older router), network blip, parse error — degrade to
+      // "unknown" instead of throwing into the scan pipeline.
+      return -1
+    }
   }
 
   /**
