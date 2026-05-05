@@ -38,6 +38,14 @@ import { PluginRegistry } from '../plugins/plugin-registry.js'
 
 interface GlobalArgs {
   db?: string
+  /**
+   * Test-only escape hatch: a live `Database` handle to use instead
+   * of opening `db` (the file path). Plumbed straight through to
+   * every `openDb()` call so the CLI can run against an in-memory
+   * SQLite without the test having to copy itself to /tmp first.
+   * Production callers never set this.
+   */
+  injectedDb?: Database.Database
   json: boolean
   help: boolean
   command?: string
@@ -236,7 +244,23 @@ function parseGlobal(argv: string[]): GlobalArgs {
 function openDb(
   dbPath: string,
   stderr: NodeJS.WritableStream,
+  injected?: Database.Database,
 ): Database.Database | null {
+  // Test injection: when `main()` receives an in-process DB handle we
+  // reuse it for every command in the run instead of opening the path.
+  // The injected handle is a borrow — `close()` is neutralised so the
+  // owning test stays in control of the lifecycle. This replaces the
+  // old `db.backup()` to /tmp dance, which raced under Vitest parallel
+  // workers and produced an intermittent flake on the trace test.
+  if (injected) {
+    return new Proxy(injected, {
+      get(target, prop, receiver) {
+        if (prop === 'close') return () => { /* borrowed — owner closes */ }
+        const val = Reflect.get(target, prop, target)
+        return typeof val === 'function' ? val.bind(target) : val
+      },
+    })
+  }
   try {
     return new Database(dbPath)
   } catch (err) {
@@ -268,7 +292,7 @@ async function cmdTrace(
   }
 
   const dbPath = g.db ?? process.env['DB_PATH'] ?? 'dispatch.db'
-  const db = openDb(dbPath, stderr)
+  const db = openDb(dbPath, stderr, g.injectedDb)
   if (!db) return 3
 
   try {
@@ -392,7 +416,7 @@ async function cmdSend(
   if (!body) { stderr.write('error: --body is required\n'); return 1 }
 
   const dbPath = g.db ?? process.env['DB_PATH'] ?? 'dispatch.db'
-  const db = openDb(dbPath, stderr)
+  const db = openDb(dbPath, stderr, g.injectedDb)
   if (!db) return 3
 
   try {
@@ -464,7 +488,7 @@ async function cmdDeviceList(
   stderr: NodeJS.WritableStream,
 ): Promise<number> {
   const dbPath = g.db ?? process.env['DB_PATH'] ?? 'dispatch.db'
-  const db = openDb(dbPath, stderr)
+  const db = openDb(dbPath, stderr, g.injectedDb)
   if (!db) return 3
 
   try {
@@ -525,7 +549,7 @@ async function cmdDeviceInfo(
   }
 
   const dbPath = g.db ?? process.env['DB_PATH'] ?? 'dispatch.db'
-  const db = openDb(dbPath, stderr)
+  const db = openDb(dbPath, stderr, g.injectedDb)
   if (!db) return 3
 
   try {
@@ -622,7 +646,7 @@ async function cmdQueue(
   }
 
   const dbPath = g.db ?? process.env['DB_PATH'] ?? 'dispatch.db'
-  const db = openDb(dbPath, stderr)
+  const db = openDb(dbPath, stderr, g.injectedDb)
   if (!db) return 3
 
   try {
@@ -727,7 +751,7 @@ async function cmdKeys(
   }
 
   const dbPath = g.db ?? process.env['DB_PATH'] ?? 'dispatch.db'
-  const db = openDb(dbPath, stderr)
+  const db = openDb(dbPath, stderr, g.injectedDb)
   if (!db) return 3
 
   try {
@@ -774,8 +798,16 @@ export async function main(
   argv: string[],
   stdout: NodeJS.WritableStream = process.stdout,
   stderr: NodeJS.WritableStream = process.stderr,
+  /**
+   * Test-only: pass a live `Database` instance and the CLI will use
+   * it for every subcommand instead of opening `--db <path>`.
+   * Production code paths leave this undefined and the CLI opens the
+   * file at the configured path as before.
+   */
+  injectedDb?: Database.Database,
 ): Promise<number> {
   const g = parseGlobal(argv)
+  g.injectedDb = injectedDb
 
   if (g.help && !g.command) {
     printUsage(stdout)

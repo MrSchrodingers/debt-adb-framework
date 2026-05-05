@@ -1,7 +1,4 @@
 import { describe, it, expect } from 'vitest'
-import { unlinkSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import { MessageQueue } from '../queue/message-queue.js'
 import { PluginRegistry } from '../plugins/plugin-registry.js'
@@ -49,7 +46,20 @@ function buildDb(): Database.Database {
   return db
 }
 
-/** Async run helper: writes DB to tmp file, calls main(), cleans up */
+/**
+ * Run helper: invokes the CLI with the given args, optionally
+ * injecting an in-process DB so commands run against the test's
+ * in-memory SQLite handle without copying it to /tmp first.
+ *
+ * The previous version used `db.backup(tmpPath)` to a randomly-named
+ * file in /tmp, then passed `--db <path>` to the CLI. Under Vitest
+ * parallel workers this raced — multiple tests writing to /tmp at
+ * the same time, plus the `Math.random()` filename and async backup
+ * timing, produced an intermittent flake on the trace test ("prints
+ * timeline for existing message with events"). The CLI now accepts
+ * a `Database` handle directly via `main()`'s 4th argument; the
+ * helper just forwards.
+ */
 async function run(
   args: string[],
   db?: Database.Database,
@@ -58,16 +68,7 @@ async function run(
   let err = ''
   const stdout = { write: (s: string) => { out += s } } as NodeJS.WritableStream
   const stderr = { write: (s: string) => { err += s } } as NodeJS.WritableStream
-
-  if (db) {
-    const tmpPath = join(tmpdir(), `dispatch-cli-test-${Math.random().toString(36).slice(2)}.db`)
-    await db.backup(tmpPath)
-    const code = await main([...args, '--db', tmpPath], stdout, stderr)
-    try { unlinkSync(tmpPath) } catch { /* ignore */ }
-    return { code, out, err }
-  }
-
-  const code = await main(args, stdout, stderr)
+  const code = await main(args, stdout, stderr, db)
   return { code, out, err }
 }
 
