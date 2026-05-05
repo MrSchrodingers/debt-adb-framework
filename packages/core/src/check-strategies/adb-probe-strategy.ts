@@ -65,13 +65,58 @@ export class AdbProbeStrategy implements CheckStrategy {
       ? await this.deviceMutex.acquire(deviceSerial)
       : () => {}
     try {
-      // Route the wa.me intent to the WhatsApp instance of the
-      // requested Android user when the caller specified one. Without
-      // `--user N` Android sends the intent to whichever user is in
-      // foreground — typically profile 0 — and the probe answers for
-      // the wrong account, so picking a different sender in the UI had
-      // no effect on the actual probe target. `--user` is integer-only
-      // so the regex above prevents shell injection by construction.
+      // When the caller pinned a specific Android user we must move
+      // it to foreground before dumping UIAutomator — `am start
+      // --user N` only routes the intent, the dump always reads
+      // whichever user is in foreground. Without an explicit switch
+      // the probe answered for whoever happened to be on screen
+      // (typically profile 0 / "Main Oralsin 2") and selecting a
+      // different sender in the UI had no effect.
+      if (ctx.profileId !== undefined) {
+        const currentRaw = await this.adb.shell(deviceSerial, 'am get-current-user')
+        const current = parseInt(currentRaw.trim(), 10)
+        if (Number.isFinite(current) && current !== ctx.profileId) {
+          await this.adb.shell(deviceSerial, `am switch-user ${ctx.profileId}`)
+          // Poll `am get-current-user` until convergence — switch-user
+          // returns immediately but the actual user transition is
+          // async (Android stops the previous user, starts the new
+          // one, focuses launcher). Without polling, the next intent
+          // races the transition and lands on the wrong user.
+          const switchDeadline = Date.now() + 10_000
+          let converged = false
+          while (Date.now() < switchDeadline) {
+            await this.delay(1000)
+            const probedRaw = await this.adb.shell(deviceSerial, 'am get-current-user')
+            const probed = parseInt(probedRaw.trim(), 10)
+            if (probed === ctx.profileId) {
+              converged = true
+              break
+            }
+          }
+          if (!converged) {
+            return {
+              source: this.source,
+              result: 'inconclusive',
+              confidence: null,
+              evidence: {
+                switch_user_failed: true,
+                requested_profile: ctx.profileId,
+                last_seen_profile: current,
+              },
+              latency_ms: Date.now() - started,
+              variant_tried: variant,
+              device_serial: deviceSerial,
+            }
+          }
+          // Allow the launcher / WA cold start to settle before the
+          // intent. Mirrors WorkerOrchestrator.switchToUser.
+          await this.delay(2000)
+        }
+      }
+      // `--user N` is kept as a defence-in-depth: even though the user
+      // is now in foreground, an explicit user routes the intent
+      // unambiguously. The numeric guard above prevents shell
+      // injection.
       const userArg = ctx.profileId !== undefined ? `--user ${ctx.profileId} ` : ''
       await this.adb.shell(
         deviceSerial,
