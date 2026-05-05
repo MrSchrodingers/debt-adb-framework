@@ -295,6 +295,33 @@ export class PrecheckJobStore {
       )
   }
 
+  /**
+   * Lifetime phone-level aggregates from completed jobs. Powers the
+   * "Visão Geral" panel — the operator wants to know how many phones
+   * we have actually tested versus how many remain in the pool, to
+   * size the next batch (`limit=100` → ~N phones → ~M minutes).
+   */
+  aggregatePhoneStats(): {
+    phones_checked: number
+    phones_valid: number
+    phones_invalid: number
+    phones_error: number
+  } {
+    const row = (this.db
+      .prepare(
+        `SELECT COALESCE(SUM(total_phones),0)   AS phones_checked,
+                COALESCE(SUM(valid_phones),0)   AS phones_valid,
+                COALESCE(SUM(invalid_phones),0) AS phones_invalid,
+                COALESCE(SUM(error_phones),0)   AS phones_error
+           FROM adb_precheck_jobs
+          WHERE status = 'completed'`,
+      )
+      .get() as
+        | { phones_checked: number; phones_valid: number; phones_invalid: number; phones_error: number }
+        | undefined) ?? { phones_checked: 0, phones_valid: 0, phones_invalid: 0, phones_error: 0 }
+    return row
+  }
+
   aggregateStats(): {
     deals_scanned: number
     deals_with_valid: number

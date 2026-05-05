@@ -349,8 +349,9 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     })
 
     ctx.registerRoute('GET',  '/health',     this.handleHealth.bind(this))
-    ctx.registerRoute('GET',  '/stats',      this.handleStats.bind(this))
-    ctx.registerRoute('GET',  '/stats/pool', this.handleStatsPool.bind(this))
+    ctx.registerRoute('GET',  '/stats',         this.handleStats.bind(this))
+    ctx.registerRoute('GET',  '/stats/pool',    this.handleStatsPool.bind(this))
+    ctx.registerRoute('GET',  '/stats/global',  this.handleStatsGlobal.bind(this))
     ctx.registerRoute('POST', '/scan',       this.handleStartScan.bind(this))
     ctx.registerRoute('GET',  '/scan/:id',   this.handleGetJob.bind(this))
     ctx.registerRoute('POST', '/scan/:id/cancel', this.handleCancelJob.bind(this))
@@ -451,6 +452,132 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
 
   private async handleStats(_req: unknown, reply: unknown): Promise<unknown> {
     return (reply as { send: (x: unknown) => unknown }).send(this.store.aggregateStats())
+  }
+
+  /**
+   * Combined coverage view ("Visão Geral global"). One round-trip for
+   * the UI to render the top-of-page panel: how big is the pool, how
+   * many deals/phones have we covered, how many are still pending,
+   * how big is the cache, and a rough phones-per-deal multiplier so
+   * the operator can size the next batch ("limit=100 → ≈480 phones →
+   * ≈32 min at observed rate").
+   *
+   * Pool size comes from Pipeboard (`countPool`); when the REST
+   * backend reports `-1` (intentional — Pipeboard's ADR 0002 omits
+   * COUNT for performance) we surface `pool_total: null` so the UI
+   * shows the deal/phone totals without faking a denominator.
+   */
+  private async handleStatsGlobal(req: unknown, reply: unknown): Promise<unknown> {
+    const r = reply as {
+      status: (c: number) => { send: (x: unknown) => unknown }
+      send: (x: unknown) => unknown
+    }
+    const query = (req as { query?: { recheck_after_days?: string | number } }).query ?? {}
+    const defaultRecheckDays = Number(process.env.PLUGIN_ADB_PRECHECK_DEFAULT_RECHECK_AFTER_DAYS ?? 30)
+    const recheckAfterDays = query.recheck_after_days !== undefined
+      ? Number(query.recheck_after_days)
+      : defaultRecheckDays
+    if (!Number.isFinite(recheckAfterDays) || recheckAfterDays < 0) {
+      return r.status(400).send({ error: 'invalid_recheck_after_days' })
+    }
+
+    let poolTotal: number | null
+    let poolError: string | null = null
+    let poolUnsupported = false
+    try {
+      const v = await this.pg.countPool({})
+      if (v < 0) {
+        poolTotal = null
+        poolUnsupported = true
+      } else {
+        poolTotal = v
+      }
+    } catch (e) {
+      poolTotal = null
+      poolError = e instanceof Error ? e.message : String(e)
+    }
+
+    const thresholdIso = new Date(Date.now() - recheckAfterDays * 86_400_000).toISOString()
+    const { fresh, total: scannedTotal } = this.store.countScannedSince(thresholdIso)
+    const stale = Math.max(0, scannedTotal - fresh)
+    const dealsPending = poolTotal !== null ? Math.max(0, poolTotal - fresh) : null
+    const dealsCoveragePct =
+      poolTotal !== null && poolTotal > 0 ? (scannedTotal / poolTotal) * 100 : null
+
+    const dealAgg = this.store.aggregateStats()
+    const phoneAgg = this.store.aggregatePhoneStats()
+
+    // wa_contact_checks lives in the shared registry; query directly
+    // since the plugin already owns this DB.
+    let cacheFresh = 0
+    let cacheTotal = 0
+    try {
+      const cacheRow = (this.db
+        .prepare(
+          `SELECT COUNT(*) AS total,
+                  COALESCE(SUM(CASE WHEN checked_at >= ? THEN 1 ELSE 0 END),0) AS fresh
+             FROM wa_contact_checks`,
+        )
+        .get(thresholdIso) as { total: number; fresh: number } | undefined) ?? { total: 0, fresh: 0 }
+      cacheTotal = cacheRow.total
+      cacheFresh = cacheRow.fresh
+    } catch {
+      // wa_contact_checks may not exist in legacy DBs — leave zero.
+    }
+
+    // Phones-per-deal observed across the lifetime of completed scans.
+    // Used by the UI to extrapolate `phones_estimated_in_pool` so the
+    // operator can plan batches without manual math. Marked
+    // `_estimated` because the source is sampling, not authoritative.
+    const phonesPerDealAvg =
+      dealAgg.deals_scanned > 0
+        ? phoneAgg.phones_checked / dealAgg.deals_scanned
+        : null
+    const phonesEstimatedInPool =
+      poolTotal !== null && phonesPerDealAvg !== null
+        ? Math.round(poolTotal * phonesPerDealAvg)
+        : null
+    const phonesEstimatedRemaining =
+      dealsPending !== null && phonesPerDealAvg !== null
+        ? Math.round(dealsPending * phonesPerDealAvg)
+        : null
+
+    return r.status(200).send({
+      recheck_after_days: recheckAfterDays,
+      threshold_iso: thresholdIso,
+
+      pool: {
+        deals_total: poolTotal,
+        unsupported: poolUnsupported,
+        error: poolError,
+      },
+      deals: {
+        scanned: scannedTotal,
+        fresh,
+        stale,
+        pending: dealsPending,
+        coverage_percent:
+          dealsCoveragePct !== null ? Number(dealsCoveragePct.toFixed(2)) : null,
+        with_valid: dealAgg.deals_with_valid,
+        all_invalid: dealAgg.deals_all_invalid,
+      },
+      phones: {
+        checked: phoneAgg.phones_checked,
+        valid: phoneAgg.phones_valid,
+        invalid: phoneAgg.phones_invalid,
+        error: phoneAgg.phones_error,
+        per_deal_avg:
+          phonesPerDealAvg !== null ? Number(phonesPerDealAvg.toFixed(2)) : null,
+        estimated_in_pool: phonesEstimatedInPool,
+        estimated_remaining: phonesEstimatedRemaining,
+      },
+      cache: {
+        fresh: cacheFresh,
+        total: cacheTotal,
+        stale: Math.max(0, cacheTotal - cacheFresh),
+      },
+      last_scan_at: dealAgg.last_scan_at,
+    })
   }
 
   /**

@@ -50,6 +50,40 @@ interface AggregateStats {
   last_scan_at: string | null
 }
 
+interface GlobalStats {
+  recheck_after_days: number
+  threshold_iso: string
+  pool: {
+    deals_total: number | null
+    unsupported: boolean
+    error: string | null
+  }
+  deals: {
+    scanned: number
+    fresh: number
+    stale: number
+    pending: number | null
+    coverage_percent: number | null
+    with_valid: number
+    all_invalid: number
+  }
+  phones: {
+    checked: number
+    valid: number
+    invalid: number
+    error: number
+    per_deal_avg: number | null
+    estimated_in_pool: number | null
+    estimated_remaining: number | null
+  }
+  cache: {
+    fresh: number
+    total: number
+    stale: number
+  }
+  last_scan_at: string | null
+}
+
 interface PrecheckJob {
   id: string
   external_ref: string | null
@@ -169,16 +203,18 @@ export function AdbPrecheckTab() {
 
 function OverviewPanel({ onStartScan }: { onStartScan: () => void }) {
   const [stats, setStats] = useState<AggregateStats | null>(null)
+  const [global, setGlobal] = useState<GlobalStats | null>(null)
   const [latestJobs, setLatestJobs] = useState<PrecheckJob[]>([])
   const [err, setErr] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
-      const [s, j] = await Promise.all([
+      const [s, g, j] = await Promise.all([
         fetch(`${PLUGIN_BASE}/stats`, { headers: authHeaders() }).then(r => r.ok ? r.json() : Promise.reject(new Error(`stats HTTP ${r.status}`))),
+        fetch(`${PLUGIN_BASE}/stats/global`, { headers: authHeaders() }).then(r => r.ok ? r.json() : null),
         fetch(`${PLUGIN_BASE}/jobs?limit=5`, { headers: authHeaders() }).then(r => r.ok ? r.json() : []),
       ])
-      setStats(s); setLatestJobs(Array.isArray(j) ? j : []); setErr(null)
+      setStats(s); setGlobal(g as GlobalStats | null); setLatestJobs(Array.isArray(j) ? j : []); setErr(null)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     }
@@ -214,6 +250,8 @@ function OverviewPanel({ onStartScan }: { onStartScan: () => void }) {
 
   return (
     <div className="space-y-4">
+      {global ? <CoveragePanel data={global} /> : null}
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatCard
           label="Leads scanned"
@@ -274,6 +312,199 @@ function OverviewSkeleton() {
         ))}
       </div>
       <div className="animate-pulse rounded-lg border border-zinc-800 bg-zinc-900/40 h-32" />
+    </div>
+  )
+}
+
+/**
+ * Top-of-page coverage panel. Aggregates the lifetime view across
+ * Pipeboard pool size, Dispatch's per-deal scan history, the per-phone
+ * cache (wa_contact_checks), and a phones-per-deal multiplier observed
+ * from completed jobs.
+ *
+ * The pool denominator can be `null` — the Pipeboard REST contract
+ * intentionally omits COUNT for performance (ADR 0002). When that
+ * happens we render the absolute counts and skip the percentage bar
+ * instead of faking a denominator.
+ *
+ * The "lote sugerido" hints help operators size next batches without
+ * mental math: at the observed rate, `limit=N` will validate ≈X phones
+ * in ≈Y minutes.
+ */
+function CoveragePanel({ data }: { data: GlobalStats }) {
+  const dealsCov = data.deals.coverage_percent
+  const phonesEstPool = data.phones.estimated_in_pool
+  const phonesEstRemaining = data.phones.estimated_remaining
+  const perDealAvg = data.phones.per_deal_avg ?? 0
+  const phonesCheckedPct =
+    phonesEstPool && phonesEstPool > 0 && data.phones.checked > 0
+      ? Math.min(100, Math.round((data.phones.checked / phonesEstPool) * 100))
+      : null
+
+  // Rough rate model: each phone ≈ 6s of L3 ADB probing on average
+  // (pre-cache hit ratio). Operators only need an order-of-magnitude;
+  // exact ETA comes from the running job's bar.
+  const estimateMinutes = (phones: number): number => Math.max(1, Math.round((phones * 6) / 60))
+
+  const batchSizes = [50, 100, 250, 500].filter(
+    (n) => phonesEstRemaining == null || n * perDealAvg <= phonesEstRemaining * 1.5,
+  )
+
+  return (
+    <div className="rounded-xl border border-sky-800/40 bg-gradient-to-br from-zinc-900/80 to-sky-950/20 p-4 space-y-4">
+      <div className="flex items-baseline justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="text-sm font-medium text-zinc-200">Cobertura global</h3>
+          <p className="text-xs text-zinc-500">
+            janela de re-scan: {data.recheck_after_days} dias · pool Pipeboard ↔ scans Dispatch
+          </p>
+        </div>
+        {dealsCov != null ? (
+          <div className="text-right">
+            <div className="text-2xl font-mono font-semibold text-sky-300">{dealsCov.toFixed(1)}%</div>
+            <div className="text-[10px] text-zinc-500 uppercase tracking-wider">deals frescos no pool</div>
+          </div>
+        ) : null}
+      </div>
+
+      {/* Coverage bar — only when pool size is known. */}
+      {dealsCov != null && data.pool.deals_total != null ? (
+        <div className="space-y-1">
+          <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-800">
+            <div
+              className="h-full bg-gradient-to-r from-sky-600 to-emerald-500 transition-all duration-700"
+              style={{ width: `${Math.min(100, dealsCov)}%` }}
+            />
+          </div>
+          <div className="flex items-center justify-between text-[11px] text-zinc-400 tabular-nums">
+            <span>{data.deals.fresh.toLocaleString('pt-BR')} fresh</span>
+            <span>
+              {data.deals.scanned.toLocaleString('pt-BR')} / {data.pool.deals_total.toLocaleString('pt-BR')} deals
+            </span>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <CoverageMetric
+          label="Pool de deals"
+          value={data.pool.deals_total != null ? data.pool.deals_total.toLocaleString('pt-BR') : '—'}
+          sub={
+            data.pool.unsupported
+              ? 'Pipeboard COUNT desativado'
+              : data.pool.error
+                ? 'erro ao consultar pool'
+                : 'distintos no upstream'
+          }
+          tone="sky"
+        />
+        <CoverageMetric
+          label="Já varridos"
+          value={data.deals.scanned.toLocaleString('pt-BR')}
+          sub={`${data.deals.fresh.toLocaleString('pt-BR')} fresh · ${data.deals.stale.toLocaleString('pt-BR')} stale`}
+          tone="emerald"
+        />
+        <CoverageMetric
+          label="Pendentes"
+          value={data.deals.pending != null ? data.deals.pending.toLocaleString('pt-BR') : '—'}
+          sub={
+            data.deals.pending != null
+              ? `${data.deals.stale} stale + ${Math.max(0, data.deals.pending - data.deals.stale)} novos`
+              : 'pool desconhecido'
+          }
+          tone="amber"
+        />
+        <CoverageMetric
+          label="Telefones testados"
+          value={data.phones.checked.toLocaleString('pt-BR')}
+          sub={
+            phonesCheckedPct != null
+              ? `≈${phonesCheckedPct}% do pool estimado`
+              : `${data.phones.valid} válidos · ${data.phones.invalid} inválidos`
+          }
+          tone="violet"
+        />
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 pt-2 border-t border-zinc-800/60">
+        <CoverageMetric
+          label="Phones / deal (média)"
+          value={data.phones.per_deal_avg != null ? data.phones.per_deal_avg.toFixed(2) : '—'}
+          sub="observado nos jobs completados"
+          tone="zinc"
+        />
+        <CoverageMetric
+          label="Phones estimados no pool"
+          value={phonesEstPool != null ? `~${phonesEstPool.toLocaleString('pt-BR')}` : '—'}
+          sub={phonesEstRemaining != null ? `~${phonesEstRemaining.toLocaleString('pt-BR')} pendentes` : 'pool desconhecido'}
+          tone="zinc"
+        />
+        <CoverageMetric
+          label="Cache wa_contact_checks"
+          value={`${data.cache.fresh.toLocaleString('pt-BR')} fresh`}
+          sub={`${data.cache.total.toLocaleString('pt-BR')} total · ${data.cache.stale.toLocaleString('pt-BR')} stale`}
+          tone="zinc"
+        />
+      </div>
+
+      {/* Batch sizing hints — only when we have enough info to be useful. */}
+      {perDealAvg > 0 && phonesEstRemaining != null && phonesEstRemaining > 0 ? (
+        <div className="rounded-md border border-zinc-800/60 bg-zinc-950/50 p-3">
+          <div className="text-[11px] uppercase tracking-wider text-zinc-500 mb-2">
+            Lotes sugeridos · {perDealAvg.toFixed(1)} phones/deal · ~6s/phone
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            {batchSizes.length > 0
+              ? batchSizes.map((limit) => {
+                  const phonesEst = Math.round(limit * perDealAvg)
+                  const minutesEst = estimateMinutes(phonesEst)
+                  const pctOfRemaining =
+                    phonesEstRemaining > 0
+                      ? Math.min(100, Math.round((phonesEst / phonesEstRemaining) * 100))
+                      : null
+                  return (
+                    <div key={limit} className="rounded bg-zinc-900/70 border border-zinc-800 px-2 py-1.5">
+                      <div className="text-xs font-mono text-zinc-200">limit={limit}</div>
+                      <div className="text-[10px] text-zinc-500">
+                        ~{phonesEst.toLocaleString('pt-BR')} phones · ~{minutesEst} min
+                        {pctOfRemaining != null ? ` · ${pctOfRemaining}% do pendente` : ''}
+                      </div>
+                    </div>
+                  )
+                })
+              : (
+                <div className="col-span-full text-xs text-zinc-500">Pool quase coberto — qualquer tamanho de lote serve.</div>
+              )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function CoverageMetric({
+  label,
+  value,
+  sub,
+  tone,
+}: {
+  label: string
+  value: string | number
+  sub?: string
+  tone: 'sky' | 'emerald' | 'amber' | 'violet' | 'zinc'
+}) {
+  const toneClasses: Record<typeof tone, string> = {
+    sky: 'text-sky-300',
+    emerald: 'text-emerald-300',
+    amber: 'text-amber-300',
+    violet: 'text-violet-300',
+    zinc: 'text-zinc-200',
+  }
+  return (
+    <div className="rounded-md border border-zinc-800/50 bg-zinc-900/40 p-3">
+      <div className="text-[10px] uppercase tracking-wider text-zinc-500">{label}</div>
+      <div className={`mt-1 text-lg font-mono font-semibold tabular-nums ${toneClasses[tone]}`}>{value}</div>
+      {sub ? <div className="mt-0.5 text-[10px] text-zinc-500">{sub}</div> : null}
     </div>
   )
 }
