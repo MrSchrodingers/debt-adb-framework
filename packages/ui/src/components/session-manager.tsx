@@ -25,9 +25,31 @@ interface DeviceWithProfiles {
   }>
 }
 
+/**
+ * Render-friendly label for an Android user profile.
+ *
+ * Android assigns numeric ids sequentially (0, 10, 11, 12, 21, 22, …)
+ * but the operator names users with their own scheme (e.g.
+ * "Oralsin 2 2", "Oralsin2-4"). The numbers in the *name* almost never
+ * match the numeric id — profile 11 is "Oralsin 2 2", profile 22 is
+ * "Oralsin2-4". Showing both side-by-side ("Oralsin 2 2 (profile 11)")
+ * misled operators into thinking the system was attaching to the
+ * wrong place.
+ *
+ * Default rule: when a name is known, surface it alone — that's the
+ * label the operator wrote. The numeric id stays available as the
+ * `title` attribute on the element calling this helper, for the rare
+ * case where two users share a name.
+ */
 const profileLabel = (p: { profileId: number; profileName: string | null } | undefined): string => {
   if (!p) return 'profile —'
-  return p.profileName ? `${p.profileName} (profile ${p.profileId})` : `profile ${p.profileId}`
+  return p.profileName ?? `profile ${p.profileId}`
+}
+
+/** Extra hint for tooltips — keeps the numeric id reachable. */
+const profileTitle = (p: { profileId: number; profileName: string | null } | undefined): string => {
+  if (!p) return ''
+  return p.profileName ? `${p.profileName} · Android user id ${p.profileId}` : `Android user id ${p.profileId}`
 }
 
 interface QrData {
@@ -544,20 +566,22 @@ export function SessionManager() {
                 </div>
                 <div className="text-xs text-zinc-500">
                   {session.phoneNumber ?? t('sessionManager.noPhone')} · {session.wahaStatus}
-                  {session.deviceSerial ? (
-                    <span className="ml-2 text-zinc-600">
-                      · {session.deviceSerial.slice(0, 12)}…/
-                      {(() => {
-                        const dev = devices.find((d) => d.serial === session.deviceSerial)
-                        const prof = dev?.profiles.find((p) => p.profileId === session.profileId)
-                        return profileLabel(
-                          prof ?? (session.profileId !== null
-                            ? { profileId: session.profileId, profileName: null }
-                            : undefined),
-                        )
-                      })()}
-                    </span>
-                  ) : session.managed ? (
+                  {session.deviceSerial ? (() => {
+                    const dev = devices.find((d) => d.serial === session.deviceSerial)
+                    const prof = dev?.profiles.find((p) => p.profileId === session.profileId)
+                    const fallback = session.profileId !== null
+                      ? { profileId: session.profileId, profileName: null }
+                      : undefined
+                    const ref = prof ?? fallback
+                    return (
+                      <span
+                        className="ml-2 text-zinc-600"
+                        title={profileTitle(ref)}
+                      >
+                        · {session.deviceSerial.slice(0, 12)}…/{profileLabel(ref)}
+                      </span>
+                    )
+                  })() : session.managed ? (
                     <span className="ml-2 text-amber-500">· sem device atribuído</span>
                   ) : null}
                 </div>
@@ -662,7 +686,11 @@ export function SessionManager() {
                       return <option disabled value="">(nenhum profile vago neste device)</option>
                     }
                     return vacant.map((p) => (
-                      <option key={p.profileId} value={p.profileId}>
+                      <option
+                        key={p.profileId}
+                        value={p.profileId}
+                        title={profileTitle(p)}
+                      >
                         {profileLabel(p)} · pronto para QR{p.profileRunning ? ' · running' : ''}
                       </option>
                     ))

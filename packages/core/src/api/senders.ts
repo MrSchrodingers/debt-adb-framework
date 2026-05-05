@@ -19,10 +19,25 @@ export function registerSenderRoutes(
 ): void {
   const { senderWarmup, senderMapping, senderHealth, queue, deviceManager } = deps
 
+  /**
+   * Operator-facing sender views must hide synthetic placeholder
+   * phones. `PUT /sessions/managed/:name/device` writes a `99999…`
+   * row to sender_mapping when an operator pins a session before
+   * pairing completes — that row exists purely to keep the
+   * (device, profile) reservation alive in the DB. It is NOT a
+   * sender that can dispatch anything (no real WhatsApp account
+   * behind it), so showing it on the dashboard misled operators
+   * into thinking they had more reachable numbers than they do.
+   *
+   * The Sessions tab still shows the pin via managed_sessions, so
+   * no information is lost — only the senders dashboard is cleaned.
+   */
+  const isPlaceholder = (phone: string): boolean => phone.startsWith('99999')
+
   // ── Device-aware sender topology ──
 
   server.get('/api/v1/senders/topology', async () => {
-    const mappings = senderMapping.listAll()
+    const mappings = senderMapping.listAll().filter(m => !isPlaceholder(m.phone_number))
     const onlineDevices = new Set(
       (deviceManager?.getDevices() ?? [])
         .filter(d => d.status === 'online')
@@ -149,7 +164,7 @@ export function registerSenderRoutes(
   // ── Comprehensive status endpoint ──
 
   server.get('/api/v1/senders/status', async () => {
-    const mappings = senderMapping.listAll()
+    const mappings = senderMapping.listAll().filter(m => !isPlaceholder(m.phone_number))
     return {
       senders: mappings.map(m => {
         const health = senderHealth.getStatus(m.phone_number)
