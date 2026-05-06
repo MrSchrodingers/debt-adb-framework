@@ -11,7 +11,7 @@ import { nanoid } from 'nanoid'
  * Pipedrive interaction the system performs.
  */
 export type PipedriveScenario = 'phone_fail' | 'deal_all_fail' | 'pasta_summary'
-export type PipedriveStatus = 'retrying' | 'success' | 'failed'
+export type PipedriveStatus = 'retrying' | 'success' | 'failed' | 'orphaned'
 
 export interface PipedriveActivityInsert {
   scenario: PipedriveScenario
@@ -23,6 +23,8 @@ export interface PipedriveActivityInsert {
   pipedrive_payload_json: string
   manual?: boolean
   triggered_by?: string | null
+  revises_row_id?: string
+  http_verb?: 'POST' | 'PUT'
 }
 
 export interface PipedriveActivityRow {
@@ -143,8 +145,8 @@ export class PipedriveActivityStore {
            id, scenario, deal_id, pasta, phone_normalized, job_id,
            pipedrive_endpoint, pipedrive_payload_json,
            pipedrive_response_status, attempts,
-           manual, triggered_by
-         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+           manual, triggered_by, revises_row_id, http_verb
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         id,
@@ -159,6 +161,8 @@ export class PipedriveActivityStore {
         1,
         data.manual ? 1 : 0,
         data.triggered_by ?? null,
+        data.revises_row_id ?? null,
+        data.http_verb ?? 'POST',
       )
     return id
   }
@@ -229,6 +233,50 @@ export class PipedriveActivityStore {
         params.sinceIso,
       ) as { 1: number } | undefined
     return Boolean(row)
+  }
+
+  /**
+   * Resolve the "current" Pipedrive note for a pasta — the most recent row
+   * with scenario='pasta_summary', status='success', and a non-null Pipedrive
+   * response id. Used by the publisher to switch from POST to PUT on
+   * subsequent scans of the same pasta.
+   *
+   * Returns null when no successful note has been published yet, OR when the
+   * previous note was orphaned (e.g. deleted upstream by an operator).
+   */
+  findCurrentPastaNote(pasta: string): { row_id: string; pipedrive_response_id: number; created_at: string } | null {
+    const row = this.db
+      .prepare(`
+        SELECT id AS row_id, pipedrive_response_id, created_at
+        FROM pipedrive_activities
+        WHERE scenario = 'pasta_summary'
+          AND pasta = ?
+          AND pipedrive_response_status = 'success'
+          AND pipedrive_response_id IS NOT NULL
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+      `)
+      .get(pasta) as
+      | { row_id: string; pipedrive_response_id: number; created_at: string }
+      | undefined
+    return row ?? null
+  }
+
+  /**
+   * Mark a row as orphaned — its Pipedrive entity was deleted upstream. The
+   * publisher uses this when a PUT returns 404, so subsequent
+   * `findCurrentPastaNote` calls skip it and the next publish creates a fresh
+   * note. Records the failure reason in `error_msg` for audit.
+   */
+  markOrphaned(rowId: string, reason: string): void {
+    this.db
+      .prepare(`
+        UPDATE pipedrive_activities
+           SET pipedrive_response_status = 'orphaned',
+               error_msg = ?
+         WHERE id = ?
+      `)
+      .run(reason, rowId)
   }
 
   getById(id: string): PipedriveActivityRow | null {
