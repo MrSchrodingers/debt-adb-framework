@@ -259,3 +259,72 @@ describe('PipedriveClient — config', () => {
     expect(() => new PipedriveClient({ apiToken: '' })).toThrow(/apiToken/)
   })
 })
+
+describe('PipedriveClient.dispatch — PUT branch', () => {
+  it('uses PUT when intent.update_target_id is set on a note', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true, data: { id: 999 } }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    const client = new PipedriveClient({
+      apiToken: 'X',
+      fetchImpl: fetchSpy as unknown as typeof fetch,
+      sleep: async () => {},
+    })
+    const r = await client.dispatch({
+      kind: 'note',
+      dedup_key: 'k1',
+      payload: { deal_id: 1, content: 'hi' },
+      update_target_id: '999',
+    })
+    expect(r.ok).toBe(true)
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(url).toContain('/v1/notes/999')
+    expect(init.method).toBe('PUT')
+  })
+
+  it('uses POST when intent.update_target_id is not set', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true, data: { id: 100 } }), {
+        status: 201, headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    const client = new PipedriveClient({
+      apiToken: 'X',
+      fetchImpl: fetchSpy as unknown as typeof fetch,
+      sleep: async () => {},
+    })
+    const r = await client.dispatch({
+      kind: 'note',
+      dedup_key: 'k1',
+      payload: { deal_id: 1, content: 'hi' },
+    })
+    expect(r.ok).toBe(true)
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+    expect(url).toContain('/v1/notes?')
+    expect(init.method).toBe('POST')
+  })
+
+  it('returns 404 result for PUT on deleted note (terminal — no retry)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response('not found', { status: 404 }),
+    )
+    const client = new PipedriveClient({
+      apiToken: 'X',
+      fetchImpl: fetchSpy as unknown as typeof fetch,
+      maxRetries: 3,
+      sleep: async () => {},
+    })
+    const r = await client.dispatch({
+      kind: 'note',
+      dedup_key: 'k1',
+      payload: { deal_id: 1, content: 'hi' },
+      update_target_id: '999',
+    })
+    expect(r.ok).toBe(false)
+    expect(r.status).toBe(404)
+    expect(fetchSpy).toHaveBeenCalledTimes(1) // single attempt — no retry
+  })
+})

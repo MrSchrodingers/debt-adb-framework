@@ -157,9 +157,13 @@ export class PipedriveClient {
 
   /** Dispatch an outgoing intent to Pipedrive. Never throws. */
   async dispatch(intent: PipedriveOutgoingIntent): Promise<PipedriveDispatchResult> {
-    const path = intent.kind === 'note' ? 'notes' : 'activities'
     const dealId = intent.payload.deal_id
-    return this.post(path, intent.payload, intent.kind, dealId)
+    if (intent.kind === 'note' && intent.update_target_id) {
+      // PUT path — update an existing note in place.
+      return this.request(`notes/${intent.update_target_id}`, intent.payload, 'PUT', intent.kind, dealId)
+    }
+    const path = intent.kind === 'note' ? 'notes' : 'activities'
+    return this.request(path, intent.payload, 'POST', intent.kind, dealId)
   }
 
   /**
@@ -208,9 +212,10 @@ export class PipedriveClient {
     }
   }
 
-  private async post(
+  private async request(
     path: string,
     body: unknown,
+    method: 'POST' | 'PUT',
     kind: string,
     dealId: number | null,
   ): Promise<PipedriveDispatchResult> {
@@ -227,13 +232,22 @@ export class PipedriveClient {
       const tid = setTimeout(() => ctrl.abort(), timeoutMs)
       try {
         const res = await this.fetchImpl(url, {
-          method: 'POST',
+          method,
           headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
           body: JSON.stringify(body),
           signal: ctrl.signal,
         })
         clearTimeout(tid)
         lastStatus = res.status
+
+        // 404 on PUT is TERMINAL — the note was deleted upstream. The publisher
+        // (D3) will react by orphan-marking the previous row and re-creating
+        // via POST. Do not consume retry budget on a guaranteed-fail path.
+        if (res.status === 404 && method === 'PUT') {
+          const text = await res.text().catch(() => '')
+          return { ok: false, status: 404, attempts: attempt, error: `http_404: ${text.slice(0, 200)}` }
+        }
+
         if (res.ok) {
           // Pipedrive returns 200/201 with {success:true, data:...}; we tolerate a
           // missing body (unlikely but possible on edge endpoints).
@@ -300,7 +314,7 @@ export class PipedriveClient {
     // Exhausted retries — emit event, return failure.
     this.opts.emitter?.emit('pipedrive:request_failed', {
       kind,
-      endpoint: `POST /v1/${path}`,
+      endpoint: `${method} /v1/${path}`,
       status: lastStatus,
       error: lastError.slice(0, 500),
       attempts: maxRetries,

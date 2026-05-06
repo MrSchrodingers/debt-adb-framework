@@ -311,6 +311,13 @@ export interface PipedriveNoteIntent {
     deal_id: number
     content: string
   }
+  /**
+   * When set, dispatch performs `PUT /v1/notes/<update_target_id>` (update)
+   * instead of `POST /v1/notes` (create). Used by the publisher when a prior
+   * pasta_summary note exists for the same pasta. The string is the numeric
+   * Pipedrive note id (carried as string for URL composition).
+   */
+  update_target_id?: string
 }
 
 export type PipedriveOutgoingIntent = PipedriveActivityIntent | PipedriveNoteIntent
