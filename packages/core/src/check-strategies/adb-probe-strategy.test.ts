@@ -106,3 +106,87 @@ describe('AdbProbeStrategy.recover', () => {
     expect(backCalls.length).toBe(2)
   })
 })
+
+describe('AdbProbeStrategy.probe — Level 1 retry wrapper', () => {
+  it('retries once after recover when first attempt is retryable, succeeds on second', async () => {
+    let probeAttempt = 0
+    const stages: string[] = []
+    const adb = {
+      shell: async (_s: string, cmd: string) => {
+        stages.push(cmd)
+        if (cmd.startsWith('am start')) {
+          probeAttempt++
+          return ''
+        }
+        if (cmd.includes('uiautomator dump')) return ''
+        if (cmd.includes('cat /sdcard/dispatch-probe.xml')) {
+          // First attempt: chat_list (retryable). Second attempt: chat_open (decisive).
+          return probeAttempt === 1
+            ? '<hierarchy>' +
+                '<node resource-id="com.whatsapp:id/conversations_row_header" />' +
+                '<node resource-id="com.whatsapp:id/conversations_row_header" />' +
+                '<node resource-id="com.whatsapp:id/conversations_row_header" />' +
+              '</hierarchy>'
+            : '<hierarchy><node resource-id="com.whatsapp:id/entry" /></hierarchy>'
+        }
+        return ''
+      },
+    } as any
+    const strat = new AdbProbeStrategy(adb, async () => {})
+    const result = await strat.probe('5511999999999', { deviceSerial: 'X' })
+    expect(result.result).toBe('exists')
+    // Recovery action should have happened between the two attempts.
+    expect(stages.some((c) => c.includes('am force-stop com.whatsapp'))).toBe(true)
+    // Two intent fires.
+    const intentCalls = stages.filter((c) => c.startsWith('am start ') && c.includes('wa.me'))
+    expect(intentCalls.length).toBe(2)
+  })
+
+  it('returns inconclusive after 2 retryable results in a row', async () => {
+    const adb = {
+      shell: async (_s: string, cmd: string) => {
+        if (cmd.includes('cat /sdcard/dispatch-probe.xml')) {
+          return '<hierarchy>' +
+            '<node resource-id="com.whatsapp:id/conversations_row_header" />' +
+            '<node resource-id="com.whatsapp:id/conversations_row_header" />' +
+            '<node resource-id="com.whatsapp:id/conversations_row_header" />' +
+            '</hierarchy>'
+        }
+        return ''
+      },
+    } as any
+    const strat = new AdbProbeStrategy(adb, async () => {})
+    const result = await strat.probe('5511999999999', { deviceSerial: 'X' })
+    expect(result.result).toBe('inconclusive')
+    expect((result.evidence as any).ui_state).toBe('chat_list')
+  })
+
+  it('non-retryable inconclusive returns immediately, no recovery', async () => {
+    let probeAttempt = 0
+    const stages: string[] = []
+    const adb = {
+      shell: async (_s: string, cmd: string) => {
+        stages.push(cmd)
+        if (cmd.startsWith('am start')) {
+          probeAttempt++
+          return ''
+        }
+        if (cmd.includes('uiautomator dump')) return ''
+        if (cmd.includes('cat /sdcard/dispatch-probe.xml')) {
+          // searching → continue polling, but the deadline is short, so
+          // we'll exit the loop with timed_out:true. ui_state ends up as
+          // 'searching' (not retryable in the wrapper).
+          return '<hierarchy><node text="Pesquisando..." /></hierarchy>'
+        }
+        return ''
+      },
+    } as any
+    const strat = new AdbProbeStrategy(adb, async () => {})
+    const result = await strat.probe('5511999999999', { deviceSerial: 'X', timeoutMs: 200 })
+    expect(result.result).toBe('inconclusive')
+    // Only ONE intent fire — searching is not in the retryable set the
+    // wrapper triggers on. The probe times out and that's the final answer.
+    const intentCalls = stages.filter((c) => c.startsWith('am start ') && c.includes('wa.me'))
+    expect(intentCalls.length).toBe(1)
+  })
+})
