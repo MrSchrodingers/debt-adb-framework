@@ -1,4 +1,5 @@
 import type { ContactValidator } from '../../validator/contact-validator.js'
+import type { LockHandle, LockState, PastaLockManager } from '../../locks/pasta-lock-manager.js'
 import type { PluginLogger } from '../types.js'
 import type {
   BatchInvalidPhone,
@@ -17,6 +18,18 @@ import type {
   PipedrivePhoneEntry,
   PrecheckScanParams,
 } from './types.js'
+
+/**
+ * Thrown by `PrecheckScanner.run` when another scan job already holds the
+ * `scan:<pasta>` lock. The plugin's HTTP handler maps this to 409 Conflict
+ * with the current holder's lock state.
+ */
+export class ScanInProgressError extends Error {
+  constructor(public readonly pasta: string, public readonly current: LockState | null) {
+    super(`scan_in_progress: ${pasta}`)
+    this.name = 'ScanInProgressError'
+  }
+}
 
 /**
  * Subset of `DispatchPauseState` the scanner needs. Kept structural so this
@@ -130,6 +143,14 @@ export interface ScannerDeps {
   pauseState?: ScannerPauseState
   /** Operator label written to the audit log when the scanner toggles pause. */
   hygienizationOperator?: string
+  /**
+   * Per-pasta lock manager. When supplied, the scanner acquires
+   * `scan:<pasta>` (or `scan:all` when no pasta filter is set) for the
+   * lifetime of the scan + retry pass, ensuring two concurrent jobs cannot
+   * race on the same pasta. Optional — when omitted (e.g. in unit tests),
+   * the scanner runs without the cross-pasta safety net (legacy behaviour).
+   */
+  locks?: PastaLockManager
 }
 
 interface PastaAggregate {
@@ -282,6 +303,37 @@ export class PrecheckScanner {
           { jobId, cachedKeysAboveThreshold: recentKeys.length },
         )
       }
+    }
+
+    // ── Per-pasta scan lock (D5) ────────────────────────────────────────
+    //
+    // Acquire `scan:<pasta_filter>` (or `scan:all` for jobs without a pasta
+    // filter) so two concurrent jobs targeting the same pasta serialize
+    // rather than race. The lock is released in the finally block below.
+    //
+    // When `this.deps.locks` is not injected (legacy / unit-test callers),
+    // we skip the locking entirely to preserve backward compatibility.
+    const lockPasta = params.pasta_filter ?? 'all'
+    const lockKey = `scan:${lockPasta}`
+    const scanLock: LockHandle | null = this.deps.locks
+      ? this.deps.locks.acquire(lockKey, 3_600_000 /* 1h TTL */, {
+          job_id: jobId,
+          pasta: lockPasta,
+        })
+      : null
+
+    if (this.deps.locks && !scanLock) {
+      // Another job already holds the lock for this pasta — surface a typed
+      // error so the HTTP handler can return 409 Conflict with the holder's
+      // metadata. Mark the job failed so it does not sit in 'queued' forever.
+      const current = this.deps.locks.describe(lockKey)
+      logger.warn('scan_in_progress', { jobId, pasta: lockPasta, current })
+      store.finishJob(jobId, 'failed', `scan_in_progress: ${lockPasta}`)
+      if (onJobFinished) {
+        try { await onJobFinished(jobId) } catch { /* swallow */ }
+      }
+      this.resumeHygienizationIfActive(hygienizationActive, hygienizationOperator, jobId)
+      throw new ScanInProgressError(lockPasta, current)
     }
 
     // Scanner-side processing budget. `limit` now means "this many deals
@@ -612,11 +664,13 @@ export class PrecheckScanner {
         budget: processingBudget,
       })
 
-      // D4: end-of-scan retry pass — re-validate phones that ended up 'error'.
+      // D4/D5: end-of-scan retry pass — re-validate phones that ended up 'error'.
       // Runs after finishJob so the job row is already 'completed'; mutates
       // pastaAgg in-place so the pasta_summary note reflects retried outcomes.
+      // The scanLock is passed so retryErrorsPass can abort early when the
+      // lock is no longer valid (fence-token guard).
       if (params.retry_errors !== false) {
-        await this.retryErrorsPass(jobId, params, pastaAgg)
+        await this.retryErrorsPass(jobId, params, pastaAgg, scanLock)
       }
 
       // Pipedrive Scenario C: emit one Note per pasta touched, on the lowest
@@ -661,6 +715,11 @@ export class PrecheckScanner {
       }
       this.resumeHygienizationIfActive(hygienizationActive, hygienizationOperator, jobId)
       throw e
+    } finally {
+      // Release the per-pasta scan lock unconditionally — whether the job
+      // completed, was cancelled, or threw. This is safe to call even when
+      // scanLock is null (no-op).
+      scanLock?.release()
     }
     if (finalStatus === 'completed' && onJobFinished) {
       try { await onJobFinished(jobId) } catch (cbErr) {
@@ -694,6 +753,7 @@ export class PrecheckScanner {
     jobId: string,
     params: PrecheckScanParams,
     pastaAgg: Map<string, PastaAggregate>,
+    lock: LockHandle | null = null,
   ): Promise<void> {
     const errorDeals = this.deps.store.listDealsWithErrors(jobId)
     if (errorDeals.length === 0) return
@@ -716,6 +776,15 @@ export class PrecheckScanner {
     let resolvedCount = 0
 
     for (const deal of errorDeals) {
+      // Fence-token guard: abort if the scan lock was lost mid-retry (TTL
+      // expired or another worker took over). This is defensive — the 1h TTL
+      // makes expiry very unlikely in practice, but we honour it faithfully.
+      if (lock && !lock.isStillValid()) {
+        this.deps.logger.warn('lost scan lock mid-retry, aborting retry pass', {
+          jobId, fenceToken: lock.fenceToken,
+        })
+        return
+      }
       let mutated = false
       for (const ph of deal.phones) {
         if (ph.outcome !== 'error') continue

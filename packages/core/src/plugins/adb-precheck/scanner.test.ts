@@ -1053,3 +1053,206 @@ describe('PrecheckScanner — end-of-scan retry pass (Level 2 / Task D4)', () =>
     expect(mainPhone?.outcome).toBe('error')
   })
 })
+
+// ── Task D5: hold scan.<pasta> lock during scan + retry pass ──────────────
+//
+// The scanner acquires a per-pasta lock (key `scan:<pasta_filter>` or
+// `scan:all` when no pasta filter) before the main loop and releases it in
+// `finally`. A pre-existing lock on the same key causes the scanner to throw
+// `ScanInProgressError` immediately (and mark the job `failed`).
+//
+import Database from 'better-sqlite3'
+import { PastaLockManager } from '../../locks/index.js'
+import { ScanInProgressError } from './scanner.js'
+
+describe('PrecheckScanner — scan.<pasta> lock (Task D5)', () => {
+  // Helper: build a scanner with a real in-memory SQLite + PastaLockManager.
+  function buildScannerWithLocks(
+    rows: ProvConsultaRow[],
+    validateImpl: (phone: string, opts?: Record<string, unknown>) => unknown,
+    locks: PastaLockManager,
+  ) {
+    const { scanner, store, pg, validator } = buildScanner(rows, validateImpl)
+    const scannerWithLocks = new PrecheckScanner({
+      ...((scanner as unknown as { deps: ScannerDeps }).deps),
+      locks,
+    })
+    return { scanner: scannerWithLocks, store, pg, validator }
+  }
+
+  it('rejects with ScanInProgressError when pasta already locked', async () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const locks = new PastaLockManager(db)
+    locks.initialize()
+
+    // Pre-acquire the lock externally BEFORE constructing the scanner job.
+    const preLock = locks.acquire('scan:P-1', 60_000, { job_id: 'external', pasta: 'P-1' })
+    expect(preLock).not.toBeNull()
+
+    const row = buildRow({ pasta: 'P-1', deal_id: 1 })
+    const { scanner, store } = buildScannerWithLocks(
+      [row],
+      () => ({ exists_on_wa: 1, from_cache: false, phone_normalized: '5543991938235', source: 'adb', confidence: 0.9, attempts: [] }),
+      locks,
+    )
+
+    await expect(
+      scanner.runJob('job-d5-conflict', { pasta_filter: 'P-1' }),
+    ).rejects.toThrow(ScanInProgressError)
+
+    // Job must be marked failed, not left in queued.
+    const failedCalls = store.finishJob.mock.calls.filter((c) => c[1] === 'failed')
+    expect(failedCalls.length).toBeGreaterThan(0)
+
+    // The error carries the pasta and the current holder's metadata.
+    let thrown: ScanInProgressError | null = null
+    try {
+      await scanner.runJob('job-d5-conflict-2', { pasta_filter: 'P-1' })
+    } catch (e) {
+      if (e instanceof ScanInProgressError) thrown = e
+    }
+    expect(thrown).not.toBeNull()
+    expect(thrown!.pasta).toBe('P-1')
+    expect(thrown!.current).not.toBeNull()
+    expect(thrown!.current!.fenceToken).toBe(preLock!.fenceToken)
+  })
+
+  it('releases lock after run completes (happy path)', async () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const locks = new PastaLockManager(db)
+    locks.initialize()
+
+    const row = buildRow({ pasta: 'P-2', deal_id: 10 })
+    const { scanner } = buildScannerWithLocks(
+      [row],
+      () => ({ exists_on_wa: 1, from_cache: false, phone_normalized: '5543991938235', source: 'adb', confidence: 0.9, attempts: [] }),
+      locks,
+    )
+
+    await scanner.runJob('job-d5-happy', { pasta_filter: 'P-2' })
+
+    // Lock must be released after completion.
+    expect(locks.describe('scan:P-2')).toBeNull()
+  })
+
+  it('releases lock when scan throws mid-loop (error path)', async () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const locks = new PastaLockManager(db)
+    locks.initialize()
+
+    // pg.countPool throws to simulate a scan-level failure.
+    const row = buildRow({ pasta: 'P-3', deal_id: 20 })
+    const { scanner, pg } = buildScannerWithLocks(
+      [row],
+      () => { throw new Error('adb kaboom') },
+      locks,
+    )
+    // Make countPool throw so the outer try in runJob catches it.
+    pg.countPool.mockRejectedValueOnce(new Error('pg boom'))
+
+    await expect(
+      scanner.runJob('job-d5-fail', { pasta_filter: 'P-3' }),
+    ).rejects.toThrow('pg boom')
+
+    // Lock must be released even when the job failed.
+    expect(locks.describe('scan:P-3')).toBeNull()
+  })
+
+  it('uses scan:all as lock key when no pasta_filter is set', async () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const locks = new PastaLockManager(db)
+    locks.initialize()
+
+    const row = buildRow({ pasta: 'ANY', deal_id: 30 })
+    const { scanner } = buildScannerWithLocks(
+      [row],
+      () => ({ exists_on_wa: 1, from_cache: false, phone_normalized: '5543991938235', source: 'adb', confidence: 0.9, attempts: [] }),
+      locks,
+    )
+
+    await scanner.runJob('job-d5-all', {})
+
+    // Lock must be released. Key is `scan:all` (no pasta_filter).
+    expect(locks.describe('scan:all')).toBeNull()
+  })
+
+  it('omitted locks dep keeps legacy behaviour (no lock, no crash)', async () => {
+    // Scanner WITHOUT the locks dep — must complete without any lock acquisition.
+    const row = buildRow({ pasta: 'P-4', deal_id: 40 })
+    const { scanner } = buildScanner(
+      [row],
+      () => ({ exists_on_wa: 1, from_cache: false, phone_normalized: '5543991938235', source: 'adb', confidence: 0.9, attempts: [] }),
+    )
+
+    await expect(scanner.runJob('job-d5-legacy', { pasta_filter: 'P-4' })).resolves.toBeUndefined()
+  })
+
+  it('fence-token guard aborts retry pass when lock is released mid-retry', async () => {
+    // Simulate a lock that becomes invalid between retry iterations.
+    // We do this by manually releasing the lock inside the validator during retry.
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const locks = new PastaLockManager(db)
+    locks.initialize()
+
+    // Two error deals so the retry loop iterates at least twice.
+    const rows = [
+      buildRow({ pasta: 'P-5', deal_id: 50, telefone_1: '5543991938235' }),
+      buildRow({ pasta: 'P-5', deal_id: 51, telefone_1: '5543991938236' }),
+    ]
+
+    // Main scan: both validators throw (deals become errors).
+    // Retry scan: first call succeeds, second call checks isStillValid.
+    // We release the lock BEFORE running to verify the guard fires.
+    // (In practice, we inject a locks instance and manually invalidate between calls.)
+    let retryCallCount = 0
+    let capturedLockHandle: import('../../locks/index.js').LockHandle | null = null
+    const validateFn = vi.fn((_phone: string, opts?: Record<string, unknown>) => {
+      if (opts?.attempt_phase === 'scan_retry') {
+        retryCallCount++
+        // On first retry call: capture the handle and release it so the next
+        // isStillValid() check returns false.
+        if (retryCallCount === 1 && capturedLockHandle) {
+          capturedLockHandle.release()
+        }
+        return { exists_on_wa: 0, from_cache: false, phone_normalized: _phone, source: 'adb', confidence: 0.8, attempts: [] }
+      }
+      throw new Error('main scan error')
+    })
+
+    const errorDeals = [
+      {
+        key: { pasta: 'P-5', deal_id: 50, contato_tipo: 'PRINCIPAL', contato_id: 1 },
+        phones: [{ column: 'telefone_1', raw: '43991938235', normalized: '5543991938235', outcome: 'error' as const, source: 'cache', confidence: null, variant_tried: null, error: 'timeout' }],
+        valid_count: 0, invalid_count: 0, primary_valid_phone: null,
+      },
+      {
+        key: { pasta: 'P-5', deal_id: 51, contato_tipo: 'PRINCIPAL', contato_id: 2 },
+        phones: [{ column: 'telefone_1', raw: '43991938236', normalized: '5543991938236', outcome: 'error' as const, source: 'cache', confidence: null, variant_tried: null, error: 'timeout' }],
+        valid_count: 0, invalid_count: 0, primary_valid_phone: null,
+      },
+    ]
+
+    const { scanner, store } = buildScannerWithLocks(rows, validateFn, locks)
+    // Inject dealsWithErrors.
+    store.listDealsWithErrors.mockReturnValue(errorDeals)
+
+    // Monkey-patch locks.acquire so we can capture the LockHandle returned.
+    const origAcquire = locks.acquire.bind(locks)
+    locks.acquire = (key: string, ttlMs: number, ctx?: Record<string, unknown>) => {
+      const handle = origAcquire(key, ttlMs, ctx)
+      if (handle) capturedLockHandle = handle
+      return handle
+    }
+
+    await scanner.runJob('job-d5-fence', { pasta_filter: 'P-5' })
+
+    // The fence guard should have prevented the second retry iteration.
+    // retryCallCount should be 1 (guard fired before second deal).
+    expect(retryCallCount).toBe(1)
+  })
+})

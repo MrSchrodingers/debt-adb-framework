@@ -376,6 +376,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       // logs a warning and runs without pausing global sends.
       pauseState: this.pauseState,
       hygienizationOperator: this.hygienizationOperator,
+      locks: this.pastaLocks ?? undefined,
     })
 
     ctx.registerRoute('GET',  '/health',     this.handleHealth.bind(this))
