@@ -612,6 +612,13 @@ export class PrecheckScanner {
         budget: processingBudget,
       })
 
+      // D4: end-of-scan retry pass — re-validate phones that ended up 'error'.
+      // Runs after finishJob so the job row is already 'completed'; mutates
+      // pastaAgg in-place so the pasta_summary note reflects retried outcomes.
+      if (params.retry_errors !== false) {
+        await this.retryErrorsPass(jobId, params, pastaAgg)
+      }
+
       // Pipedrive Scenario C: emit one Note per pasta touched, on the lowest
       // deal_id of the pasta. Skips empty pastas (defensive — shouldn't happen
       // since we only insert into pastaAgg from inside the iteration).
@@ -662,6 +669,131 @@ export class PrecheckScanner {
     }
     // Happy path: completion went through. Resume idempotently.
     this.resumeHygienizationIfActive(hygienizationActive, hygienizationOperator, jobId)
+  }
+
+  /**
+   * End-of-scan retry pass (Level 2 / Task D4).
+   *
+   * After the main scan loop completes, queries the DB for deal rows whose
+   * `phones_json` contains at least one `"outcome":"error"` entry and
+   * re-validates each error phone via `validator.validate(…, { attempt_phase:
+   * 'scan_retry' })`. When the retry returns a decisive result (valid|invalid):
+   *
+   *   1. The `PhoneResult` in `deal.phones` is mutated in-place (outcome,
+   *      source, confidence, error cleared).
+   *   2. The deal is re-persisted to SQLite via `store.upsertDeal`.
+   *   3. The matching `PipedrivePastaDealRow` phone inside `pastaAgg` is
+   *      updated so the subsequent pasta_summary Note reflects the retry.
+   *   4. Pasta-level aggregate counts (ok_phones, ok_deals, archived_deals)
+   *      are recomputed from current state.
+   *
+   * Phones that remain 'error' after the retry pass are left as-is; Level 3
+   * (sweep) handles them in a separate job.
+   */
+  private async retryErrorsPass(
+    jobId: string,
+    params: PrecheckScanParams,
+    pastaAgg: Map<string, PastaAggregate>,
+  ): Promise<void> {
+    const errorDeals = this.deps.store.listDealsWithErrors(jobId)
+    if (errorDeals.length === 0) return
+
+    const errorPhoneCount = errorDeals.reduce(
+      (n, d) => n + d.phones.filter((p) => p.outcome === 'error').length,
+      0,
+    )
+    this.deps.logger.info('end-of-scan retry pass starting', {
+      jobId, deals: errorDeals.length, error_phones: errorPhoneCount,
+    })
+
+    const probeDevice = params.device_serial ?? this.deps.deviceSerial
+    const probeSender = params.waha_session ?? this.deps.wahaSession
+    const probeProfile =
+      probeDevice && probeSender && this.deps.resolveProfileForSender
+        ? this.deps.resolveProfileForSender(probeDevice, probeSender) ?? undefined
+        : undefined
+
+    let resolvedCount = 0
+
+    for (const deal of errorDeals) {
+      let mutated = false
+      for (const ph of deal.phones) {
+        if (ph.outcome !== 'error') continue
+        try {
+          const r = await this.deps.validator.validate(ph.normalized, {
+            triggered_by: 'pre_check',
+            useWahaTiebreaker: true,
+            device_serial: probeDevice,
+            waha_session: probeSender,
+            profile_id: probeProfile,
+            attempt_phase: 'scan_retry',
+          })
+          if (r.exists_on_wa !== null) {
+            ph.outcome = r.exists_on_wa === 1 ? 'valid' : 'invalid'
+            ph.source = r.source
+            ph.confidence = r.confidence
+            ph.error = null
+            mutated = true
+            resolvedCount++
+          }
+        } catch (e) {
+          this.deps.logger.debug('scan_retry validate threw, leaving error', {
+            jobId, key: deal.key, phone: ph.normalized,
+            error: e instanceof Error ? e.message : String(e),
+          })
+        }
+      }
+      if (!mutated) continue
+
+      // Persist the mutated deal phones to the DB.
+      const validCount = deal.phones.filter((p) => p.outcome === 'valid').length
+      const invalidCount = deal.phones.filter((p) => p.outcome === 'invalid').length
+      const primaryValid = deal.phones.find((p) => p.outcome === 'valid')?.normalized ?? null
+      this.deps.store.upsertDeal(jobId, {
+        key: deal.key,
+        phones: deal.phones,
+        valid_count: validCount,
+        invalid_count: invalidCount,
+        primary_valid_phone: primaryValid,
+      })
+
+      // Mirror the new outcomes into pastaAgg so the resulting pasta_summary
+      // note reflects the retry pass.
+      const agg = pastaAgg.get(deal.key.pasta)
+      if (!agg) continue
+      const aggDeal = agg.deals.get(deal.key.deal_id)
+      if (!aggDeal) continue
+      for (const ph of deal.phones) {
+        const aggPhone = aggDeal.phones.find(
+          (p) => p.column === ph.column && p.phone_normalized === ph.normalized,
+        )
+        if (aggPhone) {
+          aggPhone.outcome = ph.outcome
+          aggPhone.strategy = classifyStrategy(ph.source)
+        }
+      }
+
+      // Recompute aggregate counts from current pastaAgg state — cheaper and
+      // exact than tracking deltas across contato_id merges.
+      let okPhones = 0
+      for (const d of agg.deals.values()) {
+        okPhones += d.phones.filter((p) => p.outcome === 'valid').length
+      }
+      agg.ok_phones = okPhones
+      let okDeals = 0
+      let archivedDeals = 0
+      for (const d of agg.deals.values()) {
+        const hasValid = d.phones.some((p) => p.outcome === 'valid')
+        if (hasValid) okDeals++
+        else if (d.phones.length > 0) archivedDeals++
+      }
+      agg.ok_deals = okDeals
+      agg.archived_deals = archivedDeals
+    }
+
+    this.deps.logger.info('end-of-scan retry pass complete', {
+      jobId, resolved: resolvedCount, remaining_error: errorPhoneCount - resolvedCount,
+    })
   }
 
   /**

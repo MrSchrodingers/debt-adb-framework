@@ -3,6 +3,7 @@ import { nanoid } from 'nanoid'
 import type {
   DealKey,
   DealResult,
+  PhoneResult,
   PrecheckJob,
   PrecheckJobStatus,
   PrecheckScanParams,
@@ -319,6 +320,47 @@ export class PrecheckJobStore {
         JSON.stringify(result.phones),
         new Date().toISOString(),
       )
+  }
+
+  /**
+   * Returns the deal cache rows for a job whose `phones_json` contains at
+   * least one phone with `outcome:"error"`. Used by the end-of-scan retry
+   * pass (D4) and the manual sweep entrypoint (E1) to identify which deals
+   * still need work.
+   *
+   * Each row's `phones` array is the parsed `PhoneResult[]` ready to be
+   * mutated and re-persisted via `upsertDeal`.
+   */
+  listDealsWithErrors(jobId: string): Array<{
+    key: DealKey
+    phones: PhoneResult[]
+    valid_count: number
+    invalid_count: number
+    primary_valid_phone: string | null
+  }> {
+    const rows = this.db
+      .prepare(`
+        SELECT pasta, deal_id, contato_tipo, contato_id, phones_json
+        FROM adb_precheck_deals
+        WHERE last_job_id = ?
+          AND phones_json LIKE '%"outcome":"error"%'
+      `)
+      .all(jobId) as Array<{
+        pasta: string; deal_id: number; contato_tipo: string; contato_id: number; phones_json: string
+      }>
+    return rows.map((r) => {
+      const phones: PhoneResult[] = JSON.parse(r.phones_json) as PhoneResult[]
+      const valid_count = phones.filter((p) => p.outcome === 'valid').length
+      const invalid_count = phones.filter((p) => p.outcome === 'invalid').length
+      const primary_valid_phone = phones.find((p) => p.outcome === 'valid')?.normalized ?? null
+      return {
+        key: { pasta: r.pasta, deal_id: r.deal_id, contato_tipo: r.contato_tipo, contato_id: r.contato_id },
+        phones,
+        valid_count,
+        invalid_count,
+        primary_valid_phone,
+      }
+    })
   }
 
   /**

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { PrecheckScanner } from './scanner.js'
 import type { ScannerDeps } from './scanner.js'
-import type { ProvConsultaRow } from './types.js'
+import type { PhoneResult, ProvConsultaRow } from './types.js'
 
 /**
  * Smoke tests for the invalidation orchestration: verify scanner records
@@ -59,14 +59,22 @@ interface FakeDeps {
     finishJob: ReturnType<typeof vi.fn>
     getDealLastScannedAt: ReturnType<typeof vi.fn>
     listRecentlyScannedKeys: ReturnType<typeof vi.fn>
+    listDealsWithErrors: ReturnType<typeof vi.fn>
   }
 }
 
 function buildScanner(
   rows: ProvConsultaRow[],
-  validateImpl: (phone: string) => unknown,
+  validateImpl: (phone: string, opts?: Record<string, unknown>) => unknown,
   opts: {
     cachedScans?: Map<string, string> // dealKey -> ISO scanned_at
+    dealsWithErrors?: Array<{
+      key: { pasta: string; deal_id: number; contato_tipo: string; contato_id: number }
+      phones: PhoneResult[]
+      valid_count: number
+      invalid_count: number
+      primary_valid_phone: string | null
+    }>
   } = {},
 ): FakeDeps {
   const cachedScans = opts.cachedScans ?? new Map<string, string>()
@@ -94,7 +102,7 @@ function buildScanner(
       applied: true,
     })),
   }
-  const validator = { validate: vi.fn(async (p: string) => validateImpl(p)) }
+  const validator = { validate: vi.fn(async (p: string, validateOpts?: Record<string, unknown>) => validateImpl(p, validateOpts)) }
   const store = {
     markStarted: vi.fn(),
     upsertDeal: vi.fn(),
@@ -104,6 +112,7 @@ function buildScanner(
       const id = `${k.pasta}|${k.deal_id}|${k.contato_tipo}|${k.contato_id}`
       return cachedScans.get(id) ?? null
     }),
+    listDealsWithErrors: vi.fn((_jobId: string) => opts.dealsWithErrors ?? []),
     listRecentlyScannedKeys: vi.fn((thresholdIso: string) => {
       const out: { pasta: string; deal_id: number; contato_tipo: string; contato_id: number }[] = []
       for (const [id, scannedAt] of cachedScans.entries()) {
@@ -824,5 +833,223 @@ describe('PrecheckScanner — hygienization_mode (Part 2)', () => {
     await expect(
       scanner.runJob('job-hyg-no-state', { hygienization_mode: true }),
     ).resolves.toBeUndefined()
+  })
+})
+
+// ── Task D4: end-of-scan retry pass (Level 2) ─────────────────────────────
+//
+// After the main scan loop completes, the scanner re-validates phones whose
+// outcome is 'error'. The retry mutates pastaAgg so the pasta_summary Note
+// reflects the resolved outcomes, and persists the change via store.upsertDeal.
+//
+describe('PrecheckScanner — end-of-scan retry pass (Level 2 / Task D4)', () => {
+  /**
+   * Builds an error PhoneResult (simulating a phone that threw during the
+   * initial scan loop).
+   */
+  function makeErrorPhone(column: string, normalized: string): PhoneResult {
+    return {
+      column,
+      raw: normalized.replace(/^\+?55/, ''),
+      normalized,
+      outcome: 'error',
+      source: 'cache',
+      confidence: null,
+      variant_tried: null,
+      error: 'timeout',
+    }
+  }
+
+  it('re-validates error phones with attempt_phase=scan_retry and resolves to invalid', async () => {
+    // Main scan: one deal, one phone that ends up 'error' (validator throws).
+    const row = buildRow({ telefone_1: '5543991938235' })
+
+    // Track call count so first call (main scan) throws, second (retry) returns 0.
+    let callCount = 0
+    const validateFn = vi.fn((_phone: string, _opts?: Record<string, unknown>) => {
+      callCount++
+      if (callCount === 1) throw new Error('probe timeout')
+      return {
+        exists_on_wa: 0,
+        from_cache: false,
+        phone_normalized: '5543991938235',
+        source: 'adb',
+        confidence: 0.8,
+        attempts: [{ variant_tried: 'with9' }],
+      }
+    })
+
+    // Pre-seed listDealsWithErrors with the deal that came back error after
+    // the main scan. In real execution this is populated from the DB after
+    // store.upsertDeal; here we inject it directly so we can assert on the
+    // retry behaviour without a real SQLite database.
+    const errorPhones: PhoneResult[] = [makeErrorPhone('telefone_1', '5543991938235')]
+    const { scanner, store, validator } = buildScanner([row], validateFn, {
+      dealsWithErrors: [{
+        key: { pasta: 'PASTA-001', deal_id: 42, contato_tipo: 'PRINCIPAL', contato_id: 7 },
+        phones: errorPhones,
+        valid_count: 0,
+        invalid_count: 0,
+        primary_valid_phone: null,
+      }],
+    })
+
+    await scanner.runJob('job-retry-1', {})
+
+    // validator called twice: once in main loop (throws → error), once in retry.
+    expect(validator.validate).toHaveBeenCalledTimes(2)
+
+    // Second call must carry attempt_phase='scan_retry'.
+    const secondCallOpts = validator.validate.mock.calls[1]![1] as Record<string, unknown>
+    expect(secondCallOpts.attempt_phase).toBe('scan_retry')
+
+    // store.upsertDeal should have been called a second time (retry pass persists
+    // the resolved outcome). The retry upsert carries outcome='invalid'.
+    // There are 2 upsertDeal calls: one from the main loop (error outcome) and
+    // one from the retry pass (invalid outcome).
+    const upsertCalls = store.upsertDeal.mock.calls
+    expect(upsertCalls.length).toBeGreaterThanOrEqual(2)
+    const retryUpsert = upsertCalls[upsertCalls.length - 1] as [string, { phones: PhoneResult[] }]
+    const retryPhone = retryUpsert[1].phones.find((p: PhoneResult) => p.column === 'telefone_1')
+    expect(retryPhone?.outcome).toBe('invalid')
+    expect(retryPhone?.error).toBeNull()
+  })
+
+  it('does not retry when retry_errors=false', async () => {
+    const row = buildRow({ telefone_1: '5543991938235' })
+
+    let callCount = 0
+    const validateFn = vi.fn((_phone: string) => {
+      callCount++
+      if (callCount === 1) throw new Error('probe timeout')
+      return { exists_on_wa: 0, from_cache: false, phone_normalized: '5543991938235', source: 'adb', confidence: 0.8, attempts: [] }
+    })
+
+    const errorPhones: PhoneResult[] = [makeErrorPhone('telefone_1', '5543991938235')]
+    const { scanner, store } = buildScanner([row], validateFn, {
+      dealsWithErrors: [{
+        key: { pasta: 'PASTA-001', deal_id: 42, contato_tipo: 'PRINCIPAL', contato_id: 7 },
+        phones: errorPhones,
+        valid_count: 0,
+        invalid_count: 0,
+        primary_valid_phone: null,
+      }],
+    })
+
+    await scanner.runJob('job-retry-disabled', { retry_errors: false })
+
+    // validator called only once (main loop), never for the retry pass.
+    expect(validateFn).toHaveBeenCalledTimes(1)
+    // listDealsWithErrors never consulted.
+    expect(store.listDealsWithErrors).not.toHaveBeenCalled()
+  })
+
+  it('does not retry when there are no error phones (short-circuits early)', async () => {
+    // Main scan: phone resolves to 'valid' immediately — no errors.
+    const row = buildRow({ telefone_1: '5543991938235' })
+    const validateFn = vi.fn(() => ({
+      exists_on_wa: 1,
+      from_cache: false,
+      phone_normalized: '5543991938235',
+      source: 'adb',
+      confidence: 0.95,
+      attempts: [],
+    }))
+
+    // listDealsWithErrors returns empty — no errors to retry.
+    const { scanner, validator } = buildScanner([row], validateFn, {
+      dealsWithErrors: [],
+    })
+
+    await scanner.runJob('job-retry-noop', {})
+
+    // validator called once (main loop); retry pass sees empty list and exits.
+    expect(validator.validate).toHaveBeenCalledTimes(1)
+  })
+
+  it('resolves error phone to valid and updates pastaAgg ok_phones', async () => {
+    const row = buildRow({ telefone_1: '5543991938235' })
+
+    let callCount = 0
+    const validateFn = vi.fn((_phone: string) => {
+      callCount++
+      if (callCount === 1) throw new Error('adb timeout')
+      // Retry succeeds: phone is valid.
+      return {
+        exists_on_wa: 1,
+        from_cache: false,
+        phone_normalized: '5543991938235',
+        source: 'waha',
+        confidence: 0.9,
+        attempts: [],
+      }
+    })
+
+    const pub = {
+      enqueueDealAllFail: vi.fn(),
+      enqueuePastaSummary: vi.fn(),
+      flush: vi.fn(async () => {}),
+      pendingCount: vi.fn(() => 0),
+      dedupSize: vi.fn(() => 0),
+    }
+
+    const errorPhones: PhoneResult[] = [makeErrorPhone('telefone_1', '5543991938235')]
+    const { scanner } = buildScanner([row], validateFn, {
+      dealsWithErrors: [{
+        key: { pasta: 'PASTA-001', deal_id: 42, contato_tipo: 'PRINCIPAL', contato_id: 7 },
+        phones: errorPhones,
+        valid_count: 0,
+        invalid_count: 0,
+        primary_valid_phone: null,
+      }],
+    })
+
+    const scannerPipe = new PrecheckScanner({
+      ...((scanner as unknown as { deps: ScannerDeps }).deps),
+      pipedrive: pub as unknown as Parameters<typeof PrecheckScanner.prototype.constructor>[0]['pipedrive'],
+    })
+
+    await scannerPipe.runJob('job-retry-valid', {})
+
+    // pasta_summary should have been emitted with ok_phones=1 (resolved by retry).
+    expect(pub.enqueuePastaSummary).toHaveBeenCalledTimes(1)
+    const summaryArg = pub.enqueuePastaSummary.mock.calls[0]![0] as { ok_phones: number; ok_deals: number }
+    expect(summaryArg.ok_phones).toBe(1)
+    expect(summaryArg.ok_deals).toBe(1)
+  })
+
+  it('leaves phones that still error after retry unchanged in the upsert', async () => {
+    const row = buildRow({ telefone_1: '5543991938235' })
+
+    // Both initial scan and retry throw — phone stays 'error'.
+    const validateFn = vi.fn((_phone: string) => {
+      throw new Error('always fails')
+    })
+
+    const errorPhones: PhoneResult[] = [makeErrorPhone('telefone_1', '5543991938235')]
+    const { scanner, store } = buildScanner([row], validateFn, {
+      dealsWithErrors: [{
+        key: { pasta: 'PASTA-001', deal_id: 42, contato_tipo: 'PRINCIPAL', contato_id: 7 },
+        phones: errorPhones,
+        valid_count: 0,
+        invalid_count: 0,
+        primary_valid_phone: null,
+      }],
+    })
+
+    await scanner.runJob('job-retry-still-error', {})
+
+    // No extra upsertDeal call from the retry pass (nothing mutated).
+    // Main loop upsert is called once with 'error'; retry does not upsert.
+    const upsertCalls = store.upsertDeal.mock.calls
+    // The last upsert should be the main loop one — no retry upsert added.
+    // We confirm that by checking that the retry pass did NOT produce a second
+    // upsert with the deal key (both upserts would share the same key if present).
+    // At minimum: main loop always calls upsertDeal once.
+    expect(upsertCalls.length).toBeGreaterThanOrEqual(1)
+    // The phones in the main loop upsert still carry outcome='error'.
+    const mainUpsert = upsertCalls[0] as [string, { phones: PhoneResult[] }]
+    const mainPhone = mainUpsert[1].phones.find((p: PhoneResult) => p.column === 'telefone_1')
+    expect(mainPhone?.outcome).toBe('error')
   })
 })

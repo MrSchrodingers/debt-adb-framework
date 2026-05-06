@@ -170,6 +170,12 @@ export interface PrecheckScanParams {
    * same WhatsApp account.
    */
   waha_session?: string
+  /**
+   * Run the end-of-scan retry pass (Level 2): after the main loop, re-validate
+   * any phones that ended up `outcome: 'error'`. Defaults to true. Set to
+   * false to disable (e.g. for fast scans where you want raw probe results).
+   */
+  retry_errors?: boolean
 }
 
 // ── Pipedrive integration intents ─────────────────────────────────────────
