@@ -132,5 +132,11 @@ export function classifyUiState(input: ClassifierInput): ClassifierResult {
     return build('chat_list', 'bottom_nav_tabs', xml)
   }
 
+  // Rule 7: unknown_dialog — generic modal markers but no known text rule fired.
+  // Recover via BACK keyevent (modal is dismissable).
+  if (/android:id\/message/.test(xml) || /android:id\/button[12]/.test(xml)) {
+    return build('unknown_dialog', 'generic_modal_markers', xml)
+  }
+
   return build('unknown', 'fallback_no_rule_matched', xml)
 }

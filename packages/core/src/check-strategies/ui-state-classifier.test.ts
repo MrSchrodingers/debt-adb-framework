@@ -124,3 +124,27 @@ describe('classifyUiState — wrong screens', () => {
     expect(classifyUiState({ xml }).state).toBe('chat_list')
   })
 })
+
+describe('classifyUiState — unknown branches', () => {
+  it('unknown_dialog when modal markers but no known text (synthesized fixture)', () => {
+    const r = classifyUiState({ xml: FIX('unknown_dialog_generic.xml') })
+    expect(r.state).toBe('unknown_dialog')
+    expect(r.evidence.has_message_box).toBe(true)
+    expect(r.retryable).toBe(true)
+  })
+
+  it('unknown when nothing matches (synthesized fixture)', () => {
+    const r = classifyUiState({ xml: FIX('unknown_blank.xml') })
+    expect(r.state).toBe('unknown')
+    expect(r.retryable).toBe(true)
+    expect(r.evidence.matched_rule).toBe('fallback_no_rule_matched')
+  })
+
+  it('unknown_dialog when only buttons present (no message box)', () => {
+    const xml = `<hierarchy><node resource-id="android:id/button1" /><node resource-id="android:id/button2" /></hierarchy>`
+    const r = classifyUiState({ xml })
+    expect(r.state).toBe('unknown_dialog')
+    expect(r.evidence.has_modal_buttons).toBe(true)
+    expect(r.evidence.has_message_box).toBe(false)
+  })
+})
