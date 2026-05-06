@@ -2,6 +2,7 @@ import type { AdbShellAdapter } from '../monitor/types.js'
 import type { CheckStrategy, StrategyResult, CheckContext } from './types.js'
 import { classifyUiState, type UiState } from './ui-state-classifier.js'
 import type { ProbeSnapshotWriter } from '../snapshots/probe-snapshot-writer.js'
+import { xmlContainsVariantDigits } from './probe-sanity.js'
 
 /**
  * Optional shared lock taker for the device. Injected from `engine`
@@ -69,7 +70,7 @@ export class AdbProbeStrategy implements CheckStrategy {
       const r1 = await this.probeOnce(variant, ctx, 'probe_initial')
       if (r1.result !== 'inconclusive') return r1
 
-      const uiState = (r1.evidence as Record<string, unknown> | undefined)?.ui_state as UiState | undefined
+      const uiState = (r1.evidence as Record<string, unknown> | undefined)?.ui_state as UiState | 'stale_ui' | undefined
       if (!uiState || !this.isRetryableUiState(uiState)) return r1
 
       // Recover and retry once — each probeOnce() has its own time budget.
@@ -85,14 +86,21 @@ export class AdbProbeStrategy implements CheckStrategy {
    * `searching` is intentionally excluded: it keeps polling internally
    * inside probeOnce() and only surfaces as `searching` via the
    * deadline-elapsed path, which is not a recoverable condition.
+   *
+   * `'stale_ui'` is not a UiState enum value — it is a sentinel string
+   * written into evidence.ui_state by Layer 2 (sanity check). Including
+   * it here causes the probe wrapper to force-stop and retry, which is
+   * the correct recovery action (the next probeOnce will start with a
+   * fresh force-stop from Layer 1, giving WhatsApp a clean slate).
    */
-  private isRetryableUiState(s: UiState): boolean {
+  private isRetryableUiState(s: UiState | string): boolean {
     return (
       s === 'chat_list' ||
       s === 'contact_picker' ||
       s === 'disappearing_msg_dialog' ||
       s === 'unknown_dialog' ||
-      s === 'unknown'
+      s === 'unknown' ||
+      s === 'stale_ui' // Layer 2 sentinel — detected stale XML from previous probe
     )
   }
 
@@ -168,6 +176,14 @@ export class AdbProbeStrategy implements CheckStrategy {
     // unambiguously. The numeric guard above prevents shell
     // injection.
     const userArg = ctx.profileId !== undefined ? `--user ${ctx.profileId} ` : ''
+
+    // Layer 1 defense — force-stop com.whatsapp before the intent so we always
+    // boot from a clean state. Eliminates the entire class of "stale UI from
+    // previous probe" bugs at the source. Cost: ~1.5s per probe (force-stop +
+    // cold-start settle), acceptable for the correctness guarantee.
+    await this.adb.shell(deviceSerial, 'am force-stop com.whatsapp')
+    await this.delay(1000)
+
     await this.adb.shell(
       deviceSerial,
       `am start ${userArg}-a android.intent.action.VIEW -d "https://wa.me/${variant}" -p com.whatsapp`,
@@ -196,6 +212,31 @@ export class AdbProbeStrategy implements CheckStrategy {
 
       const result = classifyUiState({ xml })
       lastClassifierResult = result
+
+      // Layer 2 defense — verify the XML actually shows the probed number.
+      // On a decisive result, the XML should contain the probed variant's
+      // digits (in some formatting). If not, the classifier matched stale
+      // UI from a previous attempt — discard the result and let the wrapper
+      // recover + retry.
+      if (result.decisive && !xmlContainsVariantDigits(xml, variant)) {
+        return {
+          source: this.source,
+          result: 'inconclusive',
+          confidence: null,
+          evidence: {
+            ...result.evidence,
+            ui_state: 'stale_ui',
+            suspected_state: result.state,
+            suspected_rule: result.evidence.matched_rule,
+            polls: pollCount,
+            saw_searching: sawSearching,
+            attempt_phase: attemptPhase,
+          },
+          latency_ms: Date.now() - started,
+          variant_tried: variant,
+          device_serial: deviceSerial,
+        }
+      }
 
       if (result.state === 'chat_open') {
         return {
@@ -311,7 +352,7 @@ export class AdbProbeStrategy implements CheckStrategy {
    *   the heavier hammer of `am force-stop com.whatsapp`, which guarantees a
    *   cold start on the next intent.
    */
-  private async recover(state: UiState, deviceSerial: string): Promise<void> {
+  private async recover(state: UiState | string, deviceSerial: string): Promise<void> {
     if (state === 'disappearing_msg_dialog' || state === 'unknown_dialog') {
       await this.adb.shell(deviceSerial, 'input keyevent 4')
       await this.delay(250)

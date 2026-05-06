@@ -16,7 +16,8 @@ describe('AdbProbeStrategy', () => {
   const sleepMock = async () => {}
 
   it('returns exists when EditText present', async () => {
-    const adb = mockAdb(`<node class="android.widget.EditText" resource-id="com.whatsapp:id/entry" />`)
+    // Include the variant digits so Layer 2 sanity check passes.
+    const adb = mockAdb(`<node class="android.widget.EditText" resource-id="com.whatsapp:id/entry" /><node text="5543991938235"/>`)
     const s = new AdbProbeStrategy(adb, sleepMock)
     const res = await s.probe('5543991938235', { deviceSerial: 'poco-1' })
     expect(res.result).toBe('exists')
@@ -24,8 +25,9 @@ describe('AdbProbeStrategy', () => {
   })
 
   it('returns not_exists when invite CTA present', async () => {
+    // Include the variant digits so Layer 2 sanity check passes.
     const adb = mockAdb(
-      `<node resource-id="com.whatsapp:id/invite_cta" text="Convidar para o WhatsApp" />`,
+      `<node resource-id="com.whatsapp:id/invite_cta" text="Convidar para o WhatsApp" /><node text="5543999999001"/>`,
     )
     const s = new AdbProbeStrategy(adb, sleepMock)
     const res = await s.probe('5543999999001', { deviceSerial: 'poco-1' })
@@ -127,7 +129,7 @@ describe('AdbProbeStrategy.probe — Level 1 retry wrapper', () => {
                 '<node resource-id="com.whatsapp:id/conversations_row_header" />' +
                 '<node resource-id="com.whatsapp:id/conversations_row_header" />' +
               '</hierarchy>'
-            : '<hierarchy><node resource-id="com.whatsapp:id/entry" /></hierarchy>'
+            : '<hierarchy><node resource-id="com.whatsapp:id/entry" /><node text="5511999999999"/></hierarchy>'
         }
         return ''
       },
@@ -253,7 +255,8 @@ describe('AdbProbeStrategy — snapshot capture', () => {
     const adb = {
       shell: async (_s: string, cmd: string) => {
         if (cmd.includes('cat /sdcard/dispatch-probe.xml')) {
-          return '<hierarchy><node resource-id="com.whatsapp:id/entry"/></hierarchy>'
+          // Include variant digits so Layer 2 sanity check passes.
+          return '<hierarchy><node resource-id="com.whatsapp:id/entry"/><node text="5511999999999"/></hierarchy>'
         }
         return ''
       },
@@ -278,5 +281,98 @@ describe('AdbProbeStrategy — snapshot capture', () => {
     expect(result.result).toBe('inconclusive')
     // Should not throw, and snapshot_path should be absent in evidence.
     expect((result.evidence as any).snapshot_path).toBeUndefined()
+  })
+})
+
+describe('AdbProbeStrategy — Layer 1 (force-stop before intent)', () => {
+  it('force-stops com.whatsapp before each probe attempt', async () => {
+    const shells: string[] = []
+    const adb = {
+      shell: async (_s: string, cmd: string) => {
+        shells.push(cmd)
+        if (cmd.includes('cat /sdcard/dispatch-probe.xml')) {
+          return '<hierarchy><node resource-id="com.whatsapp:id/entry"/><node text="5511999999999"/></hierarchy>'
+        }
+        return ''
+      },
+    } as any
+    const strat = new AdbProbeStrategy(adb, async () => {})
+    await strat.probe('5511999999999', { deviceSerial: 'X' })
+
+    // Force-stop should appear BEFORE the wa.me intent.
+    const forceStopIdx = shells.findIndex((c) => c.includes('am force-stop com.whatsapp'))
+    const intentIdx = shells.findIndex((c) => c.startsWith('am start') && c.includes('wa.me'))
+    expect(forceStopIdx).toBeGreaterThanOrEqual(0)
+    expect(intentIdx).toBeGreaterThanOrEqual(0)
+    expect(forceStopIdx).toBeLessThan(intentIdx)
+  })
+})
+
+describe('AdbProbeStrategy — Layer 2 (sanity verification)', () => {
+  it('returns inconclusive with stale_ui when XML lacks probed digits', async () => {
+    const adb = {
+      shell: async (_s: string, cmd: string) => {
+        if (cmd.includes('cat /sdcard/dispatch-probe.xml')) {
+          // Simulates the production bug: modal text shows DIFFERENT number.
+          return '<hierarchy><node text="O número de telefone +55 41 93047-5390 não está no WhatsApp." resource-id="android:id/message"/><node resource-id="android:id/button1"/></hierarchy>'
+        }
+        return ''
+      },
+    } as any
+    const strat = new AdbProbeStrategy(adb, async () => {})
+    const result = await strat.probe('5512981719662', { deviceSerial: 'X' })
+    // Wrapper retries — both attempts hit the same stale XML, so final is inconclusive.
+    expect(result.result).toBe('inconclusive')
+    // Evidence flags the stale_ui detection.
+    expect((result.evidence as any).ui_state).toBe('stale_ui')
+    expect((result.evidence as any).suspected_state).toBe('invite_modal')
+    expect((result.evidence as any).suspected_rule).toBe('not_on_whatsapp_pt')
+  })
+
+  it('accepts decisive when XML contains probed digits', async () => {
+    const adb = {
+      shell: async (_s: string, cmd: string) => {
+        if (cmd.includes('cat /sdcard/dispatch-probe.xml')) {
+          return '<hierarchy><node text="O número de telefone +55 12 98171-9662 não está no WhatsApp." resource-id="android:id/message"/><node resource-id="android:id/button1"/></hierarchy>'
+        }
+        return ''
+      },
+    } as any
+    const strat = new AdbProbeStrategy(adb, async () => {})
+    const result = await strat.probe('5512981719662', { deviceSerial: 'X' })
+    expect(result.result).toBe('not_exists')
+    expect((result.evidence as any).ui_state).toBe('invite_modal')
+  })
+
+  it('accepts chat_open when entry field AND digits both present', async () => {
+    const adb = {
+      shell: async (_s: string, cmd: string) => {
+        if (cmd.includes('cat /sdcard/dispatch-probe.xml')) {
+          return '<hierarchy><node resource-id="com.whatsapp:id/entry"/><node text="5512981719662" resource-id="com.whatsapp:id/conversation_contact_name"/></hierarchy>'
+        }
+        return ''
+      },
+    } as any
+    const strat = new AdbProbeStrategy(adb, async () => {})
+    const result = await strat.probe('5512981719662', { deviceSerial: 'X' })
+    expect(result.result).toBe('exists')
+  })
+
+  it('chat_open with NO digits in XML triggers stale_ui (defense vs cross-contact contamination)', async () => {
+    const adb = {
+      shell: async (_s: string, cmd: string) => {
+        if (cmd.includes('cat /sdcard/dispatch-probe.xml')) {
+          // Simulates: WA still on a previous chat for a different contact.
+          // Entry field present but no digits matching probed number.
+          return '<hierarchy><node resource-id="com.whatsapp:id/entry"/><node text="Mom"/></hierarchy>'
+        }
+        return ''
+      },
+    } as any
+    const strat = new AdbProbeStrategy(adb, async () => {})
+    const result = await strat.probe('5512981719662', { deviceSerial: 'X' })
+    expect(result.result).toBe('inconclusive')
+    expect((result.evidence as any).ui_state).toBe('stale_ui')
+    expect((result.evidence as any).suspected_state).toBe('chat_open')
   })
 })
