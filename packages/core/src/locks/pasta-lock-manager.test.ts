@@ -104,3 +104,55 @@ describe('PastaLockManager — release & fence', () => {
     expect(c.fenceToken).toBe(3)
   })
 })
+
+describe('PastaLockManager — extended API', () => {
+  let db: Database.Database
+  let mgr: PastaLockManager
+  beforeEach(() => {
+    db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    mgr = new PastaLockManager(db)
+    mgr.initialize()
+  })
+
+  afterEach(() => db.close())
+
+  it('acquireWithWait succeeds after holder releases', async () => {
+    const a = mgr.acquire('scan:foo', 60_000)!
+    setTimeout(() => a.release(), 100)
+    const b = await mgr.acquireWithWait('scan:foo', 60_000, { timeoutMs: 1000, pollMs: 50 })
+    expect(b).not.toBeNull()
+  })
+
+  it('acquireWithWait times out and returns null', async () => {
+    mgr.acquire('scan:foo', 60_000)
+    const b = await mgr.acquireWithWait('scan:foo', 60_000, { timeoutMs: 200, pollMs: 50 })
+    expect(b).toBeNull()
+  })
+
+  it('releaseExpired removes only expired rows', () => {
+    mgr.acquire('a', 60_000)
+    mgr.acquire('b', 60_000)
+    db.prepare("UPDATE pasta_locks SET expires_at = '2000-01-01T00:00:00Z' WHERE lock_key = 'a'").run()
+    const reaped = mgr.releaseExpired()
+    expect(reaped).toBe(1)
+    expect(mgr.describe('a')).toBeNull()
+    expect(mgr.describe('b')).not.toBeNull()
+  })
+
+  it('describe returns lock state', () => {
+    mgr.acquire('scan:foo', 60_000, { job_id: 'X' })
+    const desc = mgr.describe('scan:foo')!
+    expect(desc.key).toBe('scan:foo')
+    expect(desc.context).toEqual({ job_id: 'X' })
+    expect(desc.fenceToken).toBe(1)
+  })
+
+  it('listAll filters expired and returns all live', () => {
+    mgr.acquire('a', 60_000)
+    mgr.acquire('b', 60_000)
+    db.prepare("UPDATE pasta_locks SET expires_at = '2000-01-01T00:00:00Z' WHERE lock_key = 'a'").run()
+    const live = mgr.listAll()
+    expect(live.map((l) => l.key)).toEqual(['b'])
+  })
+})

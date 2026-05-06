@@ -95,6 +95,69 @@ export class PastaLockManager {
     }
   }
 
+  async acquireWithWait(
+    key: string,
+    ttlMs: number,
+    opts: { timeoutMs: number; pollMs: number; context?: Record<string, unknown> },
+  ): Promise<LockHandle | null> {
+    const deadline = Date.now() + opts.timeoutMs
+    while (Date.now() < deadline) {
+      const handle = this.acquire(key, ttlMs, opts.context)
+      if (handle) return handle
+      await new Promise((r) => setTimeout(r, opts.pollMs))
+    }
+    return null
+  }
+
+  releaseExpired(): number {
+    const result = this.db
+      .prepare('DELETE FROM pasta_locks WHERE expires_at < ?')
+      .run(new Date().toISOString())
+    return result.changes ?? 0
+  }
+
+  describe(key: string): LockState | null {
+    const row = this.db
+      .prepare('SELECT * FROM pasta_locks WHERE lock_key = ?')
+      .get(key) as
+      | { lock_key: string; acquired_by: string; acquired_at: string; expires_at: string; fence_token: number; context_json: string | null }
+      | undefined
+    if (!row) return null
+    return this.rowToState(row)
+  }
+
+  listAll(): LockState[] {
+    const rows = this.db
+      .prepare('SELECT * FROM pasta_locks WHERE expires_at >= ? ORDER BY acquired_at')
+      .all(new Date().toISOString()) as Array<{
+        lock_key: string
+        acquired_by: string
+        acquired_at: string
+        expires_at: string
+        fence_token: number
+        context_json: string | null
+      }>
+    return rows.map((r) => this.rowToState(r))
+  }
+
+  private rowToState(row: {
+    lock_key: string
+    acquired_by: string
+    acquired_at: string
+    expires_at: string
+    fence_token: number
+    context_json: string | null
+  }): LockState {
+    return {
+      key: row.lock_key,
+      acquiredBy: row.acquired_by,
+      acquiredAt: new Date(row.acquired_at),
+      expiresAt: new Date(row.expires_at),
+      fenceToken: row.fence_token,
+      context: row.context_json ? JSON.parse(row.context_json) : null,
+    }
+  }
+
   private releaseHolder(key: string, workerId: string, fenceToken: number): void {
     this.db
       .prepare('DELETE FROM pasta_locks WHERE lock_key = ? AND acquired_by = ? AND fence_token = ?')
