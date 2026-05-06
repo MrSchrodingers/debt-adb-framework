@@ -257,3 +257,45 @@ describe('PipedriveActivityStore — stats aggregations', () => {
     expect(s.failureRate24h).toBeCloseTo(1 / 3, 3)
   })
 })
+
+describe('PipedriveActivityStore — upsert columns', () => {
+  it('adds revises_row_id and http_verb', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    const cols = db
+      .prepare("PRAGMA table_info('pipedrive_activities')")
+      .all() as Array<{ name: string; dflt_value: string | null }>
+    expect(cols.find((c) => c.name === 'revises_row_id')).toBeDefined()
+    const verb = cols.find((c) => c.name === 'http_verb')
+    expect(verb).toBeDefined()
+    expect(verb!.dflt_value).toContain('POST')
+  })
+
+  it('creates the partial idempotency indexes', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    const idx = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='pipedrive_activities'")
+      .all() as Array<{ name: string }>
+    const names = idx.map((i) => i.name)
+    expect(names).toContain('idx_pipedrive_pasta_current')
+    expect(names).toContain('idx_pipedrive_revises')
+  })
+
+  it('migration is idempotent across initialize() calls', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    expect(() => store.initialize()).not.toThrow()
+    const cols = db
+      .prepare("PRAGMA table_info('pipedrive_activities')")
+      .all() as Array<{ name: string }>
+    expect(cols.filter((c) => c.name === 'revises_row_id').length).toBe(1)
+    expect(cols.filter((c) => c.name === 'http_verb').length).toBe(1)
+  })
+})

@@ -109,6 +109,30 @@ export class PipedriveActivityStore {
 
   initialize(): void {
     this.db.exec(SCHEMA_SQL)
+    // A7: idempotent column adds for revises_row_id + http_verb,
+    // plus partial indexes used by D1 (findCurrentPastaNote) and D3 (PUT path).
+    const cols = this.db
+      .prepare("PRAGMA table_info('pipedrive_activities')")
+      .all() as Array<{ name: string }>
+    if (!cols.some((c) => c.name === 'revises_row_id')) {
+      this.db.exec(
+        'ALTER TABLE pipedrive_activities ADD COLUMN revises_row_id TEXT REFERENCES pipedrive_activities(id)',
+      )
+    }
+    if (!cols.some((c) => c.name === 'http_verb')) {
+      this.db.exec(
+        "ALTER TABLE pipedrive_activities ADD COLUMN http_verb TEXT NOT NULL DEFAULT 'POST'",
+      )
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_pipedrive_pasta_current
+        ON pipedrive_activities(pasta, scenario, created_at DESC)
+        WHERE pipedrive_response_status = 'success'
+    `)
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_pipedrive_revises
+        ON pipedrive_activities(revises_row_id) WHERE revises_row_id IS NOT NULL
+    `)
   }
 
   insertPending(data: PipedriveActivityInsert): string {
