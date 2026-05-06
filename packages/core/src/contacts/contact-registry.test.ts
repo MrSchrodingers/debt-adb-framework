@@ -277,3 +277,44 @@ describe('ContactRegistry', () => {
     expect(contact.wa_chat_id).toBe('5543991938235@c.us') // COALESCE preserved
   })
 })
+
+describe('ContactRegistry — attempt_phase migration', () => {
+  it('adds attempt_phase column with default probe_initial', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const reg = new ContactRegistry(db)
+    reg.initialize()
+    const cols = db
+      .prepare("PRAGMA table_info('wa_contact_checks')")
+      .all() as Array<{ name: string; dflt_value: string | null }>
+    const phase = cols.find((c) => c.name === 'attempt_phase')
+    expect(phase).toBeDefined()
+    expect(phase!.dflt_value).toContain('probe_initial')
+  })
+
+  it('record() persists attempt_phase when supplied', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const reg = new ContactRegistry(db)
+    reg.initialize()
+    reg.record('5511999999999', {
+      phone_input: '5511999999999',
+      phone_variant_tried: '5511999999999',
+      source: 'adb_probe',
+      result: 'inconclusive',
+      confidence: null,
+      evidence: { ui_state: 'chat_list' },
+      device_serial: 'X',
+      waha_session: null,
+      triggered_by: 'pre_check',
+      latency_ms: 1000,
+      ddd: '11',
+      wa_chat_id: null,
+      attempt_phase: 'probe_recover',
+    })
+    const row = db
+      .prepare('SELECT attempt_phase FROM wa_contact_checks WHERE phone_normalized = ?')
+      .get('5511999999999') as { attempt_phase: string }
+    expect(row.attempt_phase).toBe('probe_recover')
+  })
+})

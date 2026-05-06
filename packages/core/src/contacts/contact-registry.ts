@@ -75,6 +75,7 @@ export interface CheckInput {
   latency_ms: number | null
   ddd?: string
   wa_chat_id?: string | null
+  attempt_phase?: 'probe_initial' | 'probe_recover' | 'scan_retry' | 'sweep_retry'
 }
 
 export interface RecordResult {
@@ -93,6 +94,18 @@ export class ContactRegistry {
 
   initialize(): void {
     this.db.exec(SCHEMA_SQL)
+    // A5: idempotent column add for attempt_phase + supporting index.
+    const checkCols = this.db
+      .prepare("PRAGMA table_info('wa_contact_checks')")
+      .all() as Array<{ name: string }>
+    if (!checkCols.some((c) => c.name === 'attempt_phase')) {
+      this.db.exec(
+        "ALTER TABLE wa_contact_checks ADD COLUMN attempt_phase TEXT NOT NULL DEFAULT 'probe_initial'",
+      )
+    }
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_wa_checks_phase_time ON wa_contact_checks(attempt_phase, checked_at DESC)',
+    )
   }
 
   lookup(phoneNormalized: string): WaContactRecord | null {
@@ -120,8 +133,8 @@ export class ContactRegistry {
         .prepare(`
           INSERT INTO wa_contact_checks
             (id, phone_normalized, phone_variant_tried, source, result, confidence,
-             evidence, device_serial, waha_session, triggered_by, latency_ms, checked_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+             evidence, device_serial, waha_session, triggered_by, latency_ms, attempt_phase, checked_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
         `)
         .run(
           checkId,
@@ -135,6 +148,7 @@ export class ContactRegistry {
           input.waha_session,
           input.triggered_by,
           input.latency_ms,
+          input.attempt_phase ?? 'probe_initial',
           now,
         )
 

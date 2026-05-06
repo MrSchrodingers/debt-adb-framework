@@ -257,3 +257,299 @@ describe('PipedriveActivityStore — stats aggregations', () => {
     expect(s.failureRate24h).toBeCloseTo(1 / 3, 3)
   })
 })
+
+describe('PipedriveActivityStore — upsert columns', () => {
+  it('adds revises_row_id and http_verb', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    const cols = db
+      .prepare("PRAGMA table_info('pipedrive_activities')")
+      .all() as Array<{ name: string; dflt_value: string | null }>
+    expect(cols.find((c) => c.name === 'revises_row_id')).toBeDefined()
+    const verb = cols.find((c) => c.name === 'http_verb')
+    expect(verb).toBeDefined()
+    expect(verb!.dflt_value).toContain('POST')
+  })
+
+  it('creates the partial idempotency indexes', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    const idx = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='pipedrive_activities'")
+      .all() as Array<{ name: string }>
+    const names = idx.map((i) => i.name)
+    expect(names).toContain('idx_pipedrive_pasta_current')
+    expect(names).toContain('idx_pipedrive_revises')
+  })
+
+  it('migration is idempotent across initialize() calls', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    expect(() => store.initialize()).not.toThrow()
+    const cols = db
+      .prepare("PRAGMA table_info('pipedrive_activities')")
+      .all() as Array<{ name: string }>
+    expect(cols.filter((c) => c.name === 'revises_row_id').length).toBe(1)
+    expect(cols.filter((c) => c.name === 'http_verb').length).toBe(1)
+  })
+})
+
+describe('PipedriveActivityStore — findCurrentPastaNote', () => {
+  it('returns most recent successful pasta_summary row', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+
+    const id1 = store.insertPending({
+      scenario: 'pasta_summary', deal_id: 1, pasta: 'P-1',
+      phone_normalized: null, job_id: 'j1',
+      pipedrive_endpoint: '/notes', pipedrive_payload_json: '{}',
+    })
+    store.updateResult(id1, {
+      status: 'success', pipedrive_response_id: 999,
+      http_status: 201, error_msg: null, attempts: 1,
+    })
+
+    const found = store.findCurrentPastaNote('P-1')
+    expect(found).not.toBeNull()
+    expect(found!.pipedrive_response_id).toBe(999)
+    expect(found!.row_id).toBe(id1)
+    expect(found!.created_at).toBeDefined()
+  })
+
+  it('returns null when no successful row exists', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    expect(store.findCurrentPastaNote('P-1')).toBeNull()
+  })
+
+  it('skips orphaned rows', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    const id = store.insertPending({
+      scenario: 'pasta_summary', deal_id: 1, pasta: 'P-1',
+      phone_normalized: null, job_id: 'j1',
+      pipedrive_endpoint: '/notes', pipedrive_payload_json: '{}',
+    })
+    store.updateResult(id, { status: 'success', pipedrive_response_id: 999, http_status: 201, error_msg: null, attempts: 1 })
+    store.markOrphaned(id, 'PUT 404')
+    expect(store.findCurrentPastaNote('P-1')).toBeNull()
+  })
+
+  it('returns the most recent row when multiple successes exist', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+
+    const id1 = store.insertPending({
+      scenario: 'pasta_summary', deal_id: 1, pasta: 'P-1',
+      phone_normalized: null, job_id: 'j1',
+      pipedrive_endpoint: '/notes', pipedrive_payload_json: '{}',
+    })
+    store.updateResult(id1, { status: 'success', pipedrive_response_id: 100, http_status: 201, error_msg: null, attempts: 1 })
+
+    // Sleep 5ms to ensure created_at differs
+    const wait = Date.now() + 10
+    while (Date.now() < wait) { /* spin */ }
+
+    const id2 = store.insertPending({
+      scenario: 'pasta_summary', deal_id: 1, pasta: 'P-1',
+      phone_normalized: null, job_id: 'j2',
+      pipedrive_endpoint: '/notes', pipedrive_payload_json: '{}',
+    })
+    store.updateResult(id2, { status: 'success', pipedrive_response_id: 200, http_status: 200, error_msg: null, attempts: 1 })
+
+    const found = store.findCurrentPastaNote('P-1')
+    expect(found!.pipedrive_response_id).toBe(200)
+    expect(found!.row_id).toBe(id2)
+  })
+
+  it('ignores other pasta scenarios', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    const id = store.insertPending({
+      scenario: 'deal_all_fail', deal_id: 1, pasta: 'P-1',
+      phone_normalized: null, job_id: 'j1',
+      pipedrive_endpoint: '/activities', pipedrive_payload_json: '{}',
+    })
+    store.updateResult(id, { status: 'success', pipedrive_response_id: 999, http_status: 201, error_msg: null, attempts: 1 })
+    expect(store.findCurrentPastaNote('P-1')).toBeNull()
+  })
+})
+
+describe('PipedriveActivityStore — listPastaNoteRevisions', () => {
+  it('returns full revision chain in chronological order', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const jobStore = new PrecheckJobStore(db)
+    jobStore.initialize()
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+
+    const id1 = store.insertPending({
+      scenario: 'pasta_summary', deal_id: 1, pasta: 'P-1',
+      phone_normalized: null, job_id: 'j1',
+      pipedrive_endpoint: '/notes', pipedrive_payload_json: '{}',
+      http_verb: 'POST',
+    })
+    store.updateResult(id1, { status: 'success', pipedrive_response_id: 999, http_status: 201, error_msg: null, attempts: 1 })
+
+    // Tiny delay so created_at differs.
+    const wait = Date.now() + 5
+    while (Date.now() < wait) { /* spin */ }
+
+    const id2 = store.insertPending({
+      scenario: 'pasta_summary', deal_id: 1, pasta: 'P-1',
+      phone_normalized: null, job_id: 'j2',
+      pipedrive_endpoint: '/notes', pipedrive_payload_json: '{}',
+      http_verb: 'PUT',
+      revises_row_id: id1,
+    })
+    store.updateResult(id2, { status: 'success', pipedrive_response_id: 999, http_status: 200, error_msg: null, attempts: 1 })
+
+    const revisions = store.listPastaNoteRevisions('P-1')
+    expect(revisions.length).toBe(2)
+    expect(revisions[0].row_id).toBe(id1)
+    expect(revisions[0].verb).toBe('POST')
+    expect(revisions[0].revises_row_id).toBeNull()
+    expect(revisions[1].row_id).toBe(id2)
+    expect(revisions[1].verb).toBe('PUT')
+    expect(revisions[1].revises_row_id).toBe(id1)
+    db.close()
+  })
+
+  it('returns empty array when no revisions exist', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const jobStore = new PrecheckJobStore(db)
+    jobStore.initialize()
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    expect(store.listPastaNoteRevisions('P-1')).toEqual([])
+    db.close()
+  })
+
+  it('joins triggered_by from adb_precheck_jobs', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const jobStore = new PrecheckJobStore(db)
+    jobStore.initialize()
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+
+    const job = jobStore.createJob({} as any, undefined, { triggeredBy: 'retry-errors-sweep' })
+    const noteRowId = store.insertPending({
+      scenario: 'pasta_summary', deal_id: 1, pasta: 'P-1',
+      phone_normalized: null, job_id: job.id,
+      pipedrive_endpoint: '/notes', pipedrive_payload_json: '{}',
+      http_verb: 'POST',
+    })
+    store.updateResult(noteRowId, { status: 'success', pipedrive_response_id: 100, http_status: 201, error_msg: null, attempts: 1 })
+
+    const revisions = store.listPastaNoteRevisions('P-1')
+    expect(revisions.length).toBe(1)
+    expect(revisions[0].triggered_by).toBe('retry-errors-sweep')
+    db.close()
+  })
+
+  it('ignores other scenarios (deal_all_fail)', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const jobStore = new PrecheckJobStore(db)
+    jobStore.initialize()
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    const id = store.insertPending({
+      scenario: 'deal_all_fail', deal_id: 1, pasta: 'P-1',
+      phone_normalized: null, job_id: 'j1',
+      pipedrive_endpoint: '/activities', pipedrive_payload_json: '{}',
+    })
+    store.updateResult(id, { status: 'success', pipedrive_response_id: 999, http_status: 201, error_msg: null, attempts: 1 })
+    expect(store.listPastaNoteRevisions('P-1')).toEqual([])
+    db.close()
+  })
+})
+
+describe('PipedriveActivityStore — markOrphaned', () => {
+  it('sets status to orphaned and records the reason', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    const id = store.insertPending({
+      scenario: 'pasta_summary', deal_id: 1, pasta: 'P-1',
+      phone_normalized: null, job_id: 'j1',
+      pipedrive_endpoint: '/notes', pipedrive_payload_json: '{}',
+    })
+    store.updateResult(id, { status: 'success', pipedrive_response_id: 999, http_status: 201, error_msg: null, attempts: 1 })
+    store.markOrphaned(id, 'PUT returned 404')
+
+    const row = db.prepare('SELECT pipedrive_response_status, error_msg FROM pipedrive_activities WHERE id = ?').get(id) as {
+      pipedrive_response_status: string
+      error_msg: string
+    }
+    expect(row.pipedrive_response_status).toBe('orphaned')
+    expect(row.error_msg).toBe('PUT returned 404')
+  })
+})
+
+describe('PipedriveActivityStore — insertPending with revises_row_id and http_verb', () => {
+  it('persists revises_row_id and http_verb when supplied', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+
+    const previousId = store.insertPending({
+      scenario: 'pasta_summary', deal_id: 1, pasta: 'P-1',
+      phone_normalized: null, job_id: 'j1',
+      pipedrive_endpoint: '/notes', pipedrive_payload_json: '{}',
+    })
+    store.updateResult(previousId, { status: 'success', pipedrive_response_id: 999, http_status: 201, error_msg: null, attempts: 1 })
+
+    const newId = store.insertPending({
+      scenario: 'pasta_summary', deal_id: 1, pasta: 'P-1',
+      phone_normalized: null, job_id: 'j2',
+      pipedrive_endpoint: '/notes', pipedrive_payload_json: '{}',
+      revises_row_id: previousId,
+      http_verb: 'PUT',
+    })
+
+    const row = db
+      .prepare('SELECT revises_row_id, http_verb FROM pipedrive_activities WHERE id = ?')
+      .get(newId) as { revises_row_id: string; http_verb: string }
+    expect(row.revises_row_id).toBe(previousId)
+    expect(row.http_verb).toBe('PUT')
+  })
+
+  it('defaults http_verb to POST and revises_row_id to NULL when omitted', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    const id = store.insertPending({
+      scenario: 'pasta_summary', deal_id: 1, pasta: 'P-1',
+      phone_normalized: null, job_id: 'j1',
+      pipedrive_endpoint: '/notes', pipedrive_payload_json: '{}',
+    })
+    const row = db
+      .prepare('SELECT revises_row_id, http_verb FROM pipedrive_activities WHERE id = ?')
+      .get(id) as { revises_row_id: string | null; http_verb: string }
+    expect(row.revises_row_id).toBeNull()
+    expect(row.http_verb).toBe('POST')
+  })
+})

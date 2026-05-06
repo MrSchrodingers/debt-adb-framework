@@ -11,7 +11,7 @@ import { nanoid } from 'nanoid'
  * Pipedrive interaction the system performs.
  */
 export type PipedriveScenario = 'phone_fail' | 'deal_all_fail' | 'pasta_summary'
-export type PipedriveStatus = 'retrying' | 'success' | 'failed'
+export type PipedriveStatus = 'retrying' | 'success' | 'failed' | 'orphaned'
 
 export interface PipedriveActivityInsert {
   scenario: PipedriveScenario
@@ -23,6 +23,8 @@ export interface PipedriveActivityInsert {
   pipedrive_payload_json: string
   manual?: boolean
   triggered_by?: string | null
+  revises_row_id?: string
+  http_verb?: 'POST' | 'PUT'
 }
 
 export interface PipedriveActivityRow {
@@ -109,6 +111,30 @@ export class PipedriveActivityStore {
 
   initialize(): void {
     this.db.exec(SCHEMA_SQL)
+    // A7: idempotent column adds for revises_row_id + http_verb,
+    // plus partial indexes used by D1 (findCurrentPastaNote) and D3 (PUT path).
+    const cols = this.db
+      .prepare("PRAGMA table_info('pipedrive_activities')")
+      .all() as Array<{ name: string }>
+    if (!cols.some((c) => c.name === 'revises_row_id')) {
+      this.db.exec(
+        'ALTER TABLE pipedrive_activities ADD COLUMN revises_row_id TEXT REFERENCES pipedrive_activities(id)',
+      )
+    }
+    if (!cols.some((c) => c.name === 'http_verb')) {
+      this.db.exec(
+        "ALTER TABLE pipedrive_activities ADD COLUMN http_verb TEXT NOT NULL DEFAULT 'POST'",
+      )
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_pipedrive_pasta_current
+        ON pipedrive_activities(pasta, scenario, created_at DESC)
+        WHERE pipedrive_response_status = 'success'
+    `)
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_pipedrive_revises
+        ON pipedrive_activities(revises_row_id) WHERE revises_row_id IS NOT NULL
+    `)
   }
 
   insertPending(data: PipedriveActivityInsert): string {
@@ -119,8 +145,8 @@ export class PipedriveActivityStore {
            id, scenario, deal_id, pasta, phone_normalized, job_id,
            pipedrive_endpoint, pipedrive_payload_json,
            pipedrive_response_status, attempts,
-           manual, triggered_by
-         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+           manual, triggered_by, revises_row_id, http_verb
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         id,
@@ -135,6 +161,8 @@ export class PipedriveActivityStore {
         1,
         data.manual ? 1 : 0,
         data.triggered_by ?? null,
+        data.revises_row_id ?? null,
+        data.http_verb ?? 'POST',
       )
     return id
   }
@@ -205,6 +233,90 @@ export class PipedriveActivityStore {
         params.sinceIso,
       ) as { 1: number } | undefined
     return Boolean(row)
+  }
+
+  /**
+   * Resolve the "current" Pipedrive note for a pasta — the most recent row
+   * with scenario='pasta_summary', status='success', and a non-null Pipedrive
+   * response id. Used by the publisher to switch from POST to PUT on
+   * subsequent scans of the same pasta.
+   *
+   * Returns null when no successful note has been published yet, OR when the
+   * previous note was orphaned (e.g. deleted upstream by an operator).
+   */
+  findCurrentPastaNote(pasta: string): { row_id: string; pipedrive_response_id: number; created_at: string } | null {
+    const row = this.db
+      .prepare(`
+        SELECT id AS row_id, pipedrive_response_id, created_at
+        FROM pipedrive_activities
+        WHERE scenario = 'pasta_summary'
+          AND pasta = ?
+          AND pipedrive_response_status = 'success'
+          AND pipedrive_response_id IS NOT NULL
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+      `)
+      .get(pasta) as
+      | { row_id: string; pipedrive_response_id: number; created_at: string }
+      | undefined
+    return row ?? null
+  }
+
+  /**
+   * Returns the chronological revision chain for a pasta_summary note —
+   * one row per dispatch attempt (POST or PUT). The first row is the
+   * initial creation; subsequent rows are PUT updates with revises_row_id
+   * pointing at the previous row's id.
+   *
+   * Joined with `adb_precheck_jobs` so the caller can attribute each
+   * revision to a triggered_by source (manual scan, retry-errors-sweep, etc.).
+   * The LEFT JOIN covers the case where the source job was deleted (returns
+   * `triggered_by: null` instead of dropping the row).
+   */
+  listPastaNoteRevisions(pasta: string): Array<{
+    row_id: string
+    verb: string
+    created_at: string
+    job_id: string | null
+    triggered_by: string | null
+    revises_row_id: string | null
+    status: string
+    pipedrive_response_id: number | null
+  }> {
+    return this.db
+      .prepare(`
+        SELECT
+          pa.id AS row_id,
+          pa.http_verb AS verb,
+          pa.created_at,
+          pa.job_id,
+          aj.triggered_by AS triggered_by,
+          pa.revises_row_id,
+          pa.pipedrive_response_status AS status,
+          pa.pipedrive_response_id
+        FROM pipedrive_activities pa
+        LEFT JOIN adb_precheck_jobs aj ON aj.id = pa.job_id
+        WHERE pa.scenario = 'pasta_summary' AND pa.pasta = ?
+        ORDER BY pa.created_at ASC, pa.id ASC
+      `)
+      .all(pasta) as any[]
+  }
+
+  /**
+   * Mark a row as orphaned — its Pipedrive entity was deleted upstream. The
+   * publisher uses this when a PUT returns 404, so subsequent
+   * `findCurrentPastaNote` calls skip it and the next publish creates a fresh
+   * note. Records the failure reason in `error_msg` for audit.
+   */
+  markOrphaned(rowId: string, reason: string): void {
+    this.db
+      .prepare(`
+        UPDATE pipedrive_activities
+           SET pipedrive_response_status = 'orphaned',
+               error_msg = ?
+         WHERE id = ?
+      `)
+      .run(reason, rowId)
   }
 
   getById(id: string): PipedriveActivityRow | null {

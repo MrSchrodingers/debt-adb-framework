@@ -94,6 +94,17 @@ export interface PrecheckJob {
    * 1 = enabled, 0 = disabled.
    */
   hygienization_mode: number
+  /**
+   * What triggered this job: 'manual' (operator-initiated via API),
+   * 'retry-errors-sweep' (automatic retry of error_phones), or any
+   * future automation label. Defaults to 'manual'.
+   */
+  triggered_by: string
+  /**
+   * ID of the job that spawned this one, when created automatically
+   * (e.g. by the retry-errors-sweep). NULL for operator-initiated jobs.
+   */
+  parent_job_id: string | null
 }
 
 /** Params for a new scan run. */
@@ -159,6 +170,12 @@ export interface PrecheckScanParams {
    * same WhatsApp account.
    */
   waha_session?: string
+  /**
+   * Run the end-of-scan retry pass (Level 2): after the main loop, re-validate
+   * any phones that ended up `outcome: 'error'`. Defaults to true. Set to
+   * false to disable (e.g. for fast scans where you want raw probe results).
+   */
+  retry_errors?: boolean
 }
 
 // ── Pipedrive integration intents ─────────────────────────────────────────
@@ -300,6 +317,13 @@ export interface PipedriveNoteIntent {
     deal_id: number
     content: string
   }
+  /**
+   * When set, dispatch performs `PUT /v1/notes/<update_target_id>` (update)
+   * instead of `POST /v1/notes` (create). Used by the publisher when a prior
+   * pasta_summary note exists for the same pasta. The string is the numeric
+   * Pipedrive note id (carried as string for URL composition).
+   */
+  update_target_id?: string
 }
 
 export type PipedriveOutgoingIntent = PipedriveActivityIntent | PipedriveNoteIntent

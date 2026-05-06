@@ -3,6 +3,7 @@ import { nanoid } from 'nanoid'
 import type {
   DealKey,
   DealResult,
+  PhoneResult,
   PrecheckJob,
   PrecheckJobStatus,
   PrecheckScanParams,
@@ -81,6 +82,23 @@ export class PrecheckJobStore {
         "ALTER TABLE adb_precheck_jobs ADD COLUMN hygienization_mode INTEGER NOT NULL DEFAULT 0",
       )
     }
+    // A6: triggered_by + parent_job_id (idempotent)
+    if (!cols.some((c) => c.name === 'triggered_by')) {
+      this.db.exec(
+        "ALTER TABLE adb_precheck_jobs ADD COLUMN triggered_by TEXT NOT NULL DEFAULT 'manual'",
+      )
+    }
+    if (!cols.some((c) => c.name === 'parent_job_id')) {
+      this.db.exec(
+        'ALTER TABLE adb_precheck_jobs ADD COLUMN parent_job_id TEXT REFERENCES adb_precheck_jobs(id)',
+      )
+    }
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_jobs_parent ON adb_precheck_jobs(parent_job_id)',
+    )
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_jobs_trigger ON adb_precheck_jobs(triggered_by, created_at DESC)',
+    )
   }
 
   /** Mark every job left in `running` state as failed. */
@@ -100,7 +118,12 @@ export class PrecheckJobStore {
   createJob(
     params: PrecheckScanParams,
     externalRef?: string,
-    opts?: { pipedriveEnabled?: boolean; hygienizationMode?: boolean },
+    opts?: {
+      pipedriveEnabled?: boolean
+      hygienizationMode?: boolean
+      triggeredBy?: string
+      parentJobId?: string
+    },
   ): PrecheckJob {
     if (externalRef) {
       const existing = this.db
@@ -112,10 +135,12 @@ export class PrecheckJobStore {
     const created_at = new Date().toISOString()
     const pipedriveEnabled = opts?.pipedriveEnabled === false ? 0 : 1
     const hygienizationMode = opts?.hygienizationMode === true ? 1 : 0
+    const triggeredBy = opts?.triggeredBy ?? 'manual'
+    const parentJobId = opts?.parentJobId ?? null
     this.db
       .prepare(
-        `INSERT INTO adb_precheck_jobs (id, external_ref, status, params_json, created_at, pipedrive_enabled, hygienization_mode)
-         VALUES (?, ?, 'queued', ?, ?, ?, ?)`,
+        `INSERT INTO adb_precheck_jobs (id, external_ref, status, params_json, created_at, pipedrive_enabled, hygienization_mode, triggered_by, parent_job_id)
+         VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -124,6 +149,8 @@ export class PrecheckJobStore {
         created_at,
         pipedriveEnabled,
         hygienizationMode,
+        triggeredBy,
+        parentJobId,
       )
     return this.getJob(id)!
   }
@@ -296,6 +323,50 @@ export class PrecheckJobStore {
   }
 
   /**
+   * Returns the deal cache rows for a job whose `phones_json` contains at
+   * least one phone with `outcome:"error"`. Used by the end-of-scan retry
+   * pass (D4) and the manual sweep entrypoint (E1) to identify which deals
+   * still need work.
+   *
+   * Each row's `phones` array is the parsed `PhoneResult[]` ready to be
+   * mutated and re-persisted via `upsertDeal`.
+   */
+  listDealsWithErrors(jobId: string): Array<{
+    key: DealKey
+    phones: PhoneResult[]
+    valid_count: number
+    invalid_count: number
+    primary_valid_phone: string | null
+  }> {
+    const rows = this.db
+      .prepare(`
+        SELECT pasta, deal_id, contato_tipo, contato_id, phones_json
+        FROM adb_precheck_deals
+        WHERE last_job_id = ?
+          AND EXISTS (
+            SELECT 1 FROM json_each(phones_json)
+            WHERE json_extract(value, '$.outcome') = 'error'
+          )
+      `)
+      .all(jobId) as Array<{
+        pasta: string; deal_id: number; contato_tipo: string; contato_id: number; phones_json: string
+      }>
+    return rows.map((r) => {
+      const phones: PhoneResult[] = JSON.parse(r.phones_json) as PhoneResult[]
+      const valid_count = phones.filter((p) => p.outcome === 'valid').length
+      const invalid_count = phones.filter((p) => p.outcome === 'invalid').length
+      const primary_valid_phone = phones.find((p) => p.outcome === 'valid')?.normalized ?? null
+      return {
+        key: { pasta: r.pasta, deal_id: r.deal_id, contato_tipo: r.contato_tipo, contato_id: r.contato_id },
+        phones,
+        valid_count,
+        invalid_count,
+        primary_valid_phone,
+      }
+    })
+  }
+
+  /**
    * Lifetime phone-level aggregates from completed jobs. Powers the
    * "Visão Geral" panel — the operator wants to know how many phones
    * we have actually tested versus how many remain in the pool, to
@@ -320,6 +391,181 @@ export class PrecheckJobStore {
         | { phones_checked: number; phones_valid: number; phones_invalid: number; phones_error: number }
         | undefined) ?? { phones_checked: 0, phones_valid: 0, phones_invalid: 0, phones_error: 0 }
     return row
+  }
+
+  /**
+   * Lists deals (across ALL prior jobs) that still have phones with
+   * outcome='error', filtered by pasta and recency. Used by the sweep
+   * entrypoint (E1) to identify which deals need a second pass without
+   * being tied to a single source job_id.
+   */
+  listDealsWithErrorsByFilter(opts: {
+    since_iso: string
+    pasta: string | null
+    limit: number
+  }): Array<{
+    key: DealKey
+    phones: PhoneResult[]
+    last_job_id: string
+  }> {
+    const rows = this.db
+      .prepare(`
+        SELECT pasta, deal_id, contato_tipo, contato_id, phones_json, last_job_id
+        FROM adb_precheck_deals
+        WHERE scanned_at >= ?
+          AND EXISTS (
+            SELECT 1 FROM json_each(phones_json)
+            WHERE json_extract(value, '$.outcome') = 'error'
+          )
+          AND (? IS NULL OR pasta = ?)
+        ORDER BY scanned_at DESC
+        LIMIT ?
+      `)
+      .all(opts.since_iso, opts.pasta, opts.pasta, opts.limit) as Array<{
+        pasta: string; deal_id: number; contato_tipo: string; contato_id: number;
+        phones_json: string; last_job_id: string
+      }>
+    return rows.map((r) => ({
+      key: { pasta: r.pasta, deal_id: r.deal_id, contato_tipo: r.contato_tipo, contato_id: r.contato_id },
+      phones: JSON.parse(r.phones_json) as PhoneResult[],
+      last_job_id: r.last_job_id,
+    }))
+  }
+
+  /**
+   * Returns all cached deal rows for a pasta, ordered by deal_id ascending.
+   * Used by the sweep to re-aggregate pasta-level summaries after mutating
+   * individual deal phone outcomes.
+   */
+  listDealsForPasta(pasta: string): Array<{
+    key: DealKey
+    phones: PhoneResult[]
+    last_job_id: string
+  }> {
+    const rows = this.db
+      .prepare(`
+        SELECT pasta, deal_id, contato_tipo, contato_id, phones_json, last_job_id
+        FROM adb_precheck_deals
+        WHERE pasta = ?
+        ORDER BY deal_id ASC
+      `)
+      .all(pasta) as Array<{
+        pasta: string; deal_id: number; contato_tipo: string; contato_id: number;
+        phones_json: string; last_job_id: string
+      }>
+    return rows.map((r) => ({
+      key: { pasta: r.pasta, deal_id: r.deal_id, contato_tipo: r.contato_tipo, contato_id: r.contato_id },
+      phones: JSON.parse(r.phones_json) as PhoneResult[],
+      last_job_id: r.last_job_id,
+    }))
+  }
+
+  /**
+   * Retry-pass save rate for a job. Counts wa_contact_checks rows with
+   * decisive results that came from probe_recover (Level 1) and scan_retry
+   * (Level 2) attempt phases. Sweep_retry rows from a sweep job land in the
+   * sweep job's stats, not the original — that's correct (sweep is its own
+   * job entity).
+   *
+   * `remaining_errors` counts phones still flagged 'error' in the deal cache
+   * for THIS job — these are candidates for the manual sweep entrypoint.
+   */
+  getRetryStats(jobId: string): {
+    level_1_resolves: number
+    level_2_resolves: number
+    remaining_errors: number
+  } {
+    const dealsRows = this.db
+      .prepare('SELECT phones_json FROM adb_precheck_deals WHERE last_job_id = ?')
+      .all(jobId) as Array<{ phones_json: string }>
+    let remaining_errors = 0
+    for (const r of dealsRows) {
+      try {
+        const phones = JSON.parse(r.phones_json) as Array<{ outcome: string }>
+        remaining_errors += phones.filter((p) => p.outcome === 'error').length
+      } catch {
+        // Malformed row — skip silently rather than crashing the stats query.
+      }
+    }
+
+    // wa_contact_checks is owned by ContactRegistry — defensively handle the
+    // case where the table hasn't been initialized yet (e.g. fresh boot, no
+    // contacts module loaded in tests).
+    let level_1 = 0
+    let level_2 = 0
+    try {
+      level_1 = (this.db
+        .prepare(`
+          SELECT COUNT(*) AS n FROM wa_contact_checks
+          WHERE attempt_phase = 'probe_recover' AND result IN ('exists','not_exists')
+            AND checked_at >= COALESCE((SELECT created_at FROM adb_precheck_jobs WHERE id = ?), '1970-01-01')
+            AND checked_at <= COALESCE((SELECT finished_at FROM adb_precheck_jobs WHERE id = ?), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        `)
+        .get(jobId, jobId) as { n: number }).n
+      level_2 = (this.db
+        .prepare(`
+          SELECT COUNT(*) AS n FROM wa_contact_checks
+          WHERE attempt_phase = 'scan_retry' AND result IN ('exists','not_exists')
+            AND checked_at >= COALESCE((SELECT created_at FROM adb_precheck_jobs WHERE id = ?), '1970-01-01')
+            AND checked_at <= COALESCE((SELECT finished_at FROM adb_precheck_jobs WHERE id = ?), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        `)
+        .get(jobId, jobId) as { n: number }).n
+    } catch {
+      // wa_contact_checks not initialized — return zeros.
+    }
+
+    return { level_1_resolves: level_1, level_2_resolves: level_2, remaining_errors }
+  }
+
+  /**
+   * Distribution of UI states observed during the job's probe activity.
+   * Counts wa_contact_checks rows from `adb_probe` source whose evidence
+   * carries a `ui_state` field, scoped to the job's time window.
+   */
+  getUiStateDistribution(jobId: string): Record<string, number> {
+    const out: Record<string, number> = {}
+    // wa_contact_checks is owned by ContactRegistry — guard against fresh
+    // deployments where the table hasn't been initialized yet.
+    try {
+      const rows = this.db
+        .prepare(`
+          SELECT json_extract(evidence,'$.ui_state') AS state, COUNT(*) AS n
+          FROM wa_contact_checks
+          WHERE source = 'adb_probe'
+            AND json_extract(evidence,'$.ui_state') IS NOT NULL
+            AND checked_at >= COALESCE((SELECT created_at FROM adb_precheck_jobs WHERE id = ?), '1970-01-01')
+            AND checked_at <= COALESCE((SELECT finished_at FROM adb_precheck_jobs WHERE id = ?), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          GROUP BY state
+        `)
+        .all(jobId, jobId) as Array<{ state: string; n: number }>
+      for (const r of rows) out[r.state] = r.n
+    } catch {
+      // wa_contact_checks not initialized — return empty distribution.
+    }
+    return out
+  }
+
+  /**
+   * Number of probe snapshots persisted to disk during this job. Reads
+   * `evidence.snapshot_path` IS NOT NULL — present only when the writer
+   * actually wrote a file (quota-aware).
+   */
+  getSnapshotsCaptured(jobId: string): number {
+    // wa_contact_checks is owned by ContactRegistry — guard against fresh
+    // deployments where the table hasn't been initialized yet.
+    try {
+      return (this.db
+        .prepare(`
+          SELECT COUNT(*) AS n FROM wa_contact_checks
+          WHERE json_extract(evidence,'$.snapshot_path') IS NOT NULL
+            AND checked_at >= COALESCE((SELECT created_at FROM adb_precheck_jobs WHERE id = ?), '1970-01-01')
+            AND checked_at <= COALESCE((SELECT finished_at FROM adb_precheck_jobs WHERE id = ?), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        `)
+        .get(jobId, jobId) as { n: number }).n
+    } catch {
+      // wa_contact_checks not initialized — return zero.
+      return 0
+    }
   }
 
   aggregateStats(): {

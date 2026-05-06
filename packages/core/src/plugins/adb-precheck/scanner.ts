@@ -1,4 +1,5 @@
 import type { ContactValidator } from '../../validator/contact-validator.js'
+import type { LockHandle, LockState, PastaLockManager } from '../../locks/pasta-lock-manager.js'
 import type { PluginLogger } from '../types.js'
 import type {
   BatchInvalidPhone,
@@ -17,6 +18,18 @@ import type {
   PipedrivePhoneEntry,
   PrecheckScanParams,
 } from './types.js'
+
+/**
+ * Thrown by `PrecheckScanner.run` when another scan job already holds the
+ * `scan:<pasta>` lock. The plugin's HTTP handler maps this to 409 Conflict
+ * with the current holder's lock state.
+ */
+export class ScanInProgressError extends Error {
+  constructor(public readonly pasta: string, public readonly current: LockState | null) {
+    super(`scan_in_progress: ${pasta}`)
+    this.name = 'ScanInProgressError'
+  }
+}
 
 /**
  * Subset of `DispatchPauseState` the scanner needs. Kept structural so this
@@ -130,6 +143,14 @@ export interface ScannerDeps {
   pauseState?: ScannerPauseState
   /** Operator label written to the audit log when the scanner toggles pause. */
   hygienizationOperator?: string
+  /**
+   * Per-pasta lock manager. When supplied, the scanner acquires
+   * `scan:<pasta>` (or `scan:all` when no pasta filter is set) for the
+   * lifetime of the scan + retry pass, ensuring two concurrent jobs cannot
+   * race on the same pasta. Optional — when omitted (e.g. in unit tests),
+   * the scanner runs without the cross-pasta safety net (legacy behaviour).
+   */
+  locks?: PastaLockManager
 }
 
 interface PastaAggregate {
@@ -282,6 +303,37 @@ export class PrecheckScanner {
           { jobId, cachedKeysAboveThreshold: recentKeys.length },
         )
       }
+    }
+
+    // ── Per-pasta scan lock (D5) ────────────────────────────────────────
+    //
+    // Acquire `scan:<pasta_filter>` (or `scan:all` for jobs without a pasta
+    // filter) so two concurrent jobs targeting the same pasta serialize
+    // rather than race. The lock is released in the finally block below.
+    //
+    // When `this.deps.locks` is not injected (legacy / unit-test callers),
+    // we skip the locking entirely to preserve backward compatibility.
+    const lockPasta = params.pasta_filter ?? 'all'
+    const lockKey = `scan:${lockPasta}`
+    const scanLock: LockHandle | null = this.deps.locks
+      ? this.deps.locks.acquire(lockKey, 3_600_000 /* 1h TTL */, {
+          job_id: jobId,
+          pasta: lockPasta,
+        })
+      : null
+
+    if (this.deps.locks && !scanLock) {
+      // Another job already holds the lock for this pasta — surface a typed
+      // error so the HTTP handler can return 409 Conflict with the holder's
+      // metadata. Mark the job failed so it does not sit in 'queued' forever.
+      const current = this.deps.locks.describe(lockKey)
+      logger.warn('scan_in_progress', { jobId, pasta: lockPasta, current })
+      store.finishJob(jobId, 'failed', `scan_in_progress: ${lockPasta}`)
+      if (onJobFinished) {
+        try { await onJobFinished(jobId) } catch { /* swallow */ }
+      }
+      this.resumeHygienizationIfActive(hygienizationActive, hygienizationOperator, jobId)
+      throw new ScanInProgressError(lockPasta, current)
     }
 
     // Scanner-side processing budget. `limit` now means "this many deals
@@ -605,16 +657,22 @@ export class PrecheckScanner {
         }
       }
 
-      store.finishJob(jobId, 'completed')
-      logger.info('precheck scan completed', {
-        jobId,
-        processedCount,
-        budget: processingBudget,
-      })
+      // D4/D5: end-of-scan retry pass — re-validate phones that ended up 'error'.
+      // Runs BEFORE finishJob so the job is still 'running' during the retry
+      // window; a polling client would otherwise see 'completed' while work is
+      // still in progress. Mutates pastaAgg in-place so the pasta_summary note
+      // below reflects retried outcomes. The scanLock is passed so
+      // retryErrorsPass can abort early when the lock is no longer valid
+      // (fence-token guard).
+      if (params.retry_errors !== false) {
+        await this.retryErrorsPass(jobId, params, pastaAgg, scanLock)
+      }
 
       // Pipedrive Scenario C: emit one Note per pasta touched, on the lowest
       // deal_id of the pasta. Skips empty pastas (defensive — shouldn't happen
       // since we only insert into pastaAgg from inside the iteration).
+      // Runs BEFORE finishJob so the note content reflects any retry-pass
+      // mutations to pastaAgg.
       if (pipedrive) {
         const finishedAt = new Date().toISOString()
         for (const agg of pastaAgg.values()) {
@@ -642,6 +700,15 @@ export class PrecheckScanner {
           })
         }
       }
+
+      // Mark the job completed AFTER the retry pass and notes emit, so polling
+      // clients never observe 'completed' while work is still in progress.
+      store.finishJob(jobId, 'completed')
+      logger.info('precheck scan completed', {
+        jobId,
+        processedCount,
+        budget: processingBudget,
+      })
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       store.finishJob(jobId, 'failed', msg)
@@ -654,6 +721,11 @@ export class PrecheckScanner {
       }
       this.resumeHygienizationIfActive(hygienizationActive, hygienizationOperator, jobId)
       throw e
+    } finally {
+      // Release the per-pasta scan lock unconditionally — whether the job
+      // completed, was cancelled, or threw. This is safe to call even when
+      // scanLock is null (no-op).
+      scanLock?.release()
     }
     if (finalStatus === 'completed' && onJobFinished) {
       try { await onJobFinished(jobId) } catch (cbErr) {
@@ -662,6 +734,432 @@ export class PrecheckScanner {
     }
     // Happy path: completion went through. Resume idempotently.
     this.resumeHygienizationIfActive(hygienizationActive, hygienizationOperator, jobId)
+  }
+
+  /**
+   * Level 3 sweep entrypoint (Task E1).
+   *
+   * Re-validates phones with outcome='error' from PRIOR scan jobs (not the
+   * in-flight one). Returns immediately with a job_id; processing is async
+   * via setImmediate. Caller polls GET /scan/:id for progress.
+   *
+   * Optional `pasta` filter restricts scope. `since_iso` controls how far
+   * back to look (default: last 7 days). `max_deals` caps the result set.
+   * `dry_run=true` creates the job row for auditing but calls finishJob with
+   * status='cancelled' and never touches the validator.
+   */
+  async runRetryErrorsJob(params: {
+    pasta?: string | null
+    since_iso?: string
+    max_deals?: number
+    dry_run?: boolean
+  }): Promise<{ job_id: string; deals_planned: number; status: string }> {
+    const since = params.since_iso ?? new Date(Date.now() - 7 * 24 * 3_600_000).toISOString()
+    const limit = params.max_deals ?? 200
+
+    const errorDeals = this.deps.store.listDealsWithErrorsByFilter({
+      since_iso: since,
+      pasta: params.pasta ?? null,
+      limit,
+    })
+
+    // When all deals come from a single source job, link the sweep to it so
+    // audit history is queryable. Multi-parent sweeps have no single parent.
+    const distinctParents = new Set(errorDeals.map((d) => d.last_job_id))
+    const parentJobId = distinctParents.size === 1 ? [...distinctParents][0] : undefined
+
+    const sweepJobParams = {
+      pasta_filter: params.pasta ?? undefined,
+      retry_errors: true,
+      triggered_by: 'retry-errors-sweep',
+      since_iso: since,
+      max_deals: limit,
+    } as unknown as import('./types.js').PrecheckScanParams
+
+    const sweepJob = this.deps.store.createJob(sweepJobParams, undefined, {
+      triggeredBy: 'retry-errors-sweep',
+      parentJobId,
+    })
+    const jobId = sweepJob.id
+
+    if (params.dry_run) {
+      this.deps.store.finishJob(jobId, 'cancelled', 'dry_run')
+      return { job_id: jobId, deals_planned: errorDeals.length, status: 'dry_run' }
+    }
+
+    // Fire-and-forget — caller polls /scan/:id. processSweep handles its own
+    // error logging and finishJob call.
+    setImmediate(() => {
+      this.processSweep(jobId, errorDeals).catch((e) => {
+        this.deps.logger.error('sweep job failed', { jobId, error: String(e) })
+        try { this.deps.store.finishJob(jobId, 'failed', String(e)) } catch { /* ignore */ }
+      })
+    })
+
+    return { job_id: jobId, deals_planned: errorDeals.length, status: 'started' }
+  }
+
+  /**
+   * Async body of `runRetryErrorsJob`. Groups error deals by pasta, acquires
+   * the per-pasta scan lock for each group, re-validates only the error phones,
+   * persists mutations via upsertDeal, and re-publishes pasta_summary notes for
+   * every touched pasta.
+   */
+  private async processSweep(
+    jobId: string,
+    errorDeals: Array<{ key: DealKey; phones: PhoneResult[]; last_job_id: string }>,
+  ): Promise<void> {
+    this.deps.store.markStarted(jobId, errorDeals.length)
+
+    // Group deals by pasta so we acquire a single lock per pasta group.
+    const byPasta = new Map<string, typeof errorDeals>()
+    for (const d of errorDeals) {
+      const list = byPasta.get(d.key.pasta) ?? []
+      list.push(d)
+      byPasta.set(d.key.pasta, list)
+    }
+
+    const probeDevice = this.deps.deviceSerial
+    const probeSender = this.deps.wahaSession
+    const probeProfile =
+      probeDevice && probeSender && this.deps.resolveProfileForSender
+        ? this.deps.resolveProfileForSender(probeDevice, probeSender) ?? undefined
+        : undefined
+
+    const touchedPastas = new Set<string>()
+    let totalResolved = 0
+
+    for (const [pasta, deals] of byPasta.entries()) {
+      const lockKey = `scan:${pasta}`
+      const lock = this.deps.locks?.acquire(lockKey, 3_600_000 /* 1h TTL */, {
+        job_id: jobId,
+        pasta,
+        sweep: true,
+      }) ?? null
+
+      if (this.deps.locks && !lock) {
+        this.deps.logger.warn('sweep skipping pasta — scan in progress', {
+          jobId,
+          pasta,
+          current: this.deps.locks.describe(lockKey),
+        })
+        // Still bump progress so total_deals stays accurate.
+        for (const deal of deals) {
+          this.deps.store.bumpProgress(jobId, {
+            scanned_deals: 1,
+            total_phones: deal.phones.length,
+            valid_phones: deal.phones.filter((p) => p.outcome === 'valid').length,
+            invalid_phones: deal.phones.filter((p) => p.outcome === 'invalid').length,
+            error_phones: deal.phones.filter((p) => p.outcome === 'error').length,
+            cache_hits: 0,
+          })
+        }
+        continue
+      }
+
+      try {
+        for (const deal of deals) {
+          if (lock && !lock.isStillValid()) {
+            this.deps.logger.warn('lost sweep lock, aborting pasta', { jobId, pasta })
+            break
+          }
+          let mutated = false
+          for (const ph of deal.phones) {
+            if (ph.outcome !== 'error') continue
+            try {
+              const r = await this.deps.validator.validate(ph.normalized, {
+                triggered_by: 'pre_check',
+                useWahaTiebreaker: true,
+                device_serial: probeDevice,
+                waha_session: probeSender,
+                profile_id: probeProfile,
+                attempt_phase: 'sweep_retry',
+              })
+              if (r.exists_on_wa !== null) {
+                ph.outcome = r.exists_on_wa === 1 ? 'valid' : 'invalid'
+                ph.source = r.source
+                ph.confidence = r.confidence
+                ph.error = null
+                mutated = true
+                totalResolved++
+              }
+            } catch (e) {
+              this.deps.logger.debug('sweep validate threw', {
+                jobId,
+                key: deal.key,
+                phone: ph.normalized,
+                error: e instanceof Error ? e.message : String(e),
+              })
+            }
+          }
+
+          if (mutated) {
+            const validCount = deal.phones.filter((p) => p.outcome === 'valid').length
+            const invalidCount = deal.phones.filter((p) => p.outcome === 'invalid').length
+            const primaryValid = deal.phones.find((p) => p.outcome === 'valid')?.normalized ?? null
+            this.deps.store.upsertDeal(jobId, {
+              key: deal.key,
+              phones: deal.phones,
+              valid_count: validCount,
+              invalid_count: invalidCount,
+              primary_valid_phone: primaryValid,
+            })
+            touchedPastas.add(pasta)
+          }
+
+          this.deps.store.bumpProgress(jobId, {
+            scanned_deals: 1,
+            total_phones: deal.phones.length,
+            valid_phones: deal.phones.filter((p) => p.outcome === 'valid').length,
+            invalid_phones: deal.phones.filter((p) => p.outcome === 'invalid').length,
+            error_phones: deal.phones.filter((p) => p.outcome === 'error').length,
+            cache_hits: 0,
+          })
+        }
+      } finally {
+        lock?.release()
+      }
+    }
+
+    // Re-publish updated pasta_summary notes for touched pastas. The publisher's
+    // upsert path (D3) will PUT the existing note instead of creating a new one.
+    if (this.deps.pipedrive && touchedPastas.size > 0) {
+      const sweepJob = this.deps.store.getJob(jobId)
+      for (const pasta of touchedPastas) {
+        const intent = this.buildSweepPastaSummaryIntent(
+          jobId,
+          pasta,
+          sweepJob?.started_at ?? null,
+          sweepJob?.finished_at ?? new Date().toISOString(),
+        )
+        if (intent) {
+          this.deps.pipedrive.enqueuePastaSummary(intent, {
+            triggered_by: 'retry-errors-sweep',
+          })
+        }
+      }
+    }
+
+    this.deps.logger.info('sweep complete', {
+      jobId,
+      total_deals: errorDeals.length,
+      resolved: totalResolved,
+      touched_pastas: touchedPastas.size,
+    })
+    this.deps.store.finishJob(jobId, 'completed')
+  }
+
+  /**
+   * Re-aggregates the current state of a pasta from the DB (post-sweep) and
+   * builds a `PipedrivePastaSummaryIntent`. Returns null if no deals exist for
+   * the pasta (defensive — only called for pastas we actually touched).
+   */
+  private buildSweepPastaSummaryIntent(
+    jobId: string,
+    pasta: string,
+    jobStarted: string | null,
+    jobEnded: string | null,
+  ): import('./types.js').PipedrivePastaSummaryIntent | null {
+    const store = this.deps.store as import('./job-store.js').PrecheckJobStore
+    const rows = store.listDealsForPasta(pasta)
+    if (rows.length === 0) return null
+
+    let firstDealId = rows[0]!.key.deal_id
+    let totalDeals = 0
+    let okDeals = 0
+    let archivedDeals = 0
+    let totalPhonesChecked = 0
+    let okPhones = 0
+    const strategyCounts: { adb: number; waha: number; cache: number } = { adb: 0, waha: 0, cache: 0 }
+    const dealRows: import('./types.js').PipedrivePastaDealRow[] = []
+
+    // Merge by deal_id (multiple contato_ids per deal_id merge into one entry).
+    const dealMap = new Map<number, import('./types.js').PipedrivePastaDealRow>()
+
+    for (const row of rows) {
+      const { deal_id } = row.key
+      if (deal_id < firstDealId) firstDealId = deal_id
+      totalDeals++
+      totalPhonesChecked += row.phones.length
+      const validInDeal = row.phones.filter((p) => p.outcome === 'valid').length
+      okPhones += validInDeal
+      if (validInDeal > 0) okDeals++
+      else if (row.phones.length > 0) archivedDeals++
+
+      for (const ph of row.phones) {
+        strategyCounts[classifyStrategy(ph.source)] += 1
+      }
+
+      let dealEntry = dealMap.get(deal_id)
+      if (!dealEntry) {
+        dealEntry = { deal_id, phones: [] }
+        dealMap.set(deal_id, dealEntry)
+      }
+      for (const ph of row.phones) {
+        dealEntry.phones.push({
+          column: ph.column,
+          phone_normalized: ph.normalized,
+          outcome: ph.outcome,
+          strategy: classifyStrategy(ph.source),
+        })
+      }
+    }
+
+    for (const d of dealMap.values()) {
+      dealRows.push(d)
+    }
+    dealRows.sort((a, b) => a.deal_id - b.deal_id)
+
+    return {
+      scenario: 'pasta_summary',
+      pasta,
+      first_deal_id: firstDealId,
+      job_id: jobId,
+      job_started: jobStarted,
+      job_ended: jobEnded,
+      total_deals: totalDeals,
+      ok_deals: okDeals,
+      archived_deals: archivedDeals,
+      total_phones_checked: totalPhonesChecked,
+      ok_phones: okPhones,
+      strategy_counts: strategyCounts,
+      deals: dealRows,
+    }
+  }
+
+  /**
+   * End-of-scan retry pass (Level 2 / Task D4).
+   *
+   * After the main scan loop completes, queries the DB for deal rows whose
+   * `phones_json` contains at least one `"outcome":"error"` entry and
+   * re-validates each error phone via `validator.validate(…, { attempt_phase:
+   * 'scan_retry' })`. When the retry returns a decisive result (valid|invalid):
+   *
+   *   1. The `PhoneResult` in `deal.phones` is mutated in-place (outcome,
+   *      source, confidence, error cleared).
+   *   2. The deal is re-persisted to SQLite via `store.upsertDeal`.
+   *   3. The matching `PipedrivePastaDealRow` phone inside `pastaAgg` is
+   *      updated so the subsequent pasta_summary Note reflects the retry.
+   *   4. Pasta-level aggregate counts (ok_phones, ok_deals, archived_deals)
+   *      are recomputed from current state.
+   *
+   * Phones that remain 'error' after the retry pass are left as-is; Level 3
+   * (sweep) handles them in a separate job.
+   */
+  private async retryErrorsPass(
+    jobId: string,
+    params: PrecheckScanParams,
+    pastaAgg: Map<string, PastaAggregate>,
+    lock: LockHandle | null = null,
+  ): Promise<void> {
+    const errorDeals = this.deps.store.listDealsWithErrors(jobId)
+    if (errorDeals.length === 0) return
+
+    const errorPhoneCount = errorDeals.reduce(
+      (n, d) => n + d.phones.filter((p) => p.outcome === 'error').length,
+      0,
+    )
+    this.deps.logger.info('end-of-scan retry pass starting', {
+      jobId, deals: errorDeals.length, error_phones: errorPhoneCount,
+    })
+
+    const probeDevice = params.device_serial ?? this.deps.deviceSerial
+    const probeSender = params.waha_session ?? this.deps.wahaSession
+    const probeProfile =
+      probeDevice && probeSender && this.deps.resolveProfileForSender
+        ? this.deps.resolveProfileForSender(probeDevice, probeSender) ?? undefined
+        : undefined
+
+    let resolvedCount = 0
+
+    for (const deal of errorDeals) {
+      // Fence-token guard: abort if the scan lock was lost mid-retry (TTL
+      // expired or another worker took over). This is defensive — the 1h TTL
+      // makes expiry very unlikely in practice, but we honour it faithfully.
+      if (lock && !lock.isStillValid()) {
+        this.deps.logger.warn('lost scan lock mid-retry, aborting retry pass', {
+          jobId, fenceToken: lock.fenceToken,
+        })
+        return
+      }
+      let mutated = false
+      for (const ph of deal.phones) {
+        if (ph.outcome !== 'error') continue
+        try {
+          const r = await this.deps.validator.validate(ph.normalized, {
+            triggered_by: 'pre_check',
+            useWahaTiebreaker: true,
+            device_serial: probeDevice,
+            waha_session: probeSender,
+            profile_id: probeProfile,
+            attempt_phase: 'scan_retry',
+          })
+          if (r.exists_on_wa !== null) {
+            ph.outcome = r.exists_on_wa === 1 ? 'valid' : 'invalid'
+            ph.source = r.source
+            ph.confidence = r.confidence
+            ph.error = null
+            mutated = true
+            resolvedCount++
+          }
+        } catch (e) {
+          this.deps.logger.debug('scan_retry validate threw, leaving error', {
+            jobId, key: deal.key, phone: ph.normalized,
+            error: e instanceof Error ? e.message : String(e),
+          })
+        }
+      }
+      if (!mutated) continue
+
+      // Persist the mutated deal phones to the DB.
+      const validCount = deal.phones.filter((p) => p.outcome === 'valid').length
+      const invalidCount = deal.phones.filter((p) => p.outcome === 'invalid').length
+      const primaryValid = deal.phones.find((p) => p.outcome === 'valid')?.normalized ?? null
+      this.deps.store.upsertDeal(jobId, {
+        key: deal.key,
+        phones: deal.phones,
+        valid_count: validCount,
+        invalid_count: invalidCount,
+        primary_valid_phone: primaryValid,
+      })
+
+      // Mirror the new outcomes into pastaAgg so the resulting pasta_summary
+      // note reflects the retry pass.
+      const agg = pastaAgg.get(deal.key.pasta)
+      if (!agg) continue
+      const aggDeal = agg.deals.get(deal.key.deal_id)
+      if (!aggDeal) continue
+      for (const ph of deal.phones) {
+        const aggPhone = aggDeal.phones.find(
+          (p) => p.column === ph.column && p.phone_normalized === ph.normalized,
+        )
+        if (aggPhone) {
+          aggPhone.outcome = ph.outcome
+          aggPhone.strategy = classifyStrategy(ph.source)
+        }
+      }
+
+      // Recompute aggregate counts from current pastaAgg state — cheaper and
+      // exact than tracking deltas across contato_id merges.
+      let okPhones = 0
+      for (const d of agg.deals.values()) {
+        okPhones += d.phones.filter((p) => p.outcome === 'valid').length
+      }
+      agg.ok_phones = okPhones
+      let okDeals = 0
+      let archivedDeals = 0
+      for (const d of agg.deals.values()) {
+        const hasValid = d.phones.some((p) => p.outcome === 'valid')
+        if (hasValid) okDeals++
+        else if (d.phones.length > 0) archivedDeals++
+      }
+      agg.ok_deals = okDeals
+      agg.archived_deals = archivedDeals
+    }
+
+    this.deps.logger.info('end-of-scan retry pass complete', {
+      jobId, resolved: resolvedCount, remaining_error: errorPhoneCount - resolvedCount,
+    })
   }
 
   /**

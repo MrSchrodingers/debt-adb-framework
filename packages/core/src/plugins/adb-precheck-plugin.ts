@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import { createHmac } from 'node:crypto'
+import { join } from 'node:path'
 import { z } from 'zod'
 import type { ContactRegistry } from '../contacts/contact-registry.js'
 import type { AdbShellAdapter } from '../monitor/types.js'
@@ -12,6 +13,9 @@ import {
   WahaCheckStrategy,
 } from '../check-strategies/index.js'
 import type { DispatchPlugin, PluginContext } from './types.js'
+import { PastaLockManager } from '../locks/index.js'
+import { ProbeSnapshotWriter } from '../snapshots/probe-snapshot-writer.js'
+import { listSnapshotFiles } from '../snapshots/list.js'
 import type { DispatchEventName } from '../events/index.js'
 import type { DispatchEmitter } from '../events/dispatch-emitter.js'
 import {
@@ -117,6 +121,9 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   private readonly pipedriveCompanyDomain: string | null
   private readonly pauseState: DispatchPauseState | undefined
   private readonly hygienizationOperator: string
+  private pastaLocks: PastaLockManager | null = null
+  private pastaLockReapTimer: NodeJS.Timeout | null = null
+  private snapshotWriter: ProbeSnapshotWriter
 
   constructor(
     opts: {
@@ -209,6 +216,12 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     }
     this.pipeboardBackend = backend
     this.store = new PrecheckJobStore(db)
+    const snapshotBaseDir = join(process.env.DATA_DIR ?? 'data', 'probe-snapshots')
+    this.snapshotWriter = new ProbeSnapshotWriter({
+      baseDir: snapshotBaseDir,
+      dailyQuota: 500,
+      perMinuteCap: 10,
+    })
     this.pipedriveCacheTtlDays = opts.pipedrive?.cacheTtlDays
     this.pipedriveCompanyDomain = opts.pipedrive?.companyDomain ?? null
     this.pauseState = opts.pauseState
@@ -236,7 +249,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     // mutex-less strategy so unit-test instantiations of the plugin keep
     // working without needing a fake context.
     const cacheStrategy = new CacheOnlyStrategy(this.registry)
-    const adbStrategy = new AdbProbeStrategy(this.adb)
+    const adbStrategy = new AdbProbeStrategy(this.adb, undefined, undefined, this.snapshotWriter)
     // L2 tiebreaker is active only when a WAHA client + session are provided.
     const wahaClient = opts.wahaClient
     const wahaStrategy = new WahaCheckStrategy(
@@ -260,7 +273,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     // scan races the SendEngine on the same physical screen and any
     // half-typed Oralsin message becomes a draft.
     if (ctx.deviceMutex) {
-      const adbStrategy = new AdbProbeStrategy(this.adb, undefined, ctx.deviceMutex)
+      const adbStrategy = new AdbProbeStrategy(this.adb, undefined, ctx.deviceMutex, this.snapshotWriter)
       this.validator = new ContactValidator(
         this.registry,
         adbStrategy,
@@ -269,6 +282,22 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       )
     }
     this.store.initialize()
+    // A8: pasta locks shared across scan + note-publish paths.
+    // SQLite-backed manager survives restart via the `pasta_locks` table.
+    this.pastaLocks = new PastaLockManager(this.db)
+    this.pastaLocks.initialize()
+    const reapedLocks = this.pastaLocks.releaseExpired()
+    if (reapedLocks > 0) {
+      ctx.logger.warn('reaped expired pasta locks on boot', { count: reapedLocks })
+    }
+    this.pastaLockReapTimer = setInterval(() => {
+      try {
+        this.pastaLocks?.releaseExpired()
+      } catch (e) {
+        ctx.logger.warn('pasta lock reap failed', { error: e instanceof Error ? e.message : String(e) })
+      }
+    }, 5 * 60_000)
+    this.pastaLockReapTimer.unref()
     // Boot-time watchdog: anything still flagged `running` in the job
     // table belongs to a previous process that died without finishing.
     // Mark them as failed so the UI / metrics don't carry phantom
@@ -286,6 +315,8 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
         ctx.logger,
         this.pipedriveActivityStore,
         this.pipedriveCompanyDomain,
+        undefined, // idempotencyWindowMs uses default
+        this.pastaLocks,
       )
       ctx.logger.info('Pipedrive integration enabled', {
         companyDomain: this.pipedriveCompanyDomain ?? '(unset — links disabled)',
@@ -346,6 +377,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       // logs a warning and runs without pausing global sends.
       pauseState: this.pauseState,
       hygienizationOperator: this.hygienizationOperator,
+      locks: this.pastaLocks ?? undefined,
     })
 
     ctx.registerRoute('GET',  '/health',     this.handleHealth.bind(this))
@@ -359,6 +391,10 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     ctx.registerRoute('GET',  '/deals',      this.handleListDeals.bind(this))
     ctx.registerRoute('GET',  '/deals/:pasta/:deal_id/:contato_tipo/:contato_id', this.handleGetDeal.bind(this))
     ctx.registerRoute('POST', '/probe',      this.handleProbePhone.bind(this))
+    ctx.registerRoute('POST', '/retry-errors', this.handleRetryErrors.bind(this))
+    ctx.registerRoute('GET',  '/notes/:pasta/history', this.handleNoteHistory.bind(this))
+    ctx.registerRoute('GET',  '/admin/locks',           this.handleListLocks.bind(this))
+    ctx.registerRoute('GET',  '/admin/probe-snapshots', this.handleListSnapshots.bind(this))
 
     // Plugin-scoped Pipedrive operator API. Routes mount under
     // /api/v1/plugins/adb-precheck/pipedrive/* (the loader prefixes the
@@ -377,6 +413,10 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   }
 
   async destroy(): Promise<void> {
+    if (this.pastaLockReapTimer) {
+      clearInterval(this.pastaLockReapTimer)
+      this.pastaLockReapTimer = null
+    }
     if (this.pipedrivePublisher) {
       try { await this.pipedrivePublisher.flush() }
       catch (e) {
@@ -701,7 +741,19 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     const job = this.store.getJob(id)
     const r = reply as { status: (c: number) => { send: (x: unknown) => unknown } }
     if (!job) return r.status(404).send({ error: 'Job not found' })
-    return (reply as { send: (x: unknown) => unknown }).send(job)
+
+    // Augment the response with retry stats, UI state distribution, and snapshot
+    // counts. These are computed on demand from the audit tables — no caching.
+    const retry_stats = this.store.getRetryStats(id)
+    const ui_state_distribution = this.store.getUiStateDistribution(id)
+    const snapshots_captured = this.store.getSnapshotsCaptured(id)
+
+    return (reply as { send: (x: unknown) => unknown }).send({
+      ...job,
+      retry_stats,
+      ui_state_distribution,
+      snapshots_captured,
+    })
   }
 
   private async handleCancelJob(req: unknown, reply: unknown): Promise<unknown> {
@@ -782,6 +834,46 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     }
   }
 
+  /**
+   * POST /retry-errors
+   *
+   * Manual sweep entrypoint (Level 3 / Task E1). Re-validates phones with
+   * outcome='error' from prior scan jobs. Returns 202 immediately with
+   * { job_id, deals_planned, status }; caller polls GET /scan/:id for progress.
+   * Optional body: { pasta, since_iso, max_deals, dry_run }.
+   */
+  private async handleRetryErrors(req: unknown, reply: unknown): Promise<unknown> {
+    const r = reply as { code: (n: number) => { send: (x: unknown) => unknown } }
+    const body = ((req as { body?: unknown }).body ?? {}) as {
+      pasta?: string
+      since_iso?: string
+      max_deals?: number
+      dry_run?: boolean
+    }
+    if (!this.scanner) {
+      return r.code(503).send({ error: 'scanner_not_ready' })
+    }
+    try {
+      const result = await this.scanner.runRetryErrorsJob({
+        pasta: body.pasta ?? null,
+        since_iso: body.since_iso,
+        max_deals: body.max_deals,
+        dry_run: body.dry_run,
+      })
+      return r.code(202).send(result)
+    } catch (e: unknown) {
+      if (e !== null && typeof e === 'object' && 'constructor' in e && (e as { constructor?: { name?: string } }).constructor?.name === 'ScanInProgressError') {
+        const err = e as { pasta?: string; current?: unknown }
+        return r.code(409).send({
+          error: 'scan_in_progress',
+          pasta: err.pasta,
+          current: err.current,
+        })
+      }
+      throw e
+    }
+  }
+
   private async handleGetDeal(req: unknown, reply: unknown): Promise<unknown> {
     const p = (req as { params: { pasta: string; deal_id: string; contato_tipo: string; contato_id: string } }).params
     const row = this.db
@@ -793,5 +885,47 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     const r = reply as { status: (c: number) => { send: (x: unknown) => unknown } }
     if (!row) return r.status(404).send({ error: 'Deal not scanned yet' })
     return (reply as { send: (x: unknown) => unknown }).send(row)
+  }
+
+  /**
+   * GET /notes/:pasta/history
+   *
+   * Returns the full chronological revision chain of pasta_summary notes for
+   * a given pasta, joined with the originating job's triggered_by so the
+   * caller can attribute each revision (manual scan, retry-errors-sweep, etc.).
+   *
+   * Returns 503 when the Pipedrive integration is not configured
+   * (PIPEDRIVE_API_TOKEN unset — activity store was never wired).
+   */
+  private async handleNoteHistory(req: unknown, reply: unknown): Promise<unknown> {
+    const { pasta } = (req as { params: { pasta: string } }).params
+    const r = reply as {
+      status: (c: number) => { send: (x: unknown) => unknown }
+      send: (x: unknown) => unknown
+    }
+    if (!this.pipedriveActivityStore) {
+      return r.status(503).send({ error: 'pipedrive_disabled' })
+    }
+    const revisions = this.pipedriveActivityStore.listPastaNoteRevisions(pasta)
+    const current = this.pipedriveActivityStore.findCurrentPastaNote(pasta)
+    return r.send({
+      pasta,
+      current_pipedrive_id: current?.pipedrive_response_id ?? null,
+      revisions,
+    })
+  }
+
+  private async handleListLocks(_req: unknown, reply: unknown): Promise<unknown> {
+    const r = reply as { send: (x: unknown) => unknown }
+    return r.send({ locks: this.pastaLocks?.listAll() ?? [] })
+  }
+
+  private async handleListSnapshots(req: unknown, reply: unknown): Promise<unknown> {
+    const q = ((req as { query?: Record<string, string | undefined> }).query ?? {})
+    const since = q.since
+    const state = q.state
+    const baseDir = join(process.env.DATA_DIR ?? 'data', 'probe-snapshots')
+    const snapshots = listSnapshotFiles(baseDir, { since, state })
+    return (reply as { send: (x: unknown) => unknown }).send({ snapshots })
   }
 }

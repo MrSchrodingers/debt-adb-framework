@@ -16,6 +16,13 @@ export interface ValidateOptions {
   profile_id?: number
   /** Include WAHA as tiebreaker for ambiguous DDDs (grill D8). Defaults to true. */
   useWahaTiebreaker?: boolean
+  /**
+   * Override the per-check attempt phase. When set, takes precedence over the
+   * `attempt_phase` in `result.evidence`. Used by Level 2 (scan_retry) and
+   * Level 3 (sweep_retry) retry passes to mark records they produce.
+   * Default: read from evidence; final fallback 'probe_initial'.
+   */
+  attempt_phase?: 'probe_initial' | 'probe_recover' | 'scan_retry' | 'sweep_retry'
 }
 
 export interface ValidateResult {
@@ -133,6 +140,10 @@ export class ContactValidator {
     opts: ValidateOptions,
     ddd: string,
   ): void {
+    const evidencePhase = (result.evidence as Record<string, unknown> | null | undefined)?.attempt_phase as
+      | 'probe_initial' | 'probe_recover' | 'scan_retry' | 'sweep_retry' | undefined
+    const phase = opts.attempt_phase ?? evidencePhase ?? 'probe_initial'
+
     this.registry.record(phoneNormalized, {
       phone_input: phoneInput,
       phone_variant_tried: result.variant_tried,
@@ -146,6 +157,7 @@ export class ContactValidator {
       latency_ms: result.latency_ms,
       ddd,
       wa_chat_id: result.wa_chat_id ?? null,
+      attempt_phase: phase,
     })
   }
 

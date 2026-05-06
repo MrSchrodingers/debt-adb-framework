@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node class="android.widget.FrameLayout" package="com.whatsapp">
+    <node text="Mensagens temporárias estão ativas neste chat." resource-id="android:id/message" class="android.widget.TextView" package="com.whatsapp" />
+    <node text="OK" resource-id="android:id/button1" class="android.widget.Button" package="com.whatsapp" />
+    <node text="Configurações" resource-id="android:id/button2" class="android.widget.Button" package="com.whatsapp" />
+  </node>
+</hierarchy>
