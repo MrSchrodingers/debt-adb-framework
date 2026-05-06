@@ -56,6 +56,27 @@ function build(
 }
 
 export function classifyUiState(input: ClassifierInput): ClassifierResult {
-  // Rules added incrementally in B3-B6.
-  return build('unknown', 'fallback_no_rule_matched', input.xml)
+  const { xml } = input
+
+  // Rule 1: chat_open — decisive 'exists'
+  if (
+    /resource-id="com\.whatsapp:id\/(entry|conversation_entry|text_entry)"/.test(xml) ||
+    (/class="android\.widget\.EditText"/.test(xml) && /com\.whatsapp/.test(xml))
+  ) {
+    return build('chat_open', 'whatsapp_input_field', xml)
+  }
+
+  // Rule 3: searching — transient (caller should poll again, NOT retry)
+  if (/Pesquisando|Searching|Procurando|Cargando|Loading/i.test(xml)) {
+    return build('searching', 'searching_text', xml)
+  }
+  if (/resource-id="com\.whatsapp:id\/progress_bar"/.test(xml)) {
+    return build('searching', 'whatsapp_progress_bar', xml)
+  }
+
+  // Rule 2 (invite_modal) is added in B4 between rules 1 and 3.
+  // Rules 4-7 (disappearing_msg_dialog, contact_picker, chat_list, unknown_dialog)
+  // come in B5 and B6 below the current branch.
+
+  return build('unknown', 'fallback_no_rule_matched', xml)
 }
