@@ -23,7 +23,7 @@ export interface LockState {
   acquiredAt: Date
   expiresAt: Date
   fenceToken: number
-  context: object | null
+  context: Record<string, unknown> | null
 }
 
 export interface LockHandle {
