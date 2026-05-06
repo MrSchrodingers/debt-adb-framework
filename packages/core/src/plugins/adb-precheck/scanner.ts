@@ -307,13 +307,13 @@ export class PrecheckScanner {
 
     // ── Per-pasta scan lock (D5) ────────────────────────────────────────
     //
-    // Acquire `scan:<pasta_filter>` (or `scan:all` for jobs without a pasta
+    // Acquire `scan:<pasta_prefix>` (or `scan:all` for jobs without a pasta
     // filter) so two concurrent jobs targeting the same pasta serialize
     // rather than race. The lock is released in the finally block below.
     //
     // When `this.deps.locks` is not injected (legacy / unit-test callers),
     // we skip the locking entirely to preserve backward compatibility.
-    const lockPasta = params.pasta_filter ?? 'all'
+    const lockPasta = params.pasta_prefix ?? 'all'
     const lockKey = `scan:${lockPasta}`
     const scanLock: LockHandle | null = this.deps.locks
       ? this.deps.locks.acquire(lockKey, 3_600_000 /* 1h TTL */, {
@@ -769,7 +769,7 @@ export class PrecheckScanner {
     const parentJobId = distinctParents.size === 1 ? [...distinctParents][0] : undefined
 
     const sweepJobParams = {
-      pasta_filter: params.pasta ?? undefined,
+      pasta_prefix: params.pasta ?? undefined,
       retry_errors: true,
       triggered_by: 'retry-errors-sweep',
       since_iso: since,

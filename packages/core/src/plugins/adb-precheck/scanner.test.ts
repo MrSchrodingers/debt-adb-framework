@@ -1056,7 +1056,7 @@ describe('PrecheckScanner — end-of-scan retry pass (Level 2 / Task D4)', () =>
 
 // ── Task D5: hold scan.<pasta> lock during scan + retry pass ──────────────
 //
-// The scanner acquires a per-pasta lock (key `scan:<pasta_filter>` or
+// The scanner acquires a per-pasta lock (key `scan:<pasta_prefix>` or
 // `scan:all` when no pasta filter) before the main loop and releases it in
 // `finally`. A pre-existing lock on the same key causes the scanner to throw
 // `ScanInProgressError` immediately (and mark the job `failed`).
@@ -1098,7 +1098,7 @@ describe('PrecheckScanner — scan.<pasta> lock (Task D5)', () => {
     )
 
     await expect(
-      scanner.runJob('job-d5-conflict', { pasta_filter: 'P-1' }),
+      scanner.runJob('job-d5-conflict', { pasta_prefix: 'P-1' }),
     ).rejects.toThrow(ScanInProgressError)
 
     // Job must be marked failed, not left in queued.
@@ -1108,7 +1108,7 @@ describe('PrecheckScanner — scan.<pasta> lock (Task D5)', () => {
     // The error carries the pasta and the current holder's metadata.
     let thrown: ScanInProgressError | null = null
     try {
-      await scanner.runJob('job-d5-conflict-2', { pasta_filter: 'P-1' })
+      await scanner.runJob('job-d5-conflict-2', { pasta_prefix: 'P-1' })
     } catch (e) {
       if (e instanceof ScanInProgressError) thrown = e
     }
@@ -1131,7 +1131,7 @@ describe('PrecheckScanner — scan.<pasta> lock (Task D5)', () => {
       locks,
     )
 
-    await scanner.runJob('job-d5-happy', { pasta_filter: 'P-2' })
+    await scanner.runJob('job-d5-happy', { pasta_prefix: 'P-2' })
 
     // Lock must be released after completion.
     expect(locks.describe('scan:P-2')).toBeNull()
@@ -1154,14 +1154,14 @@ describe('PrecheckScanner — scan.<pasta> lock (Task D5)', () => {
     pg.countPool.mockRejectedValueOnce(new Error('pg boom'))
 
     await expect(
-      scanner.runJob('job-d5-fail', { pasta_filter: 'P-3' }),
+      scanner.runJob('job-d5-fail', { pasta_prefix: 'P-3' }),
     ).rejects.toThrow('pg boom')
 
     // Lock must be released even when the job failed.
     expect(locks.describe('scan:P-3')).toBeNull()
   })
 
-  it('uses scan:all as lock key when no pasta_filter is set', async () => {
+  it('uses scan:all as lock key when no pasta_prefix is set', async () => {
     const db = new Database(':memory:')
     db.pragma('journal_mode = WAL')
     const locks = new PastaLockManager(db)
@@ -1176,7 +1176,7 @@ describe('PrecheckScanner — scan.<pasta> lock (Task D5)', () => {
 
     await scanner.runJob('job-d5-all', {})
 
-    // Lock must be released. Key is `scan:all` (no pasta_filter).
+    // Lock must be released. Key is `scan:all` (no pasta_prefix).
     expect(locks.describe('scan:all')).toBeNull()
   })
 
@@ -1188,7 +1188,7 @@ describe('PrecheckScanner — scan.<pasta> lock (Task D5)', () => {
       () => ({ exists_on_wa: 1, from_cache: false, phone_normalized: '5543991938235', source: 'adb', confidence: 0.9, attempts: [] }),
     )
 
-    await expect(scanner.runJob('job-d5-legacy', { pasta_filter: 'P-4' })).resolves.toBeUndefined()
+    await expect(scanner.runJob('job-d5-legacy', { pasta_prefix: 'P-4' })).resolves.toBeUndefined()
   })
 
   it('fence-token guard aborts retry pass when lock is released mid-retry', async () => {
@@ -1249,7 +1249,7 @@ describe('PrecheckScanner — scan.<pasta> lock (Task D5)', () => {
       return handle
     }
 
-    await scanner.runJob('job-d5-fence', { pasta_filter: 'P-5' })
+    await scanner.runJob('job-d5-fence', { pasta_prefix: 'P-5' })
 
     // The fence guard should have prevented the second retry iteration.
     // retryCallCount should be 1 (guard fired before second deal).
