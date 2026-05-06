@@ -46,3 +46,63 @@ describe('AdbProbeStrategy', () => {
     await expect(s.probe('5543; rm -rf /', { deviceSerial: 'poco-1' })).rejects.toThrow(/unsafe/)
   })
 })
+
+describe('AdbProbeStrategy.recover', () => {
+  it('force-stops com.whatsapp on chat_list', async () => {
+    const shells: string[] = []
+    const adb = {
+      shell: async (_s: string, cmd: string) => {
+        shells.push(cmd)
+        return ''
+      },
+    } as any
+    const strat = new AdbProbeStrategy(adb, async () => {})
+    await (strat as any).recover('chat_list', 'serial1')
+    expect(shells.some((c) => c.includes('am force-stop com.whatsapp'))).toBe(true)
+    expect(shells.some((c) => c.includes('input keyevent'))).toBe(false)
+  })
+
+  it('force-stops on contact_picker and unknown', async () => {
+    for (const state of ['contact_picker', 'unknown']) {
+      const shells: string[] = []
+      const adb = {
+        shell: async (_s: string, cmd: string) => {
+          shells.push(cmd)
+          return ''
+        },
+      } as any
+      const strat = new AdbProbeStrategy(adb, async () => {})
+      await (strat as any).recover(state, 'serial1')
+      expect(shells.some((c) => c.includes('am force-stop com.whatsapp'))).toBe(true)
+    }
+  })
+
+  it('sends BACK keyevent twice on disappearing_msg_dialog', async () => {
+    const shells: string[] = []
+    const adb = {
+      shell: async (_s: string, cmd: string) => {
+        shells.push(cmd)
+        return ''
+      },
+    } as any
+    const strat = new AdbProbeStrategy(adb, async () => {})
+    await (strat as any).recover('disappearing_msg_dialog', 'serial1')
+    const backCalls = shells.filter((c) => c.includes('input keyevent 4'))
+    expect(backCalls.length).toBe(2)
+    expect(shells.some((c) => c.includes('force-stop'))).toBe(false)
+  })
+
+  it('sends BACK keyevent twice on unknown_dialog', async () => {
+    const shells: string[] = []
+    const adb = {
+      shell: async (_s: string, cmd: string) => {
+        shells.push(cmd)
+        return ''
+      },
+    } as any
+    const strat = new AdbProbeStrategy(adb, async () => {})
+    await (strat as any).recover('unknown_dialog', 'serial1')
+    const backCalls = shells.filter((c) => c.includes('input keyevent 4'))
+    expect(backCalls.length).toBe(2)
+  })
+})

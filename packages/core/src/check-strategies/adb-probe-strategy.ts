@@ -230,4 +230,30 @@ export class AdbProbeStrategy implements CheckStrategy {
       release()
     }
   }
+
+  /**
+   * Recovery action for retryable UI states (Phase C — Level 1 retry).
+   * Called between two `probe` attempts to bring WhatsApp back to a known
+   * state before the second `am start wa.me/...` intent.
+   *
+   * - `disappearing_msg_dialog` and `unknown_dialog` are dismissable modals,
+   *   so two BACK keyevents typically clear them with minimal disruption.
+   * - All other retryable states (chat_list, contact_picker, unknown) require
+   *   the heavier hammer of `am force-stop com.whatsapp`, which guarantees a
+   *   cold start on the next intent.
+   *
+   * The wrapper that decides WHEN to call `recover` is added in C3.
+   */
+  private async recover(state: UiState, deviceSerial: string): Promise<void> {
+    if (state === 'disappearing_msg_dialog' || state === 'unknown_dialog') {
+      await this.adb.shell(deviceSerial, 'input keyevent 4')
+      await this.delay(250)
+      await this.adb.shell(deviceSerial, 'input keyevent 4')
+      await this.delay(500)
+      return
+    }
+    // chat_list, contact_picker, unknown — force-stop is the safe hammer.
+    await this.adb.shell(deviceSerial, 'am force-stop com.whatsapp')
+    await this.delay(1500)
+  }
 }
