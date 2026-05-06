@@ -128,3 +128,95 @@ describe('ContactValidator', () => {
     expect(history[0].triggered_by).toBe('hygiene_job:b2')
   })
 })
+
+describe('ContactValidator — attempt_phase forwarding', () => {
+  it('forwards probe_recover from probe evidence into recordCheck', async () => {
+    const recorded: any[] = []
+    const registry = {
+      record: (_phone: string, input: any) => { recorded.push(input); return { contact: {}, checkId: 'x' } as any },
+    } as any
+    const adbStrategy = {
+      probe: async () => ({
+        source: 'adb_probe',
+        result: 'inconclusive',
+        confidence: null,
+        evidence: { ui_state: 'unknown', attempt_phase: 'probe_recover' },
+        latency_ms: 100,
+        variant_tried: '5511999999999',
+      }),
+    } as any
+    const wahaStrategy = { available: () => false, probe: async () => ({ result: 'error' }) } as any
+    const cacheStrategy = {
+      probe: async () => ({
+        source: 'cache',
+        result: 'inconclusive',
+        confidence: null,
+        evidence: null,
+        latency_ms: 1,
+        variant_tried: '5511999999999',
+      }),
+    } as any
+
+    const v = new ContactValidator(registry, adbStrategy, wahaStrategy, cacheStrategy)
+    await v.validate('5511999999999', { triggered_by: 'pre_check' })
+
+    // Find the recorded probe attempt (skip cache attempt which doesn't go through recordCheck for inconclusive).
+    const probeRecord = recorded.find((r) => r.source === 'adb_probe')
+    expect(probeRecord).toBeDefined()
+    expect(probeRecord!.attempt_phase).toBe('probe_recover')
+  })
+
+  it('uses opts.attempt_phase when supplied (overrides evidence)', async () => {
+    const recorded: any[] = []
+    const registry = {
+      record: (_phone: string, input: any) => { recorded.push(input); return { contact: {}, checkId: 'x' } as any },
+    } as any
+    const adbStrategy = {
+      probe: async () => ({
+        source: 'adb_probe',
+        result: 'inconclusive',
+        confidence: null,
+        evidence: { ui_state: 'chat_list', attempt_phase: 'probe_recover' },
+        latency_ms: 100,
+        variant_tried: '5511999999999',
+      }),
+    } as any
+    const wahaStrategy = { available: () => false, probe: async () => ({ result: 'error' }) } as any
+    const cacheStrategy = {
+      probe: async () => ({ source: 'cache', result: 'inconclusive', confidence: null, evidence: null, latency_ms: 1, variant_tried: '5511999999999' }),
+    } as any
+
+    const v = new ContactValidator(registry, adbStrategy, wahaStrategy, cacheStrategy)
+    await v.validate('5511999999999', { triggered_by: 'pre_check', attempt_phase: 'scan_retry' })
+
+    const probeRecord = recorded.find((r) => r.source === 'adb_probe')
+    expect(probeRecord!.attempt_phase).toBe('scan_retry')
+  })
+
+  it('defaults to probe_initial when neither opts nor evidence provides one', async () => {
+    const recorded: any[] = []
+    const registry = {
+      record: (_phone: string, input: any) => { recorded.push(input); return { contact: {}, checkId: 'x' } as any },
+    } as any
+    const adbStrategy = {
+      probe: async () => ({
+        source: 'adb_probe',
+        result: 'exists',
+        confidence: 0.95,
+        evidence: { ui_state: 'chat_open' /* no attempt_phase here */ },
+        latency_ms: 100,
+        variant_tried: '5511999999999',
+      }),
+    } as any
+    const wahaStrategy = { available: () => false, probe: async () => ({ result: 'error' }) } as any
+    const cacheStrategy = {
+      probe: async () => ({ source: 'cache', result: 'inconclusive', confidence: null, evidence: null, latency_ms: 1, variant_tried: '5511999999999' }),
+    } as any
+
+    const v = new ContactValidator(registry, adbStrategy, wahaStrategy, cacheStrategy)
+    await v.validate('5511999999999', { triggered_by: 'pre_check' })
+
+    const probeRecord = recorded.find((r) => r.source === 'adb_probe')
+    expect(probeRecord!.attempt_phase).toBe('probe_initial')
+  })
+})
