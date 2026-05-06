@@ -657,18 +657,13 @@ export class PrecheckScanner {
         }
       }
 
-      store.finishJob(jobId, 'completed')
-      logger.info('precheck scan completed', {
-        jobId,
-        processedCount,
-        budget: processingBudget,
-      })
-
       // D4/D5: end-of-scan retry pass — re-validate phones that ended up 'error'.
-      // Runs after finishJob so the job row is already 'completed'; mutates
-      // pastaAgg in-place so the pasta_summary note reflects retried outcomes.
-      // The scanLock is passed so retryErrorsPass can abort early when the
-      // lock is no longer valid (fence-token guard).
+      // Runs BEFORE finishJob so the job is still 'running' during the retry
+      // window; a polling client would otherwise see 'completed' while work is
+      // still in progress. Mutates pastaAgg in-place so the pasta_summary note
+      // below reflects retried outcomes. The scanLock is passed so
+      // retryErrorsPass can abort early when the lock is no longer valid
+      // (fence-token guard).
       if (params.retry_errors !== false) {
         await this.retryErrorsPass(jobId, params, pastaAgg, scanLock)
       }
@@ -676,6 +671,8 @@ export class PrecheckScanner {
       // Pipedrive Scenario C: emit one Note per pasta touched, on the lowest
       // deal_id of the pasta. Skips empty pastas (defensive — shouldn't happen
       // since we only insert into pastaAgg from inside the iteration).
+      // Runs BEFORE finishJob so the note content reflects any retry-pass
+      // mutations to pastaAgg.
       if (pipedrive) {
         const finishedAt = new Date().toISOString()
         for (const agg of pastaAgg.values()) {
@@ -703,6 +700,15 @@ export class PrecheckScanner {
           })
         }
       }
+
+      // Mark the job completed AFTER the retry pass and notes emit, so polling
+      // clients never observe 'completed' while work is still in progress.
+      store.finishJob(jobId, 'completed')
+      logger.info('precheck scan completed', {
+        jobId,
+        processedCount,
+        budget: processingBudget,
+      })
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       store.finishJob(jobId, 'failed', msg)

@@ -343,7 +343,10 @@ export class PrecheckJobStore {
         SELECT pasta, deal_id, contato_tipo, contato_id, phones_json
         FROM adb_precheck_deals
         WHERE last_job_id = ?
-          AND phones_json LIKE '%"outcome":"error"%'
+          AND EXISTS (
+            SELECT 1 FROM json_each(phones_json)
+            WHERE json_extract(value, '$.outcome') = 'error'
+          )
       `)
       .all(jobId) as Array<{
         pasta: string; deal_id: number; contato_tipo: string; contato_id: number; phones_json: string
@@ -410,7 +413,10 @@ export class PrecheckJobStore {
         SELECT pasta, deal_id, contato_tipo, contato_id, phones_json, last_job_id
         FROM adb_precheck_deals
         WHERE scanned_at >= ?
-          AND phones_json LIKE '%"outcome":"error"%'
+          AND EXISTS (
+            SELECT 1 FROM json_each(phones_json)
+            WHERE json_extract(value, '$.outcome') = 'error'
+          )
           AND (? IS NULL OR pasta = ?)
         ORDER BY scanned_at DESC
         LIMIT ?
@@ -482,22 +488,31 @@ export class PrecheckJobStore {
       }
     }
 
-    const level_1 = (this.db
-      .prepare(`
-        SELECT COUNT(*) AS n FROM wa_contact_checks
-        WHERE attempt_phase = 'probe_recover' AND result IN ('exists','not_exists')
-          AND checked_at >= COALESCE((SELECT created_at FROM adb_precheck_jobs WHERE id = ?), '1970-01-01')
-          AND checked_at <= COALESCE((SELECT finished_at FROM adb_precheck_jobs WHERE id = ?), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-      `)
-      .get(jobId, jobId) as { n: number }).n
-    const level_2 = (this.db
-      .prepare(`
-        SELECT COUNT(*) AS n FROM wa_contact_checks
-        WHERE attempt_phase = 'scan_retry' AND result IN ('exists','not_exists')
-          AND checked_at >= COALESCE((SELECT created_at FROM adb_precheck_jobs WHERE id = ?), '1970-01-01')
-          AND checked_at <= COALESCE((SELECT finished_at FROM adb_precheck_jobs WHERE id = ?), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-      `)
-      .get(jobId, jobId) as { n: number }).n
+    // wa_contact_checks is owned by ContactRegistry — defensively handle the
+    // case where the table hasn't been initialized yet (e.g. fresh boot, no
+    // contacts module loaded in tests).
+    let level_1 = 0
+    let level_2 = 0
+    try {
+      level_1 = (this.db
+        .prepare(`
+          SELECT COUNT(*) AS n FROM wa_contact_checks
+          WHERE attempt_phase = 'probe_recover' AND result IN ('exists','not_exists')
+            AND checked_at >= COALESCE((SELECT created_at FROM adb_precheck_jobs WHERE id = ?), '1970-01-01')
+            AND checked_at <= COALESCE((SELECT finished_at FROM adb_precheck_jobs WHERE id = ?), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        `)
+        .get(jobId, jobId) as { n: number }).n
+      level_2 = (this.db
+        .prepare(`
+          SELECT COUNT(*) AS n FROM wa_contact_checks
+          WHERE attempt_phase = 'scan_retry' AND result IN ('exists','not_exists')
+            AND checked_at >= COALESCE((SELECT created_at FROM adb_precheck_jobs WHERE id = ?), '1970-01-01')
+            AND checked_at <= COALESCE((SELECT finished_at FROM adb_precheck_jobs WHERE id = ?), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        `)
+        .get(jobId, jobId) as { n: number }).n
+    } catch {
+      // wa_contact_checks not initialized — return zeros.
+    }
 
     return { level_1_resolves: level_1, level_2_resolves: level_2, remaining_errors }
   }
@@ -508,19 +523,25 @@ export class PrecheckJobStore {
    * carries a `ui_state` field, scoped to the job's time window.
    */
   getUiStateDistribution(jobId: string): Record<string, number> {
-    const rows = this.db
-      .prepare(`
-        SELECT json_extract(evidence,'$.ui_state') AS state, COUNT(*) AS n
-        FROM wa_contact_checks
-        WHERE source = 'adb_probe'
-          AND json_extract(evidence,'$.ui_state') IS NOT NULL
-          AND checked_at >= COALESCE((SELECT created_at FROM adb_precheck_jobs WHERE id = ?), '1970-01-01')
-          AND checked_at <= COALESCE((SELECT finished_at FROM adb_precheck_jobs WHERE id = ?), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-        GROUP BY state
-      `)
-      .all(jobId, jobId) as Array<{ state: string; n: number }>
     const out: Record<string, number> = {}
-    for (const r of rows) out[r.state] = r.n
+    // wa_contact_checks is owned by ContactRegistry — guard against fresh
+    // deployments where the table hasn't been initialized yet.
+    try {
+      const rows = this.db
+        .prepare(`
+          SELECT json_extract(evidence,'$.ui_state') AS state, COUNT(*) AS n
+          FROM wa_contact_checks
+          WHERE source = 'adb_probe'
+            AND json_extract(evidence,'$.ui_state') IS NOT NULL
+            AND checked_at >= COALESCE((SELECT created_at FROM adb_precheck_jobs WHERE id = ?), '1970-01-01')
+            AND checked_at <= COALESCE((SELECT finished_at FROM adb_precheck_jobs WHERE id = ?), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          GROUP BY state
+        `)
+        .all(jobId, jobId) as Array<{ state: string; n: number }>
+      for (const r of rows) out[r.state] = r.n
+    } catch {
+      // wa_contact_checks not initialized — return empty distribution.
+    }
     return out
   }
 
@@ -530,14 +551,21 @@ export class PrecheckJobStore {
    * actually wrote a file (quota-aware).
    */
   getSnapshotsCaptured(jobId: string): number {
-    return (this.db
-      .prepare(`
-        SELECT COUNT(*) AS n FROM wa_contact_checks
-        WHERE json_extract(evidence,'$.snapshot_path') IS NOT NULL
-          AND checked_at >= COALESCE((SELECT created_at FROM adb_precheck_jobs WHERE id = ?), '1970-01-01')
-          AND checked_at <= COALESCE((SELECT finished_at FROM adb_precheck_jobs WHERE id = ?), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-      `)
-      .get(jobId, jobId) as { n: number }).n
+    // wa_contact_checks is owned by ContactRegistry — guard against fresh
+    // deployments where the table hasn't been initialized yet.
+    try {
+      return (this.db
+        .prepare(`
+          SELECT COUNT(*) AS n FROM wa_contact_checks
+          WHERE json_extract(evidence,'$.snapshot_path') IS NOT NULL
+            AND checked_at >= COALESCE((SELECT created_at FROM adb_precheck_jobs WHERE id = ?), '1970-01-01')
+            AND checked_at <= COALESCE((SELECT finished_at FROM adb_precheck_jobs WHERE id = ?), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        `)
+        .get(jobId, jobId) as { n: number }).n
+    } catch {
+      // wa_contact_checks not initialized — return zero.
+      return 0
+    }
   }
 
   aggregateStats(): {

@@ -253,4 +253,73 @@ describe('PrecheckJobStore — retry stats', () => {
     expect(store.getSnapshotsCaptured('does-not-exist')).toBe(0)
     db.close()
   })
+
+  // C1 regression: wa_contact_checks absent (ContactRegistry never initialized)
+  it('getRetryStats returns zeros when wa_contact_checks does not exist', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PrecheckJobStore(db)
+    store.initialize()
+    // Note: NO ContactRegistry.initialize() here — wa_contact_checks is intentionally absent.
+    const job = store.createJob({} as any)
+    const stats = store.getRetryStats(job.id)
+    expect(stats).toEqual({ level_1_resolves: 0, level_2_resolves: 0, remaining_errors: 0 })
+    expect(store.getUiStateDistribution(job.id)).toEqual({})
+    expect(store.getSnapshotsCaptured(job.id)).toBe(0)
+    db.close()
+  })
+})
+
+// I4 regression: json_each filter must not false-positive on error text
+describe('PrecheckJobStore — listDealsWithErrors json_each filter', () => {
+  it('does NOT match phones whose error message contains the literal substring "outcome":"error"', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PrecheckJobStore(db)
+    store.initialize()
+    const job = store.createJob({} as any)
+    // Phone with outcome='valid' but error message containing the magic substring.
+    store.upsertDeal(job.id, {
+      key: { pasta: 'P-1', deal_id: 1, contato_tipo: 'X', contato_id: 1 },
+      phones: [
+        {
+          column: 'tel_1', raw: '5511', normalized: '5511',
+          outcome: 'valid', source: 'adb_probe', confidence: 0.95,
+          variant_tried: '5511',
+          error: 'previous attempt had "outcome":"error" but resolved on retry',
+        } as any,
+      ],
+      valid_count: 1, invalid_count: 0, primary_valid_phone: '5511',
+    })
+    const errorDeals = store.listDealsWithErrors(job.id)
+    expect(errorDeals.length).toBe(0)  // false positive must NOT trigger
+    db.close()
+  })
+
+  it('listDealsWithErrorsByFilter also uses json_each and avoids false positives', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PrecheckJobStore(db)
+    store.initialize()
+    const job = store.createJob({} as any)
+    store.upsertDeal(job.id, {
+      key: { pasta: 'P-2', deal_id: 2, contato_tipo: 'Y', contato_id: 2 },
+      phones: [
+        {
+          column: 'tel_1', raw: '5522', normalized: '5522',
+          outcome: 'invalid', source: 'adb_probe', confidence: 0.95,
+          variant_tried: '5522',
+          error: 'debug: previous "outcome":"error" was transient',
+        } as any,
+      ],
+      valid_count: 0, invalid_count: 1, primary_valid_phone: null,
+    })
+    const results = store.listDealsWithErrorsByFilter({
+      since_iso: '1970-01-01T00:00:00.000Z',
+      pasta: null,
+      limit: 100,
+    })
+    expect(results.length).toBe(0)  // false positive must NOT trigger
+    db.close()
+  })
 })
