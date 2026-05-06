@@ -263,6 +263,46 @@ export class PipedriveActivityStore {
   }
 
   /**
+   * Returns the chronological revision chain for a pasta_summary note —
+   * one row per dispatch attempt (POST or PUT). The first row is the
+   * initial creation; subsequent rows are PUT updates with revises_row_id
+   * pointing at the previous row's id.
+   *
+   * Joined with `adb_precheck_jobs` so the caller can attribute each
+   * revision to a triggered_by source (manual scan, retry-errors-sweep, etc.).
+   * The LEFT JOIN covers the case where the source job was deleted (returns
+   * `triggered_by: null` instead of dropping the row).
+   */
+  listPastaNoteRevisions(pasta: string): Array<{
+    row_id: string
+    verb: string
+    created_at: string
+    job_id: string | null
+    triggered_by: string | null
+    revises_row_id: string | null
+    status: string
+    pipedrive_response_id: number | null
+  }> {
+    return this.db
+      .prepare(`
+        SELECT
+          pa.id AS row_id,
+          pa.http_verb AS verb,
+          pa.created_at,
+          pa.job_id,
+          aj.triggered_by AS triggered_by,
+          pa.revises_row_id,
+          pa.pipedrive_response_status AS status,
+          pa.pipedrive_response_id
+        FROM pipedrive_activities pa
+        LEFT JOIN adb_precheck_jobs aj ON aj.id = pa.job_id
+        WHERE pa.scenario = 'pasta_summary' AND pa.pasta = ?
+        ORDER BY pa.created_at ASC, pa.id ASC
+      `)
+      .all(pasta) as any[]
+  }
+
+  /**
    * Mark a row as orphaned — its Pipedrive entity was deleted upstream. The
    * publisher uses this when a PUT returns 404, so subsequent
    * `findCurrentPastaNote` calls skip it and the next publish creates a fresh

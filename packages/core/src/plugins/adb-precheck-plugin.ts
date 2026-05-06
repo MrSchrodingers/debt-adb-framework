@@ -391,6 +391,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     ctx.registerRoute('GET',  '/deals/:pasta/:deal_id/:contato_tipo/:contato_id', this.handleGetDeal.bind(this))
     ctx.registerRoute('POST', '/probe',      this.handleProbePhone.bind(this))
     ctx.registerRoute('POST', '/retry-errors', this.handleRetryErrors.bind(this))
+    ctx.registerRoute('GET',  '/notes/:pasta/history', this.handleNoteHistory.bind(this))
 
     // Plugin-scoped Pipedrive operator API. Routes mount under
     // /api/v1/plugins/adb-precheck/pipedrive/* (the loader prefixes the
@@ -881,5 +882,33 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     const r = reply as { status: (c: number) => { send: (x: unknown) => unknown } }
     if (!row) return r.status(404).send({ error: 'Deal not scanned yet' })
     return (reply as { send: (x: unknown) => unknown }).send(row)
+  }
+
+  /**
+   * GET /notes/:pasta/history
+   *
+   * Returns the full chronological revision chain of pasta_summary notes for
+   * a given pasta, joined with the originating job's triggered_by so the
+   * caller can attribute each revision (manual scan, retry-errors-sweep, etc.).
+   *
+   * Returns 503 when the Pipedrive integration is not configured
+   * (PIPEDRIVE_API_TOKEN unset — activity store was never wired).
+   */
+  private async handleNoteHistory(req: unknown, reply: unknown): Promise<unknown> {
+    const { pasta } = (req as { params: { pasta: string } }).params
+    const r = reply as {
+      status: (c: number) => { send: (x: unknown) => unknown }
+      send: (x: unknown) => unknown
+    }
+    if (!this.pipedriveActivityStore) {
+      return r.status(503).send({ error: 'pipedrive_disabled' })
+    }
+    const revisions = this.pipedriveActivityStore.listPastaNoteRevisions(pasta)
+    const current = this.pipedriveActivityStore.findCurrentPastaNote(pasta)
+    return r.send({
+      pasta,
+      current_pipedrive_id: current?.pipedrive_response_id ?? null,
+      revisions,
+    })
   }
 }
