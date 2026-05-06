@@ -115,7 +115,17 @@ interface ActiveLock {
   fenceToken: number
   acquiredAt: string
   expiresAt: string
-  context?: string
+  context?: Record<string, unknown> | null
+}
+
+function fmtLockContext(ctx: ActiveLock['context']): string | null {
+  if (!ctx || typeof ctx !== 'object') return null
+  const jobId = typeof ctx.job_id === 'string' ? ctx.job_id : null
+  const pasta = typeof ctx.pasta === 'string' ? ctx.pasta : null
+  const parts: string[] = []
+  if (pasta && pasta !== 'all') parts.push(`pasta=${pasta}`)
+  if (jobId) parts.push(`job=${jobId.slice(0, 8)}`)
+  return parts.length > 0 ? parts.join(' · ') : null
 }
 
 interface DealRow {
@@ -474,9 +484,12 @@ function LocksPanel() {
               <div key={lock.key} className="flex items-center gap-3 text-xs font-mono">
                 <span className={`shrink-0 ${toneClasses[tone]}`}>■</span>
                 <span className="text-zinc-300 min-w-0 flex-1 truncate">{lock.key}</span>
-                {lock.context ? (
-                  <span className="text-zinc-500 shrink-0 truncate max-w-[120px]">{lock.context}</span>
-                ) : null}
+                {(() => {
+                  const ctxLabel = fmtLockContext(lock.context)
+                  return ctxLabel ? (
+                    <span className="text-zinc-500 shrink-0 truncate max-w-[180px]">{ctxLabel}</span>
+                  ) : null
+                })()}
                 <span className="text-zinc-600 shrink-0">{fmtRemaining(lock.expiresAt)}</span>
               </div>
             )
