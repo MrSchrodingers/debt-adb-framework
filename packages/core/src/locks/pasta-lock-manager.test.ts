@@ -58,3 +58,49 @@ describe('PastaLockManager — acquire', () => {
     expect(JSON.parse(row.context_json)).toEqual({ job_id: 'abc', pasta: 'P-1' })
   })
 })
+
+describe('PastaLockManager — release & fence', () => {
+  let db: Database.Database
+  let mgr: PastaLockManager
+  beforeEach(() => {
+    db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    mgr = new PastaLockManager(db)
+    mgr.initialize()
+  })
+
+  afterEach(() => db.close())
+
+  it('release frees the key', () => {
+    const a = mgr.acquire('scan:foo', 60_000)!
+    a.release()
+    const b = mgr.acquire('scan:foo', 60_000)
+    expect(b).not.toBeNull()
+  })
+
+  it('release of stale holder is a no-op', () => {
+    const a = mgr.acquire('scan:foo', 60_000)!
+    db.prepare("UPDATE pasta_locks SET expires_at = '2000-01-01T00:00:00Z' WHERE lock_key = 'scan:foo'").run()
+    const b = mgr.acquire('scan:foo', 60_000)!
+    expect(b.fenceToken).toBe(2)
+    a.release()
+    expect(b.isStillValid()).toBe(true)
+  })
+
+  it('isStillValid returns false after takeover', () => {
+    const a = mgr.acquire('scan:foo', 60_000)!
+    db.prepare("UPDATE pasta_locks SET expires_at = '2000-01-01T00:00:00Z' WHERE lock_key = 'scan:foo'").run()
+    mgr.acquire('scan:foo', 60_000)
+    expect(a.isStillValid()).toBe(false)
+  })
+
+  it('fence token monotonic across releases', () => {
+    const a = mgr.acquire('scan:foo', 60_000)!
+    a.release()
+    const b = mgr.acquire('scan:foo', 60_000)!
+    expect(b.fenceToken).toBe(2)
+    b.release()
+    const c = mgr.acquire('scan:foo', 60_000)!
+    expect(c.fenceToken).toBe(3)
+  })
+})
