@@ -48,3 +48,35 @@ describe('classifyUiState — searching', () => {
     expect(classifyUiState({ xml }).state).toBe('searching')
   })
 })
+
+describe('classifyUiState — invite_modal', () => {
+  it('pt-BR — "não está no WhatsApp" (real device fixture)', () => {
+    const r = classifyUiState({ xml: FIX('invite_modal_pt_br.xml') })
+    expect(r.state).toBe('invite_modal')
+    expect(r.decisive).toBe(true)
+    expect(r.retryable).toBe(false)
+    expect(r.evidence.matched_rule).toMatch(/not_on_whatsapp_pt|invite_button_localized/)
+  })
+
+  it('EN — "not on WhatsApp" (synthesized fixture)', () => {
+    const r = classifyUiState({ xml: FIX('invite_modal_en.xml') })
+    expect(r.state).toBe('invite_modal')
+  })
+
+  it('legacy invite_cta resource-id', () => {
+    const xml = `<hierarchy><node resource-id="com.whatsapp:id/invite_cta" /></hierarchy>`
+    const r = classifyUiState({ xml })
+    expect(r.state).toBe('invite_modal')
+    expect(r.evidence.matched_rule).toBe('whatsapp_invite_cta_id')
+  })
+
+  it('Spanish — "no está en WhatsApp"', () => {
+    const xml = `<hierarchy><node text="El número no está en WhatsApp" resource-id="android:id/message" /></hierarchy>`
+    expect(classifyUiState({ xml }).state).toBe('invite_modal')
+  })
+
+  it('localized invite button (Portuguese)', () => {
+    const xml = `<hierarchy><node text="Convidar para o WhatsApp" resource-id="android:id/button1" /></hierarchy>`
+    expect(classifyUiState({ xml }).state).toBe('invite_modal')
+  })
+})

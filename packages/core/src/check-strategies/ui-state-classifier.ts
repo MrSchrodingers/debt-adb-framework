@@ -66,6 +66,30 @@ export function classifyUiState(input: ClassifierInput): ClassifierResult {
     return build('chat_open', 'whatsapp_input_field', xml)
   }
 
+  // Rule 2: invite_modal — decisive 'not_exists'
+  // Priority order matters: this MUST run before searching, so a modal that
+  // just popped up while a "Pesquisando..." spinner is still visible elsewhere
+  // in the dump still classifies correctly.
+  if (/resource-id="com\.whatsapp:id\/invite_cta"/.test(xml)) {
+    return build('invite_modal', 'whatsapp_invite_cta_id', xml)
+  }
+  const notOnWaPt = /text="[^"]*não está no WhatsApp[^"]*"/i.exec(xml)
+  if (notOnWaPt) {
+    return build('invite_modal', 'not_on_whatsapp_pt', xml, { matchedText: notOnWaPt[0].slice(0, 200) })
+  }
+  const notOnWaEn = /text="[^"]*not on WhatsApp[^"]*"/i.exec(xml)
+  if (notOnWaEn) {
+    return build('invite_modal', 'not_on_whatsapp_en', xml, { matchedText: notOnWaEn[0].slice(0, 200) })
+  }
+  const notOnWaEs = /text="[^"]*no está en WhatsApp[^"]*"/i.exec(xml)
+  if (notOnWaEs) {
+    return build('invite_modal', 'not_on_whatsapp_es', xml, { matchedText: notOnWaEs[0].slice(0, 200) })
+  }
+  const inviteBtn = /text="(Convidar para o WhatsApp|Invite to WhatsApp|Invitar a WhatsApp)"/i.exec(xml)
+  if (inviteBtn) {
+    return build('invite_modal', 'invite_button_localized', xml, { matchedText: inviteBtn[0] })
+  }
+
   // Rule 3: searching — transient (caller should poll again, NOT retry)
   if (/Pesquisando|Searching|Procurando|Cargando|Loading/i.test(xml)) {
     return build('searching', 'searching_text', xml)
@@ -74,7 +98,6 @@ export function classifyUiState(input: ClassifierInput): ClassifierResult {
     return build('searching', 'whatsapp_progress_bar', xml)
   }
 
-  // Rule 2 (invite_modal) is added in B4 between rules 1 and 3.
   // Rules 4-7 (disappearing_msg_dialog, contact_picker, chat_list, unknown_dialog)
   // come in B5 and B6 below the current branch.
 
