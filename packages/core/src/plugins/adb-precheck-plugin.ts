@@ -15,6 +15,7 @@ import {
 import type { DispatchPlugin, PluginContext } from './types.js'
 import { PastaLockManager } from '../locks/index.js'
 import { ProbeSnapshotWriter } from '../snapshots/probe-snapshot-writer.js'
+import { listSnapshotFiles } from '../snapshots/list.js'
 import type { DispatchEventName } from '../events/index.js'
 import type { DispatchEmitter } from '../events/dispatch-emitter.js'
 import {
@@ -392,6 +393,8 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     ctx.registerRoute('POST', '/probe',      this.handleProbePhone.bind(this))
     ctx.registerRoute('POST', '/retry-errors', this.handleRetryErrors.bind(this))
     ctx.registerRoute('GET',  '/notes/:pasta/history', this.handleNoteHistory.bind(this))
+    ctx.registerRoute('GET',  '/admin/locks',           this.handleListLocks.bind(this))
+    ctx.registerRoute('GET',  '/admin/probe-snapshots', this.handleListSnapshots.bind(this))
 
     // Plugin-scoped Pipedrive operator API. Routes mount under
     // /api/v1/plugins/adb-precheck/pipedrive/* (the loader prefixes the
@@ -910,5 +913,19 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       current_pipedrive_id: current?.pipedrive_response_id ?? null,
       revisions,
     })
+  }
+
+  private async handleListLocks(_req: unknown, reply: unknown): Promise<unknown> {
+    const r = reply as { send: (x: unknown) => unknown }
+    return r.send({ locks: this.pastaLocks?.listAll() ?? [] })
+  }
+
+  private async handleListSnapshots(req: unknown, reply: unknown): Promise<unknown> {
+    const q = ((req as { query?: Record<string, string | undefined> }).query ?? {})
+    const since = q.since
+    const state = q.state
+    const baseDir = join(process.env.DATA_DIR ?? 'data', 'probe-snapshots')
+    const snapshots = listSnapshotFiles(baseDir, { since, state })
+    return (reply as { send: (x: unknown) => unknown }).send({ snapshots })
   }
 }
