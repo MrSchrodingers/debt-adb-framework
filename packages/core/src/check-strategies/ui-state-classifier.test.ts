@@ -148,3 +148,53 @@ describe('classifyUiState — unknown branches', () => {
     expect(r.evidence.has_message_box).toBe(false)
   })
 })
+
+describe('classifyUiState — priority order', () => {
+  it('chat_open beats chat_list when both signals present', () => {
+    const xml = `<hierarchy>
+      <node resource-id="com.whatsapp:id/conversations_row_header" />
+      <node resource-id="com.whatsapp:id/conversations_row_header" />
+      <node resource-id="com.whatsapp:id/conversations_row_header" />
+      <node resource-id="com.whatsapp:id/entry" />
+    </hierarchy>`
+    expect(classifyUiState({ xml }).state).toBe('chat_open')
+  })
+
+  it('invite_modal beats unknown_dialog', () => {
+    const xml = `<hierarchy>
+      <node resource-id="android:id/message" text="Number not on WhatsApp" />
+      <node resource-id="android:id/button1" text="Invite to WhatsApp" />
+    </hierarchy>`
+    expect(classifyUiState({ xml }).state).toBe('invite_modal')
+  })
+
+  it('disappearing_msg_dialog beats chat_list', () => {
+    const xml = `<hierarchy>
+      <node resource-id="com.whatsapp:id/conversations_row_header" />
+      <node resource-id="com.whatsapp:id/conversations_row_header" />
+      <node resource-id="com.whatsapp:id/conversations_row_header" />
+      <node resource-id="android:id/message" text="Disappearing messages are on" />
+      <node resource-id="android:id/button1" />
+    </hierarchy>`
+    expect(classifyUiState({ xml }).state).toBe('disappearing_msg_dialog')
+  })
+
+  it('searching beats unknown_dialog when both present', () => {
+    const xml = `<hierarchy>
+      <node text="Pesquisando..." />
+      <node resource-id="android:id/button1" />
+    </hierarchy>`
+    expect(classifyUiState({ xml }).state).toBe('searching')
+  })
+
+  it('contact_picker via topActivity overrides chat_list xml hint', () => {
+    const xml = `<hierarchy>
+      <node resource-id="com.whatsapp:id/conversations_row_header" />
+      <node resource-id="com.whatsapp:id/conversations_row_header" />
+      <node resource-id="com.whatsapp:id/conversations_row_header" />
+    </hierarchy>`
+    expect(
+      classifyUiState({ xml, topActivity: 'com.whatsapp/.contact.ui.picker.ContactPicker' }).state,
+    ).toBe('contact_picker')
+  })
+})
