@@ -103,3 +103,53 @@ describe('PrecheckJobStore.reapOrphanedRunningJobs', () => {
     expect(row.last_error).toBe('orphaned by service restart')
   })
 })
+
+describe('PrecheckJobStore — triggered_by/parent migration', () => {
+  it('adds columns and indexes', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PrecheckJobStore(db)
+    store.initialize()
+    const cols = db
+      .prepare("PRAGMA table_info('adb_precheck_jobs')")
+      .all() as Array<{ name: string }>
+    expect(cols.find((c) => c.name === 'triggered_by')).toBeDefined()
+    expect(cols.find((c) => c.name === 'parent_job_id')).toBeDefined()
+    const idx = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='adb_precheck_jobs'")
+      .all() as Array<{ name: string }>
+    const names = idx.map((i) => i.name)
+    expect(names).toContain('idx_jobs_parent')
+    expect(names).toContain('idx_jobs_trigger')
+  })
+
+  it('createJob persists triggered_by and parent_job_id when supplied', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PrecheckJobStore(db)
+    store.initialize()
+    const parent = store.createJob({} as any, undefined)
+    const child = store.createJob({} as any, undefined, {
+      triggeredBy: 'retry-errors-sweep',
+      parentJobId: parent.id,
+    })
+    const row = db
+      .prepare('SELECT triggered_by, parent_job_id FROM adb_precheck_jobs WHERE id = ?')
+      .get(child.id) as { triggered_by: string; parent_job_id: string }
+    expect(row.triggered_by).toBe('retry-errors-sweep')
+    expect(row.parent_job_id).toBe(parent.id)
+  })
+
+  it('createJob defaults triggered_by to "manual" when omitted', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PrecheckJobStore(db)
+    store.initialize()
+    const job = store.createJob({} as any, undefined)
+    const row = db
+      .prepare('SELECT triggered_by, parent_job_id FROM adb_precheck_jobs WHERE id = ?')
+      .get(job.id) as { triggered_by: string; parent_job_id: string | null }
+    expect(row.triggered_by).toBe('manual')
+    expect(row.parent_job_id).toBeNull()
+  })
+})

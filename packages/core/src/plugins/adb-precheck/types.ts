@@ -94,6 +94,17 @@ export interface PrecheckJob {
    * 1 = enabled, 0 = disabled.
    */
   hygienization_mode: number
+  /**
+   * What triggered this job: 'manual' (operator-initiated via API),
+   * 'retry-errors-sweep' (automatic retry of error_phones), or any
+   * future automation label. Defaults to 'manual'.
+   */
+  triggered_by: string
+  /**
+   * ID of the job that spawned this one, when created automatically
+   * (e.g. by the retry-errors-sweep). NULL for operator-initiated jobs.
+   */
+  parent_job_id: string | null
 }
 
 /** Params for a new scan run. */

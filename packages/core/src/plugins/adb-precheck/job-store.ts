@@ -81,6 +81,23 @@ export class PrecheckJobStore {
         "ALTER TABLE adb_precheck_jobs ADD COLUMN hygienization_mode INTEGER NOT NULL DEFAULT 0",
       )
     }
+    // A6: triggered_by + parent_job_id (idempotent)
+    if (!cols.some((c) => c.name === 'triggered_by')) {
+      this.db.exec(
+        "ALTER TABLE adb_precheck_jobs ADD COLUMN triggered_by TEXT NOT NULL DEFAULT 'manual'",
+      )
+    }
+    if (!cols.some((c) => c.name === 'parent_job_id')) {
+      this.db.exec(
+        'ALTER TABLE adb_precheck_jobs ADD COLUMN parent_job_id TEXT REFERENCES adb_precheck_jobs(id)',
+      )
+    }
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_jobs_parent ON adb_precheck_jobs(parent_job_id)',
+    )
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_jobs_trigger ON adb_precheck_jobs(triggered_by, created_at DESC)',
+    )
   }
 
   /** Mark every job left in `running` state as failed. */
@@ -100,7 +117,12 @@ export class PrecheckJobStore {
   createJob(
     params: PrecheckScanParams,
     externalRef?: string,
-    opts?: { pipedriveEnabled?: boolean; hygienizationMode?: boolean },
+    opts?: {
+      pipedriveEnabled?: boolean
+      hygienizationMode?: boolean
+      triggeredBy?: string
+      parentJobId?: string
+    },
   ): PrecheckJob {
     if (externalRef) {
       const existing = this.db
@@ -112,10 +134,12 @@ export class PrecheckJobStore {
     const created_at = new Date().toISOString()
     const pipedriveEnabled = opts?.pipedriveEnabled === false ? 0 : 1
     const hygienizationMode = opts?.hygienizationMode === true ? 1 : 0
+    const triggeredBy = opts?.triggeredBy ?? 'manual'
+    const parentJobId = opts?.parentJobId ?? null
     this.db
       .prepare(
-        `INSERT INTO adb_precheck_jobs (id, external_ref, status, params_json, created_at, pipedrive_enabled, hygienization_mode)
-         VALUES (?, ?, 'queued', ?, ?, ?, ?)`,
+        `INSERT INTO adb_precheck_jobs (id, external_ref, status, params_json, created_at, pipedrive_enabled, hygienization_mode, triggered_by, parent_job_id)
+         VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -124,6 +148,8 @@ export class PrecheckJobStore {
         created_at,
         pipedriveEnabled,
         hygienizationMode,
+        triggeredBy,
+        parentJobId,
       )
     return this.getJob(id)!
   }
