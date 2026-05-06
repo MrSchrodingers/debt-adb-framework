@@ -454,6 +454,92 @@ export class PrecheckJobStore {
     }))
   }
 
+  /**
+   * Retry-pass save rate for a job. Counts wa_contact_checks rows with
+   * decisive results that came from probe_recover (Level 1) and scan_retry
+   * (Level 2) attempt phases. Sweep_retry rows from a sweep job land in the
+   * sweep job's stats, not the original — that's correct (sweep is its own
+   * job entity).
+   *
+   * `remaining_errors` counts phones still flagged 'error' in the deal cache
+   * for THIS job — these are candidates for the manual sweep entrypoint.
+   */
+  getRetryStats(jobId: string): {
+    level_1_resolves: number
+    level_2_resolves: number
+    remaining_errors: number
+  } {
+    const dealsRows = this.db
+      .prepare('SELECT phones_json FROM adb_precheck_deals WHERE last_job_id = ?')
+      .all(jobId) as Array<{ phones_json: string }>
+    let remaining_errors = 0
+    for (const r of dealsRows) {
+      try {
+        const phones = JSON.parse(r.phones_json) as Array<{ outcome: string }>
+        remaining_errors += phones.filter((p) => p.outcome === 'error').length
+      } catch {
+        // Malformed row — skip silently rather than crashing the stats query.
+      }
+    }
+
+    const level_1 = (this.db
+      .prepare(`
+        SELECT COUNT(*) AS n FROM wa_contact_checks
+        WHERE attempt_phase = 'probe_recover' AND result IN ('exists','not_exists')
+          AND checked_at >= COALESCE((SELECT created_at FROM adb_precheck_jobs WHERE id = ?), '1970-01-01')
+          AND checked_at <= COALESCE((SELECT finished_at FROM adb_precheck_jobs WHERE id = ?), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      `)
+      .get(jobId, jobId) as { n: number }).n
+    const level_2 = (this.db
+      .prepare(`
+        SELECT COUNT(*) AS n FROM wa_contact_checks
+        WHERE attempt_phase = 'scan_retry' AND result IN ('exists','not_exists')
+          AND checked_at >= COALESCE((SELECT created_at FROM adb_precheck_jobs WHERE id = ?), '1970-01-01')
+          AND checked_at <= COALESCE((SELECT finished_at FROM adb_precheck_jobs WHERE id = ?), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      `)
+      .get(jobId, jobId) as { n: number }).n
+
+    return { level_1_resolves: level_1, level_2_resolves: level_2, remaining_errors }
+  }
+
+  /**
+   * Distribution of UI states observed during the job's probe activity.
+   * Counts wa_contact_checks rows from `adb_probe` source whose evidence
+   * carries a `ui_state` field, scoped to the job's time window.
+   */
+  getUiStateDistribution(jobId: string): Record<string, number> {
+    const rows = this.db
+      .prepare(`
+        SELECT json_extract(evidence,'$.ui_state') AS state, COUNT(*) AS n
+        FROM wa_contact_checks
+        WHERE source = 'adb_probe'
+          AND json_extract(evidence,'$.ui_state') IS NOT NULL
+          AND checked_at >= COALESCE((SELECT created_at FROM adb_precheck_jobs WHERE id = ?), '1970-01-01')
+          AND checked_at <= COALESCE((SELECT finished_at FROM adb_precheck_jobs WHERE id = ?), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        GROUP BY state
+      `)
+      .all(jobId, jobId) as Array<{ state: string; n: number }>
+    const out: Record<string, number> = {}
+    for (const r of rows) out[r.state] = r.n
+    return out
+  }
+
+  /**
+   * Number of probe snapshots persisted to disk during this job. Reads
+   * `evidence.snapshot_path` IS NOT NULL — present only when the writer
+   * actually wrote a file (quota-aware).
+   */
+  getSnapshotsCaptured(jobId: string): number {
+    return (this.db
+      .prepare(`
+        SELECT COUNT(*) AS n FROM wa_contact_checks
+        WHERE json_extract(evidence,'$.snapshot_path') IS NOT NULL
+          AND checked_at >= COALESCE((SELECT created_at FROM adb_precheck_jobs WHERE id = ?), '1970-01-01')
+          AND checked_at <= COALESCE((SELECT finished_at FROM adb_precheck_jobs WHERE id = ?), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      `)
+      .get(jobId, jobId) as { n: number }).n
+  }
+
   aggregateStats(): {
     deals_scanned: number
     deals_with_valid: number

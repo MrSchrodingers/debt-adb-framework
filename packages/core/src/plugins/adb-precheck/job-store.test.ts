@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { createRequire } from 'node:module'
 import { PrecheckJobStore } from './job-store.js'
+import { ContactRegistry } from '../../contacts/contact-registry.js'
 
 const require = createRequire(import.meta.url)
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -151,5 +152,105 @@ describe('PrecheckJobStore — triggered_by/parent migration', () => {
       .get(job.id) as { triggered_by: string; parent_job_id: string | null }
     expect(row.triggered_by).toBe('manual')
     expect(row.parent_job_id).toBeNull()
+  })
+})
+
+describe('PrecheckJobStore — retry stats', () => {
+  function setup() {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PrecheckJobStore(db)
+    store.initialize()
+    // wa_contact_checks table is owned by ContactRegistry.
+    const registry = new ContactRegistry(db)
+    registry.initialize()
+    return { db, store, registry }
+  }
+
+  it('getRetryStats counts probe_recover + scan_retry decisive resolutions', () => {
+    const { db, store } = setup()
+    const job = store.createJob({} as any)
+    db.prepare("UPDATE adb_precheck_jobs SET created_at = '2026-01-01T00:00:00.000Z' WHERE id = ?").run(job.id)
+    // Insert a deal with one error phone for remaining_errors.
+    store.upsertDeal(job.id, {
+      key: { pasta: 'P-1', deal_id: 1, contato_tipo: 'X', contato_id: 1 },
+      phones: [
+        { column: 'tel_1', raw: '5511', normalized: '5511', outcome: 'error', source: 'adb_probe', confidence: null, variant_tried: '5511', error: null } as any,
+        { column: 'tel_2', raw: '5512', normalized: '5512', outcome: 'invalid', source: 'adb_probe', confidence: 0.95, variant_tried: '5512', error: null } as any,
+      ],
+      valid_count: 0,
+      invalid_count: 1,
+      primary_valid_phone: null,
+    })
+    // Insert wa_contact_checks rows:
+    //   'a' probe_recover decisive      → counts as level_1
+    //   'b' scan_retry decisive         → counts as level_2
+    //   'c' sweep_retry decisive        → NOT counted (sweep-job stat)
+    //   'd' probe_initial decisive      → NOT counted
+    db.prepare(`
+      INSERT INTO wa_contact_checks
+        (id, phone_normalized, phone_variant_tried, source, result, confidence,
+         evidence, device_serial, waha_session, triggered_by, latency_ms,
+         attempt_phase, checked_at)
+      VALUES
+        ('a','5511','5511','adb_probe','exists',0.95,NULL,NULL,NULL,'pre_check',1000,'probe_recover','2026-01-01T00:00:01Z'),
+        ('b','5512','5512','adb_probe','not_exists',0.95,NULL,NULL,NULL,'pre_check',1000,'scan_retry','2026-01-01T00:00:02Z'),
+        ('c','5513','5513','adb_probe','exists',0.95,NULL,NULL,NULL,'pre_check',1000,'sweep_retry','2026-01-01T00:00:03Z'),
+        ('d','5514','5514','adb_probe','exists',0.95,NULL,NULL,NULL,'pre_check',1000,'probe_initial','2026-01-01T00:00:04Z')
+    `).run()
+
+    const stats = store.getRetryStats(job.id)
+    expect(stats.level_1_resolves).toBe(1)
+    expect(stats.level_2_resolves).toBe(1)
+    expect(stats.remaining_errors).toBe(1)
+    db.close()
+  })
+
+  it('getUiStateDistribution groups by ui_state from evidence', () => {
+    const { db, store } = setup()
+    const job = store.createJob({} as any)
+    db.prepare("UPDATE adb_precheck_jobs SET created_at = '2026-01-01T00:00:00.000Z' WHERE id = ?").run(job.id)
+    db.prepare(`
+      INSERT INTO wa_contact_checks
+        (id, phone_normalized, phone_variant_tried, source, result, confidence,
+         evidence, device_serial, waha_session, triggered_by, latency_ms,
+         attempt_phase, checked_at)
+      VALUES
+        ('a','5511','5511','adb_probe','exists',0.95,'{"ui_state":"chat_open"}',NULL,NULL,'pre_check',1000,'probe_initial','2026-01-01T00:00:01Z'),
+        ('b','5512','5512','adb_probe','exists',0.95,'{"ui_state":"chat_open"}',NULL,NULL,'pre_check',1000,'probe_initial','2026-01-01T00:00:02Z'),
+        ('c','5513','5513','adb_probe','not_exists',0.95,'{"ui_state":"invite_modal"}',NULL,NULL,'pre_check',1000,'probe_initial','2026-01-01T00:00:03Z')
+    `).run()
+
+    const dist = store.getUiStateDistribution(job.id)
+    expect(dist['chat_open']).toBe(2)
+    expect(dist['invite_modal']).toBe(1)
+    db.close()
+  })
+
+  it('getSnapshotsCaptured counts evidence rows with snapshot_path', () => {
+    const { db, store } = setup()
+    const job = store.createJob({} as any)
+    db.prepare("UPDATE adb_precheck_jobs SET created_at = '2026-01-01T00:00:00.000Z' WHERE id = ?").run(job.id)
+    db.prepare(`
+      INSERT INTO wa_contact_checks
+        (id, phone_normalized, phone_variant_tried, source, result, confidence,
+         evidence, device_serial, waha_session, triggered_by, latency_ms,
+         attempt_phase, checked_at)
+      VALUES
+        ('a','5511','5511','adb_probe','inconclusive',NULL,'{"ui_state":"unknown","snapshot_path":"/tmp/x.xml"}',NULL,NULL,'pre_check',1000,'probe_initial','2026-01-01T00:00:01Z'),
+        ('b','5512','5512','adb_probe','exists',0.95,'{"ui_state":"chat_open"}',NULL,NULL,'pre_check',1000,'probe_initial','2026-01-01T00:00:02Z')
+    `).run()
+
+    expect(store.getSnapshotsCaptured(job.id)).toBe(1)
+    db.close()
+  })
+
+  it('returns zeros for an unknown job id', () => {
+    const { db, store } = setup()
+    const stats = store.getRetryStats('does-not-exist')
+    expect(stats).toEqual({ level_1_resolves: 0, level_2_resolves: 0, remaining_errors: 0 })
+    expect(store.getUiStateDistribution('does-not-exist')).toEqual({})
+    expect(store.getSnapshotsCaptured('does-not-exist')).toBe(0)
+    db.close()
   })
 })

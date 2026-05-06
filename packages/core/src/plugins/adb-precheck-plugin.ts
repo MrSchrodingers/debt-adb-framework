@@ -737,7 +737,19 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     const job = this.store.getJob(id)
     const r = reply as { status: (c: number) => { send: (x: unknown) => unknown } }
     if (!job) return r.status(404).send({ error: 'Job not found' })
-    return (reply as { send: (x: unknown) => unknown }).send(job)
+
+    // Augment the response with retry stats, UI state distribution, and snapshot
+    // counts. These are computed on demand from the audit tables — no caching.
+    const retry_stats = this.store.getRetryStats(id)
+    const ui_state_distribution = this.store.getUiStateDistribution(id)
+    const snapshots_captured = this.store.getSnapshotsCaptured(id)
+
+    return (reply as { send: (x: unknown) => unknown }).send({
+      ...job,
+      retry_stats,
+      ui_state_distribution,
+      snapshots_captured,
+    })
   }
 
   private async handleCancelJob(req: unknown, reply: unknown): Promise<unknown> {
