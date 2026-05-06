@@ -1,5 +1,6 @@
 import type { AdbShellAdapter } from '../monitor/types.js'
 import type { CheckStrategy, StrategyResult, CheckContext } from './types.js'
+import { classifyUiState, type UiState } from './ui-state-classifier.js'
 
 /**
  * Optional shared lock taker for the device. Injected from `engine`
@@ -129,66 +130,97 @@ export class AdbProbeStrategy implements CheckStrategy {
       let pollCount = 0
       let sawSearching = false
       const pollIntervalMs = 1000
+      let lastClassifierResult: ReturnType<typeof classifyUiState> | null = null
 
-      // Poll until we reach a terminal UI state (chat entry or invite CTA) or the
-      // timeout fires. Required because WhatsApp shows an intermediate
-      // "Pesquisando.../Searching..." screen while it resolves the number against
-      // the server — the old single-shot 4s wait often caught this transient
-      // state and returned inconclusive, counting valid numbers as errors.
+      // Poll until the classifier yields a decisive state (chat_open / invite_modal)
+      // or a retryable state (returned immediately so Phase C's wrapper can recover
+      // and retry), or the timeout fires. The `searching` state is the only one
+      // that continues polling — all other non-decisive states exit immediately,
+      // which is a deliberate behaviour change vs the old inline-regex loop (which
+      // would continue polling on any non-matching state until the deadline).
+      // Phase C's recover-and-retry wrapper is responsible for handling retryable
+      // states; keeping the probe simple is the design intent.
       while (Date.now() < deadline) {
         await this.adb.shell(deviceSerial, 'uiautomator dump /sdcard/dispatch-probe.xml')
         xml = await this.adb.shell(deviceSerial, 'cat /sdcard/dispatch-probe.xml')
         pollCount++
 
-        const hasInputField =
-          /resource-id="com\.whatsapp:id\/(entry|conversation_entry|text_entry)"/.test(xml) ||
-          (/class="android\.widget\.EditText"/.test(xml) && /com\.whatsapp/.test(xml))
-        const hasInviteCta =
-          /resource-id="com\.whatsapp:id\/invite_cta"/.test(xml) ||
-          /Convidar|invite to WhatsApp|not on WhatsApp/i.test(xml)
-        const isSearching =
-          /Pesquisando|Searching|Procurando|Cargando|Loading/i.test(xml) ||
-          /resource-id="com\.whatsapp:id\/progress_bar"/.test(xml)
+        const result = classifyUiState({ xml })
+        lastClassifierResult = result
 
-        if (hasInputField) {
+        if (result.state === 'chat_open') {
           return {
             source: this.source,
             result: 'exists',
             confidence: 0.95,
-            evidence: { has_input_field: true, ui_dump_length: xml.length, polls: pollCount },
+            evidence: {
+              ...result.evidence,
+              ui_state: result.state,
+              polls: pollCount,
+              saw_searching: sawSearching,
+            },
             latency_ms: Date.now() - started,
             variant_tried: variant,
             device_serial: deviceSerial,
           }
         }
-        if (hasInviteCta) {
+        if (result.state === 'invite_modal') {
           return {
             source: this.source,
             result: 'not_exists',
             confidence: 0.95,
-            evidence: { has_invite_cta: true, ui_dump_length: xml.length, polls: pollCount },
+            evidence: {
+              ...result.evidence,
+              ui_state: result.state,
+              polls: pollCount,
+              saw_searching: sawSearching,
+            },
             latency_ms: Date.now() - started,
             variant_tried: variant,
             device_serial: deviceSerial,
           }
         }
-        if (isSearching) {
+        if (result.state === 'searching') {
           sawSearching = true
+          await this.delay(pollIntervalMs)
+          continue
         }
-        await this.delay(pollIntervalMs)
+        // result.state is one of: chat_list, contact_picker, disappearing_msg_dialog,
+        // unknown_dialog, unknown — all retryable. Return immediately so Phase C's
+        // wrapper can recover + retry. ui_state is preserved in evidence so the
+        // wrapper knows which recovery action to take.
+        return {
+          source: this.source,
+          result: 'inconclusive',
+          confidence: null,
+          evidence: {
+            ...result.evidence,
+            ui_state: result.state,
+            polls: pollCount,
+            saw_searching: sawSearching,
+          },
+          latency_ms: Date.now() - started,
+          variant_tried: variant,
+          device_serial: deviceSerial,
+        }
       }
 
+      // Deadline elapsed without classifier yielding a non-searching answer.
       return {
         source: this.source,
         result: 'inconclusive',
         confidence: null,
         evidence: {
-          has_input_field: false,
-          has_invite_cta: false,
+          ...(lastClassifierResult?.evidence ?? {
+            matched_rule: 'never_classified',
+            dump_length: 0,
+            has_modal_buttons: false,
+            has_message_box: false,
+          }),
+          ui_state: lastClassifierResult?.state ?? 'unknown',
+          polls: pollCount,
           saw_searching: sawSearching,
           timed_out: true,
-          polls: pollCount,
-          ui_dump_length: xml.length,
         },
         latency_ms: Date.now() - started,
         variant_tried: variant,
