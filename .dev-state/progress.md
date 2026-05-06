@@ -1,19 +1,22 @@
 # Development Progress — DEBT ADB Framework
 
-> **Last updated**: 2026-04-27T13:40:00-03:00
-> **Current phase**: PLUGIN HARDENING SPRINT — COMPLETE (Batch 10/10)
-> **Last delivery**: Phone-blocklist refactor — `prov_telefones_invalidos` (cross-repo
->   coordination Dispatch ↔ Pipeboard ETL); 138 phantom rows backfilled to
->   `prov_consultas_snapshot` (`legacy_todos_telefones_invalidos`); migrations 043+044 applied;
->   adb-precheck per-phone blocklist + deal archival landed. 13 tests adb-precheck + 10 pytest blocklist
-> **Next action**: Deploy Python side (interim_failure + expired handlers), then Dispatch
-> **Plan**: `plans/plugin-hardening-sprint.md` — 10 batches, 87 findings, 43 grill decisions
-> **Grill**: `.dev-state/plugin-hardening-grill.md` — 43 decisions, all resolved
-> **Cross-repo**: Python/Oralsin side DONE (interim_failure + expired handlers deployed)
-> **Contract**: `docs/contract-dispatch-oralsin.md` — 5 callback types, HMAC, phone normalization
-> **Branch**: `hardening/plugin-system` — 10 commits, ready for PR
-> **Tests**: 784 passing (35 new tests in this sprint)
-> **Tech docs**: `docs/tech/` — schema, API ref, UI patterns, conventions
+> **Last updated**: 2026-05-06T18:30:00-03:00
+> **Current phase**: ADB-PRECHECK ROBUSTNESS — IMPLEMENTATION COMPLETE (Phases A-E + Phase Gate)
+> **Last delivery**: Pure UI state classifier (8 states, 9 fixtures), 3-level retry pipeline
+>   (in-probe recover, end-of-scan, manual sweep), in-place Pipedrive note upsert via PUT,
+>   SQLite-backed pasta locks with monotonic fence tokens, quota-bounded XML snapshot
+>   persistence for unknowns, audit columns (attempt_phase, triggered_by, parent_job_id,
+>   revises_row_id, http_verb), admin endpoints (/admin/locks, /admin/probe-snapshots),
+>   note revision history endpoint, manual sweep endpoint (POST /retry-errors).
+> **Next action**: Operator E2E run on POCO Serenity via `scripts/e2e-precheck-scale.sh`,
+>   then merge to main and deploy.
+> **Spec**: `docs/superpowers/specs/2026-05-06-adb-precheck-robustness-design.md` (980 lines)
+> **Plan**: `docs/superpowers/plans/2026-05-06-adb-precheck-robustness-plan.md` (2664 lines, 32 tasks)
+> **Branch**: `phase/precheck-robustness` — 34 commits, 1732 tests passing (137 files), zero regressions
+> **Runbook**: `docs/operations/adb-precheck-runbook.md` + `adb-precheck-snapshot-calibration.md`
+> **Earlier sprint** (PLUGIN HARDENING): COMPLETE — Phone-blocklist refactor `prov_telefones_invalidos`,
+>   138 phantom rows backfilled, migrations 043+044 applied. Branch `hardening/plugin-system`
+>   ready for PR. 784 tests passing.
 
 ## Phase Status
 
