@@ -1,4 +1,4 @@
-#!/usr/bin/env -S node --import tsx
+#!/usr/bin/env tsx
 /**
  * Stale-UI audit + bulk re-probe trigger.
  *
@@ -14,11 +14,17 @@
  *   tsx scripts/audit-stale-ui.ts --mark-all-affected  # also mark unverifiable rows
  *
  * Env:
- *   DB_PATH     — path to dispatch.db (default: dispatch.db)
+ *   DB_PATH     — path to dispatch.db (default: packages/core/dispatch.db)
  *   AUDIT_LIMIT — max deals to consider (default: no limit)
  */
-import Database from 'better-sqlite3'
+import { createRequire } from 'node:module'
 import { xmlContainsVariantDigits } from '../packages/core/src/check-strategies/probe-sanity.js'
+
+// better-sqlite3 is hoisted under packages/core/node_modules; createRequire
+// performs Node's classic CJS resolution which walks the directory tree.
+const require = createRequire(import.meta.url)
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const Database = require('better-sqlite3') as typeof import('better-sqlite3').default
 
 // ---------------------------------------------------------------------------
 // Types
@@ -55,7 +61,7 @@ interface VerdictDetail {
 // Config
 // ---------------------------------------------------------------------------
 
-const DB_PATH = process.env.DB_PATH ?? 'dispatch.db'
+const DB_PATH = process.env.DB_PATH ?? 'packages/core/dispatch.db'
 const LIMIT = process.env.AUDIT_LIMIT ? Number(process.env.AUDIT_LIMIT) : null
 
 const flags = new Set(process.argv.slice(2))
