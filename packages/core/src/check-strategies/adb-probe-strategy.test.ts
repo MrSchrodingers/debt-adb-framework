@@ -190,3 +190,93 @@ describe('AdbProbeStrategy.probe — Level 1 retry wrapper', () => {
     expect(intentCalls.length).toBe(1)
   })
 })
+
+describe('AdbProbeStrategy — snapshot capture', () => {
+  it('writes snapshot when classifier returns unknown', async () => {
+    const writes: any[] = []
+    const writer = {
+      write: (input: any) => {
+        writes.push(input)
+        return '/tmp/snap/test.xml'
+      },
+    } as any
+    const adb = {
+      shell: async (_s: string, cmd: string) => {
+        if (cmd.includes('cat /sdcard/dispatch-probe.xml')) {
+          // No known markers → classifier returns 'unknown'
+          return '<hierarchy><node class="android.widget.FrameLayout" package="com.android.systemui"/></hierarchy>'
+        }
+        return ''
+      },
+    } as any
+    const strat = new AdbProbeStrategy(adb, async () => {}, undefined, writer)
+    const result = await strat.probe('5511999999999', { deviceSerial: 'X', timeoutMs: 200 })
+    expect(result.result).toBe('inconclusive')
+    // Expect at least one write — both probe attempts (initial + recover) classify as unknown.
+    expect(writes.length).toBeGreaterThanOrEqual(1)
+    expect(writes[0].state).toBe('unknown')
+    expect(writes[0].phone).toBe('5511999999999')
+    expect((result.evidence as any).snapshot_path).toBe('/tmp/snap/test.xml')
+  })
+
+  it('writes snapshot when classifier returns unknown_dialog', async () => {
+    const writes: any[] = []
+    const writer = {
+      write: (input: any) => {
+        writes.push(input)
+        return '/tmp/snap/dialog.xml'
+      },
+    } as any
+    const adb = {
+      shell: async (_s: string, cmd: string) => {
+        if (cmd.includes('cat /sdcard/dispatch-probe.xml')) {
+          // unknown_dialog: has android:id/message but no known text
+          return '<hierarchy><node resource-id="android:id/message" text="Some new popup"/><node resource-id="android:id/button1"/></hierarchy>'
+        }
+        return ''
+      },
+    } as any
+    const strat = new AdbProbeStrategy(adb, async () => {}, undefined, writer)
+    await strat.probe('5511999999999', { deviceSerial: 'X', timeoutMs: 200 })
+    expect(writes.length).toBeGreaterThanOrEqual(1)
+    expect(writes[0].state).toBe('unknown_dialog')
+  })
+
+  it('does NOT write when classifier returns chat_open', async () => {
+    const writes: any[] = []
+    const writer = {
+      write: (input: any) => {
+        writes.push(input)
+        return '/tmp/snap/test.xml'
+      },
+    } as any
+    const adb = {
+      shell: async (_s: string, cmd: string) => {
+        if (cmd.includes('cat /sdcard/dispatch-probe.xml')) {
+          return '<hierarchy><node resource-id="com.whatsapp:id/entry"/></hierarchy>'
+        }
+        return ''
+      },
+    } as any
+    const strat = new AdbProbeStrategy(adb, async () => {}, undefined, writer)
+    const result = await strat.probe('5511999999999', { deviceSerial: 'X' })
+    expect(result.result).toBe('exists')
+    expect(writes.length).toBe(0)
+  })
+
+  it('survives gracefully when writer is omitted', async () => {
+    const adb = {
+      shell: async (_s: string, cmd: string) => {
+        if (cmd.includes('cat /sdcard/dispatch-probe.xml')) {
+          return '<hierarchy><node class="android.widget.FrameLayout" package="com.android.systemui"/></hierarchy>'
+        }
+        return ''
+      },
+    } as any
+    const strat = new AdbProbeStrategy(adb, async () => {}, undefined /* no writer */)
+    const result = await strat.probe('5511999999999', { deviceSerial: 'X', timeoutMs: 200 })
+    expect(result.result).toBe('inconclusive')
+    // Should not throw, and snapshot_path should be absent in evidence.
+    expect((result.evidence as any).snapshot_path).toBeUndefined()
+  })
+})

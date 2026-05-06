@@ -1,6 +1,7 @@
 import type { AdbShellAdapter } from '../monitor/types.js'
 import type { CheckStrategy, StrategyResult, CheckContext } from './types.js'
 import { classifyUiState, type UiState } from './ui-state-classifier.js'
+import type { ProbeSnapshotWriter } from '../snapshots/probe-snapshot-writer.js'
 
 /**
  * Optional shared lock taker for the device. Injected from `engine`
@@ -33,6 +34,12 @@ export class AdbProbeStrategy implements CheckStrategy {
      * coordination (legacy behaviour, kept for tests).
      */
     private deviceMutex?: DeviceLockTaker,
+    /**
+     * Optional snapshot writer — when provided, persists the raw XML dump
+     * to disk whenever the classifier returns `unknown` or `unknown_dialog`.
+     * Omit to disable snapshot capture (e.g. in unit tests).
+     */
+    private snapshotWriter?: ProbeSnapshotWriter,
   ) {}
 
   available(): boolean {
@@ -233,6 +240,14 @@ export class AdbProbeStrategy implements CheckStrategy {
       // unknown_dialog, unknown — all retryable. Return immediately so Phase C's
       // wrapper can recover + retry. ui_state is preserved in evidence so the
       // wrapper knows which recovery action to take.
+      let retryableSnapshotPath: string | undefined
+      if ((result.state === 'unknown' || result.state === 'unknown_dialog') && this.snapshotWriter) {
+        retryableSnapshotPath = this.snapshotWriter.write({
+          xml,
+          state: result.state,
+          phone: variant,
+        }) ?? undefined
+      }
       return {
         source: this.source,
         result: 'inconclusive',
@@ -243,6 +258,7 @@ export class AdbProbeStrategy implements CheckStrategy {
           polls: pollCount,
           saw_searching: sawSearching,
           attempt_phase: attemptPhase,
+          ...(retryableSnapshotPath ? { snapshot_path: retryableSnapshotPath } : {}),
         },
         latency_ms: Date.now() - started,
         variant_tried: variant,
@@ -251,6 +267,15 @@ export class AdbProbeStrategy implements CheckStrategy {
     }
 
     // Deadline elapsed without classifier yielding a non-searching answer.
+    const deadlineUiState = lastClassifierResult?.state ?? 'unknown'
+    let deadlineSnapshotPath: string | undefined
+    if ((deadlineUiState === 'unknown' || deadlineUiState === 'unknown_dialog') && this.snapshotWriter) {
+      deadlineSnapshotPath = this.snapshotWriter.write({
+        xml,
+        state: deadlineUiState,
+        phone: variant,
+      }) ?? undefined
+    }
     return {
       source: this.source,
       result: 'inconclusive',
@@ -262,11 +287,12 @@ export class AdbProbeStrategy implements CheckStrategy {
           has_modal_buttons: false,
           has_message_box: false,
         }),
-        ui_state: lastClassifierResult?.state ?? 'unknown',
+        ui_state: deadlineUiState,
         polls: pollCount,
         saw_searching: sawSearching,
         timed_out: true,
         attempt_phase: attemptPhase,
+        ...(deadlineSnapshotPath ? { snapshot_path: deadlineSnapshotPath } : {}),
       },
       latency_ms: Date.now() - started,
       variant_tried: variant,

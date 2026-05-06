@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import { createHmac } from 'node:crypto'
+import { join } from 'node:path'
 import { z } from 'zod'
 import type { ContactRegistry } from '../contacts/contact-registry.js'
 import type { AdbShellAdapter } from '../monitor/types.js'
@@ -13,6 +14,7 @@ import {
 } from '../check-strategies/index.js'
 import type { DispatchPlugin, PluginContext } from './types.js'
 import { PastaLockManager } from '../locks/index.js'
+import { ProbeSnapshotWriter } from '../snapshots/probe-snapshot-writer.js'
 import type { DispatchEventName } from '../events/index.js'
 import type { DispatchEmitter } from '../events/dispatch-emitter.js'
 import {
@@ -120,6 +122,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   private readonly hygienizationOperator: string
   private pastaLocks: PastaLockManager | null = null
   private pastaLockReapTimer: NodeJS.Timeout | null = null
+  private snapshotWriter: ProbeSnapshotWriter
 
   constructor(
     opts: {
@@ -212,6 +215,12 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     }
     this.pipeboardBackend = backend
     this.store = new PrecheckJobStore(db)
+    const snapshotBaseDir = join(process.env.DATA_DIR ?? 'data', 'probe-snapshots')
+    this.snapshotWriter = new ProbeSnapshotWriter({
+      baseDir: snapshotBaseDir,
+      dailyQuota: 500,
+      perMinuteCap: 10,
+    })
     this.pipedriveCacheTtlDays = opts.pipedrive?.cacheTtlDays
     this.pipedriveCompanyDomain = opts.pipedrive?.companyDomain ?? null
     this.pauseState = opts.pauseState
@@ -239,7 +248,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     // mutex-less strategy so unit-test instantiations of the plugin keep
     // working without needing a fake context.
     const cacheStrategy = new CacheOnlyStrategy(this.registry)
-    const adbStrategy = new AdbProbeStrategy(this.adb)
+    const adbStrategy = new AdbProbeStrategy(this.adb, undefined, undefined, this.snapshotWriter)
     // L2 tiebreaker is active only when a WAHA client + session are provided.
     const wahaClient = opts.wahaClient
     const wahaStrategy = new WahaCheckStrategy(
@@ -263,7 +272,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     // scan races the SendEngine on the same physical screen and any
     // half-typed Oralsin message becomes a draft.
     if (ctx.deviceMutex) {
-      const adbStrategy = new AdbProbeStrategy(this.adb, undefined, ctx.deviceMutex)
+      const adbStrategy = new AdbProbeStrategy(this.adb, undefined, ctx.deviceMutex, this.snapshotWriter)
       this.validator = new ContactValidator(
         this.registry,
         adbStrategy,
