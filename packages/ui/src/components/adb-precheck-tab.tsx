@@ -100,6 +100,22 @@ interface PrecheckJob {
   cache_hits: number
   last_error: string | null
   created_at: string
+  // Fields added by backend after initial release — absent on older rows
+  retry_stats?: {
+    level_1_resolves: number
+    level_2_resolves: number
+    remaining_errors: number
+  }
+  ui_state_distribution?: Record<string, number>
+  snapshots_captured?: number
+}
+
+interface ActiveLock {
+  key: string
+  fenceToken: number
+  acquiredAt: string
+  expiresAt: string
+  context?: string
 }
 
 interface DealRow {
@@ -206,6 +222,11 @@ function OverviewPanel({ onStartScan }: { onStartScan: () => void }) {
   const [global, setGlobal] = useState<GlobalStats | null>(null)
   const [latestJobs, setLatestJobs] = useState<PrecheckJob[]>([])
   const [err, setErr] = useState<string | null>(null)
+  // Sweep state
+  const [sweepConfirming, setSweepConfirming] = useState(false)
+  const [sweepSubmitting, setSweepSubmitting] = useState(false)
+  const [sweepToast, setSweepToast] = useState<string | null>(null)
+  const [sweepError, setSweepError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -225,6 +246,31 @@ function OverviewPanel({ onStartScan }: { onStartScan: () => void }) {
     const t = setInterval(load, 10_000)
     return () => clearInterval(t)
   }, [load])
+
+  const handleSweep = async () => {
+    setSweepSubmitting(true); setSweepError(null)
+    try {
+      const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+      const r = await fetch(`${PLUGIN_BASE}/retry-errors`, {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ since_iso: since, max_deals: 200 }),
+      })
+      if (r.status === 409) {
+        setSweepError('Pasta já em scan. Tente novamente em alguns minutos.')
+        return
+      }
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const data = await r.json() as { job_id?: string }
+      setSweepToast(`Sweep iniciado: ${data.job_id ?? ''}`)
+      setSweepConfirming(false)
+      void load()
+    } catch (e) {
+      setSweepError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSweepSubmitting(false)
+    }
+  }
 
   if (err) return <InlineError message={err} />
   if (!stats) return <OverviewSkeleton />
@@ -251,6 +297,20 @@ function OverviewPanel({ onStartScan }: { onStartScan: () => void }) {
   return (
     <div className="space-y-4">
       {global ? <CoveragePanel data={global} /> : null}
+
+      {/* Sweep toast */}
+      {sweepToast ? (
+        <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-xs text-emerald-300 flex items-center justify-between">
+          <span>{sweepToast}</span>
+          <button onClick={() => setSweepToast(null)} className="text-emerald-400 hover:text-emerald-200 ml-4">✕</button>
+        </div>
+      ) : null}
+      {sweepError ? (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-2 text-xs text-amber-300 flex items-center justify-between">
+          <span>{sweepError}</span>
+          <button onClick={() => setSweepError(null)} className="text-amber-400 hover:text-amber-200 ml-4">✕</button>
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatCard
@@ -286,9 +346,14 @@ function OverviewPanel({ onStartScan }: { onStartScan: () => void }) {
         title="Jobs recentes"
         description="Ultimos 5 scans executados"
         actions={
-          <AccentButton accent={ACCENT} onClick={onStartScan} icon={Play}>
-            Novo Scan
-          </AccentButton>
+          <div className="flex items-center gap-2">
+            <AccentButton accent="amber" variant="ghost" onClick={() => setSweepConfirming(true)} icon={RefreshCw}>
+              Reprocessar erros
+            </AccentButton>
+            <AccentButton accent={ACCENT} onClick={onStartScan} icon={Play}>
+              Novo Scan
+            </AccentButton>
+          </div>
         }
       >
         {latestJobs.length === 0 ? (
@@ -299,6 +364,125 @@ function OverviewPanel({ onStartScan }: { onStartScan: () => void }) {
           </div>
         )}
       </Section>
+
+      <LocksPanel />
+
+      {sweepConfirming ? (
+        <SweepConfirmModal
+          onCancel={() => { setSweepConfirming(false); setSweepError(null) }}
+          onConfirm={handleSweep}
+          submitting={sweepSubmitting}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+function SweepConfirmModal({
+  onCancel,
+  onConfirm,
+  submitting,
+}: {
+  onCancel: () => void
+  onConfirm: () => void
+  submitting: boolean
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+      <div className="w-full max-w-md rounded-xl border border-amber-500/30 bg-zinc-950 p-5 shadow-xl shadow-black/50">
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-500/10 border border-amber-500/30">
+            <RefreshCw className="h-5 w-5 text-amber-300" />
+          </div>
+          <div className="flex-1">
+            <h5 className="text-sm font-semibold text-zinc-100">Reprocessar erros de scan</h5>
+            <p className="mt-1 text-xs text-zinc-400">
+              Um novo job de sweep será enfileirado para retentar todos os telefones com erro nos últimos 7 dias.
+            </p>
+            <ul className="mt-3 space-y-1 text-xs text-zinc-300 list-disc list-inside">
+              <li>Limite: 200 deals por sweep</li>
+              <li>Janela: últimos 7 dias</li>
+              <li>Acompanhe o progresso na aba Jobs</li>
+            </ul>
+          </div>
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <button onClick={onCancel} className="rounded-md border border-zinc-800 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-900">
+            Cancelar
+          </button>
+          <AccentButton accent="amber" onClick={onConfirm} disabled={submitting} icon={RefreshCw}>
+            {submitting ? 'Iniciando…' : 'Confirmar sweep'}
+          </AccentButton>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function LocksPanel() {
+  const [locks, setLocks] = useState<ActiveLock[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const fetchLocks = useCallback(async () => {
+    try {
+      const r = await fetch(`${PLUGIN_BASE}/admin/locks`, { headers: authHeaders() })
+      if (!r.ok) return
+      const data = await r.json() as { locks?: ActiveLock[] }
+      setLocks(Array.isArray(data.locks) ? data.locks : [])
+    } catch {
+      // Non-fatal — locks panel is best-effort
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void fetchLocks()
+    const t = setInterval(fetchLocks, 10_000)
+    return () => clearInterval(t)
+  }, [fetchLocks])
+
+  const fmtRemaining = (expiresAt: string): string => {
+    const ms = new Date(expiresAt).getTime() - Date.now()
+    if (ms <= 0) return 'expirado'
+    return `expira em ${fmtDuration(ms)}`
+  }
+
+  const lockTone = (key: string): 'sky' | 'violet' =>
+    key.startsWith('note.') ? 'violet' : 'sky'
+
+  const toneClasses: Record<'sky' | 'violet', string> = {
+    sky: 'text-sky-400',
+    violet: 'text-violet-400',
+  }
+
+  return (
+    <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-3 space-y-2">
+      <div className="flex items-center gap-2">
+        <Database className="h-3.5 w-3.5 text-zinc-500" />
+        <span className="text-[11px] uppercase tracking-wider text-zinc-500">Locks ativos</span>
+      </div>
+      {loading ? (
+        <div className="text-xs text-zinc-600">Carregando…</div>
+      ) : locks.length === 0 ? (
+        <div className="text-xs text-zinc-600">Sem locks ativos.</div>
+      ) : (
+        <div className="space-y-1">
+          {locks.map((lock) => {
+            const tone = lockTone(lock.key)
+            return (
+              <div key={lock.key} className="flex items-center gap-3 text-xs font-mono">
+                <span className={`shrink-0 ${toneClasses[tone]}`}>■</span>
+                <span className="text-zinc-300 min-w-0 flex-1 truncate">{lock.key}</span>
+                {lock.context ? (
+                  <span className="text-zinc-500 shrink-0 truncate max-w-[120px]">{lock.context}</span>
+                ) : null}
+                <span className="text-zinc-600 shrink-0">{fmtRemaining(lock.expiresAt)}</span>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -1049,6 +1233,19 @@ function JobDetail({ job }: { job: PrecheckJob }) {
   const successRate = job.total_phones > 0
     ? Math.round((job.valid_phones / job.total_phones) * 100)
     : 0
+
+  // ui_state_distribution: entries sorted by count descending
+  const uiStateEntries = job.ui_state_distribution
+    ? Object.entries(job.ui_state_distribution).sort((a, b) => b[1] - a[1])
+    : null
+
+  const uiStateTone = (state: string): 'emerald' | 'sky' | 'amber' | 'rose' => {
+    if (state === 'chat_open' || state === 'invite_modal') return 'emerald'
+    if (state === 'searching') return 'sky'
+    if (state === 'chat_list' || state === 'contact_picker' || state === 'disappearing_msg_dialog') return 'amber'
+    return 'rose'
+  }
+
   return (
     <div className="border-t border-zinc-800 bg-zinc-950/50 p-4 space-y-3">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -1057,6 +1254,60 @@ function JobDetail({ job }: { job: PrecheckJob }) {
         <StatCard label="Erros" value={job.error_phones} tone={job.error_phones > 0 ? 'amber' : 'zinc'} />
         <StatCard label="Cancel requested" value={job.cancel_requested ? 'sim' : 'nao'} tone={job.cancel_requested ? 'amber' : 'zinc'} />
       </div>
+
+      {/* Retry stats — only present on jobs with the new backend */}
+      {job.retry_stats ? (
+        <div className="space-y-1">
+          <div className="text-[11px] uppercase tracking-wider text-zinc-500">Estatisticas de retry</div>
+          <div className="grid grid-cols-3 gap-3">
+            <StatCard
+              label="Recovery (probe)"
+              value={job.retry_stats.level_1_resolves}
+              tone="violet"
+              hint="Level 1 saves"
+            />
+            <StatCard
+              label="Retry final (scan)"
+              value={job.retry_stats.level_2_resolves}
+              tone="sky"
+              hint="Level 2 saves"
+            />
+            <StatCard
+              label="Erros pendentes"
+              value={job.retry_stats.remaining_errors}
+              tone={job.retry_stats.remaining_errors > 0 ? 'amber' : 'zinc'}
+            />
+          </div>
+        </div>
+      ) : null}
+
+      {/* UI state distribution — only when backend populates it */}
+      {uiStateEntries && uiStateEntries.length > 0 ? (
+        <div className="space-y-1">
+          <div className="text-[11px] uppercase tracking-wider text-zinc-500">Distribuicao de estados UI</div>
+          <div className="flex flex-wrap gap-2">
+            {uiStateEntries.map(([state, count]) => (
+              <div key={state} className="flex items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900/50 px-2 py-1 text-xs">
+                <Pill tone={uiStateTone(state)}>{state}</Pill>
+                <span className="font-mono text-zinc-300">{count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Snapshots captured — only when field is present */}
+      {job.snapshots_captured != null ? (
+        <div className="grid grid-cols-1 gap-3">
+          <StatCard
+            label="Snapshots capturados"
+            value={job.snapshots_captured}
+            tone={job.snapshots_captured > 0 ? 'amber' : 'zinc'}
+            hint="Telas desconhecidas salvas em disco para calibracao"
+          />
+        </div>
+      ) : null}
+
       {job.last_error ? (
         <div className="rounded-md border border-rose-500/20 bg-rose-500/5 p-3 text-xs text-rose-300 whitespace-pre-wrap">
           <div className="font-medium mb-1">Ultimo erro</div>
