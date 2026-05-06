@@ -390,6 +390,70 @@ export class PrecheckJobStore {
     return row
   }
 
+  /**
+   * Lists deals (across ALL prior jobs) that still have phones with
+   * outcome='error', filtered by pasta and recency. Used by the sweep
+   * entrypoint (E1) to identify which deals need a second pass without
+   * being tied to a single source job_id.
+   */
+  listDealsWithErrorsByFilter(opts: {
+    since_iso: string
+    pasta: string | null
+    limit: number
+  }): Array<{
+    key: DealKey
+    phones: PhoneResult[]
+    last_job_id: string
+  }> {
+    const rows = this.db
+      .prepare(`
+        SELECT pasta, deal_id, contato_tipo, contato_id, phones_json, last_job_id
+        FROM adb_precheck_deals
+        WHERE scanned_at >= ?
+          AND phones_json LIKE '%"outcome":"error"%'
+          AND (? IS NULL OR pasta = ?)
+        ORDER BY scanned_at DESC
+        LIMIT ?
+      `)
+      .all(opts.since_iso, opts.pasta, opts.pasta, opts.limit) as Array<{
+        pasta: string; deal_id: number; contato_tipo: string; contato_id: number;
+        phones_json: string; last_job_id: string
+      }>
+    return rows.map((r) => ({
+      key: { pasta: r.pasta, deal_id: r.deal_id, contato_tipo: r.contato_tipo, contato_id: r.contato_id },
+      phones: JSON.parse(r.phones_json) as PhoneResult[],
+      last_job_id: r.last_job_id,
+    }))
+  }
+
+  /**
+   * Returns all cached deal rows for a pasta, ordered by deal_id ascending.
+   * Used by the sweep to re-aggregate pasta-level summaries after mutating
+   * individual deal phone outcomes.
+   */
+  listDealsForPasta(pasta: string): Array<{
+    key: DealKey
+    phones: PhoneResult[]
+    last_job_id: string
+  }> {
+    const rows = this.db
+      .prepare(`
+        SELECT pasta, deal_id, contato_tipo, contato_id, phones_json, last_job_id
+        FROM adb_precheck_deals
+        WHERE pasta = ?
+        ORDER BY deal_id ASC
+      `)
+      .all(pasta) as Array<{
+        pasta: string; deal_id: number; contato_tipo: string; contato_id: number;
+        phones_json: string; last_job_id: string
+      }>
+    return rows.map((r) => ({
+      key: { pasta: r.pasta, deal_id: r.deal_id, contato_tipo: r.contato_tipo, contato_id: r.contato_id },
+      phones: JSON.parse(r.phones_json) as PhoneResult[],
+      last_job_id: r.last_job_id,
+    }))
+  }
+
   aggregateStats(): {
     deals_scanned: number
     deals_with_valid: number

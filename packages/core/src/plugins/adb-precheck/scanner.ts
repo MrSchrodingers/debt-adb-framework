@@ -731,6 +731,297 @@ export class PrecheckScanner {
   }
 
   /**
+   * Level 3 sweep entrypoint (Task E1).
+   *
+   * Re-validates phones with outcome='error' from PRIOR scan jobs (not the
+   * in-flight one). Returns immediately with a job_id; processing is async
+   * via setImmediate. Caller polls GET /scan/:id for progress.
+   *
+   * Optional `pasta` filter restricts scope. `since_iso` controls how far
+   * back to look (default: last 7 days). `max_deals` caps the result set.
+   * `dry_run=true` creates the job row for auditing but calls finishJob with
+   * status='cancelled' and never touches the validator.
+   */
+  async runRetryErrorsJob(params: {
+    pasta?: string | null
+    since_iso?: string
+    max_deals?: number
+    dry_run?: boolean
+  }): Promise<{ job_id: string; deals_planned: number; status: string }> {
+    const since = params.since_iso ?? new Date(Date.now() - 7 * 24 * 3_600_000).toISOString()
+    const limit = params.max_deals ?? 200
+
+    const errorDeals = this.deps.store.listDealsWithErrorsByFilter({
+      since_iso: since,
+      pasta: params.pasta ?? null,
+      limit,
+    })
+
+    // When all deals come from a single source job, link the sweep to it so
+    // audit history is queryable. Multi-parent sweeps have no single parent.
+    const distinctParents = new Set(errorDeals.map((d) => d.last_job_id))
+    const parentJobId = distinctParents.size === 1 ? [...distinctParents][0] : undefined
+
+    const sweepJobParams = {
+      pasta_filter: params.pasta ?? undefined,
+      retry_errors: true,
+      triggered_by: 'retry-errors-sweep',
+      since_iso: since,
+      max_deals: limit,
+    } as unknown as import('./types.js').PrecheckScanParams
+
+    const sweepJob = this.deps.store.createJob(sweepJobParams, undefined, {
+      triggeredBy: 'retry-errors-sweep',
+      parentJobId,
+    })
+    const jobId = sweepJob.id
+
+    if (params.dry_run) {
+      this.deps.store.finishJob(jobId, 'cancelled', 'dry_run')
+      return { job_id: jobId, deals_planned: errorDeals.length, status: 'dry_run' }
+    }
+
+    // Fire-and-forget — caller polls /scan/:id. processSweep handles its own
+    // error logging and finishJob call.
+    setImmediate(() => {
+      this.processSweep(jobId, errorDeals).catch((e) => {
+        this.deps.logger.error('sweep job failed', { jobId, error: String(e) })
+        try { this.deps.store.finishJob(jobId, 'failed', String(e)) } catch { /* ignore */ }
+      })
+    })
+
+    return { job_id: jobId, deals_planned: errorDeals.length, status: 'started' }
+  }
+
+  /**
+   * Async body of `runRetryErrorsJob`. Groups error deals by pasta, acquires
+   * the per-pasta scan lock for each group, re-validates only the error phones,
+   * persists mutations via upsertDeal, and re-publishes pasta_summary notes for
+   * every touched pasta.
+   */
+  private async processSweep(
+    jobId: string,
+    errorDeals: Array<{ key: DealKey; phones: PhoneResult[]; last_job_id: string }>,
+  ): Promise<void> {
+    this.deps.store.markStarted(jobId, errorDeals.length)
+
+    // Group deals by pasta so we acquire a single lock per pasta group.
+    const byPasta = new Map<string, typeof errorDeals>()
+    for (const d of errorDeals) {
+      const list = byPasta.get(d.key.pasta) ?? []
+      list.push(d)
+      byPasta.set(d.key.pasta, list)
+    }
+
+    const probeDevice = this.deps.deviceSerial
+    const probeSender = this.deps.wahaSession
+    const probeProfile =
+      probeDevice && probeSender && this.deps.resolveProfileForSender
+        ? this.deps.resolveProfileForSender(probeDevice, probeSender) ?? undefined
+        : undefined
+
+    const touchedPastas = new Set<string>()
+    let totalResolved = 0
+
+    for (const [pasta, deals] of byPasta.entries()) {
+      const lockKey = `scan:${pasta}`
+      const lock = this.deps.locks?.acquire(lockKey, 3_600_000 /* 1h TTL */, {
+        job_id: jobId,
+        pasta,
+        sweep: true,
+      }) ?? null
+
+      if (this.deps.locks && !lock) {
+        this.deps.logger.warn('sweep skipping pasta — scan in progress', {
+          jobId,
+          pasta,
+          current: this.deps.locks.describe(lockKey),
+        })
+        // Still bump progress so total_deals stays accurate.
+        for (const deal of deals) {
+          this.deps.store.bumpProgress(jobId, {
+            scanned_deals: 1,
+            total_phones: deal.phones.length,
+            valid_phones: deal.phones.filter((p) => p.outcome === 'valid').length,
+            invalid_phones: deal.phones.filter((p) => p.outcome === 'invalid').length,
+            error_phones: deal.phones.filter((p) => p.outcome === 'error').length,
+            cache_hits: 0,
+          })
+        }
+        continue
+      }
+
+      try {
+        for (const deal of deals) {
+          if (lock && !lock.isStillValid()) {
+            this.deps.logger.warn('lost sweep lock, aborting pasta', { jobId, pasta })
+            break
+          }
+          let mutated = false
+          for (const ph of deal.phones) {
+            if (ph.outcome !== 'error') continue
+            try {
+              const r = await this.deps.validator.validate(ph.normalized, {
+                triggered_by: 'pre_check',
+                useWahaTiebreaker: true,
+                device_serial: probeDevice,
+                waha_session: probeSender,
+                profile_id: probeProfile,
+                attempt_phase: 'sweep_retry',
+              })
+              if (r.exists_on_wa !== null) {
+                ph.outcome = r.exists_on_wa === 1 ? 'valid' : 'invalid'
+                ph.source = r.source
+                ph.confidence = r.confidence
+                ph.error = null
+                mutated = true
+                totalResolved++
+              }
+            } catch (e) {
+              this.deps.logger.debug('sweep validate threw', {
+                jobId,
+                key: deal.key,
+                phone: ph.normalized,
+                error: e instanceof Error ? e.message : String(e),
+              })
+            }
+          }
+
+          if (mutated) {
+            const validCount = deal.phones.filter((p) => p.outcome === 'valid').length
+            const invalidCount = deal.phones.filter((p) => p.outcome === 'invalid').length
+            const primaryValid = deal.phones.find((p) => p.outcome === 'valid')?.normalized ?? null
+            this.deps.store.upsertDeal(jobId, {
+              key: deal.key,
+              phones: deal.phones,
+              valid_count: validCount,
+              invalid_count: invalidCount,
+              primary_valid_phone: primaryValid,
+            })
+            touchedPastas.add(pasta)
+          }
+
+          this.deps.store.bumpProgress(jobId, {
+            scanned_deals: 1,
+            total_phones: deal.phones.length,
+            valid_phones: deal.phones.filter((p) => p.outcome === 'valid').length,
+            invalid_phones: deal.phones.filter((p) => p.outcome === 'invalid').length,
+            error_phones: deal.phones.filter((p) => p.outcome === 'error').length,
+            cache_hits: 0,
+          })
+        }
+      } finally {
+        lock?.release()
+      }
+    }
+
+    // Re-publish updated pasta_summary notes for touched pastas. The publisher's
+    // upsert path (D3) will PUT the existing note instead of creating a new one.
+    if (this.deps.pipedrive && touchedPastas.size > 0) {
+      const sweepJob = this.deps.store.getJob(jobId)
+      for (const pasta of touchedPastas) {
+        const intent = this.buildSweepPastaSummaryIntent(
+          jobId,
+          pasta,
+          sweepJob?.started_at ?? null,
+          sweepJob?.finished_at ?? new Date().toISOString(),
+        )
+        if (intent) {
+          this.deps.pipedrive.enqueuePastaSummary(intent, {
+            triggered_by: 'retry-errors-sweep',
+          })
+        }
+      }
+    }
+
+    this.deps.logger.info('sweep complete', {
+      jobId,
+      total_deals: errorDeals.length,
+      resolved: totalResolved,
+      touched_pastas: touchedPastas.size,
+    })
+    this.deps.store.finishJob(jobId, 'completed')
+  }
+
+  /**
+   * Re-aggregates the current state of a pasta from the DB (post-sweep) and
+   * builds a `PipedrivePastaSummaryIntent`. Returns null if no deals exist for
+   * the pasta (defensive — only called for pastas we actually touched).
+   */
+  private buildSweepPastaSummaryIntent(
+    jobId: string,
+    pasta: string,
+    jobStarted: string | null,
+    jobEnded: string | null,
+  ): import('./types.js').PipedrivePastaSummaryIntent | null {
+    const store = this.deps.store as import('./job-store.js').PrecheckJobStore
+    const rows = store.listDealsForPasta(pasta)
+    if (rows.length === 0) return null
+
+    let firstDealId = rows[0]!.key.deal_id
+    let totalDeals = 0
+    let okDeals = 0
+    let archivedDeals = 0
+    let totalPhonesChecked = 0
+    let okPhones = 0
+    const strategyCounts: { adb: number; waha: number; cache: number } = { adb: 0, waha: 0, cache: 0 }
+    const dealRows: import('./types.js').PipedrivePastaDealRow[] = []
+
+    // Merge by deal_id (multiple contato_ids per deal_id merge into one entry).
+    const dealMap = new Map<number, import('./types.js').PipedrivePastaDealRow>()
+
+    for (const row of rows) {
+      const { deal_id } = row.key
+      if (deal_id < firstDealId) firstDealId = deal_id
+      totalDeals++
+      totalPhonesChecked += row.phones.length
+      const validInDeal = row.phones.filter((p) => p.outcome === 'valid').length
+      okPhones += validInDeal
+      if (validInDeal > 0) okDeals++
+      else if (row.phones.length > 0) archivedDeals++
+
+      for (const ph of row.phones) {
+        strategyCounts[classifyStrategy(ph.source)] += 1
+      }
+
+      let dealEntry = dealMap.get(deal_id)
+      if (!dealEntry) {
+        dealEntry = { deal_id, phones: [] }
+        dealMap.set(deal_id, dealEntry)
+      }
+      for (const ph of row.phones) {
+        dealEntry.phones.push({
+          column: ph.column,
+          phone_normalized: ph.normalized,
+          outcome: ph.outcome,
+          strategy: classifyStrategy(ph.source),
+        })
+      }
+    }
+
+    for (const d of dealMap.values()) {
+      dealRows.push(d)
+    }
+    dealRows.sort((a, b) => a.deal_id - b.deal_id)
+
+    return {
+      scenario: 'pasta_summary',
+      pasta,
+      first_deal_id: firstDealId,
+      job_id: jobId,
+      job_started: jobStarted,
+      job_ended: jobEnded,
+      total_deals: totalDeals,
+      ok_deals: okDeals,
+      archived_deals: archivedDeals,
+      total_phones_checked: totalPhonesChecked,
+      ok_phones: okPhones,
+      strategy_counts: strategyCounts,
+      deals: dealRows,
+    }
+  }
+
+  /**
    * End-of-scan retry pass (Level 2 / Task D4).
    *
    * After the main scan loop completes, queries the DB for deal rows whose

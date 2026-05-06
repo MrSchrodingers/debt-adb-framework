@@ -390,6 +390,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     ctx.registerRoute('GET',  '/deals',      this.handleListDeals.bind(this))
     ctx.registerRoute('GET',  '/deals/:pasta/:deal_id/:contato_tipo/:contato_id', this.handleGetDeal.bind(this))
     ctx.registerRoute('POST', '/probe',      this.handleProbePhone.bind(this))
+    ctx.registerRoute('POST', '/retry-errors', this.handleRetryErrors.bind(this))
 
     // Plugin-scoped Pipedrive operator API. Routes mount under
     // /api/v1/plugins/adb-precheck/pipedrive/* (the loader prefixes the
@@ -814,6 +815,46 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
         error: e instanceof Error ? e.message : String(e),
         phone_input: phone,
       })
+    }
+  }
+
+  /**
+   * POST /retry-errors
+   *
+   * Manual sweep entrypoint (Level 3 / Task E1). Re-validates phones with
+   * outcome='error' from prior scan jobs. Returns 202 immediately with
+   * { job_id, deals_planned, status }; caller polls GET /scan/:id for progress.
+   * Optional body: { pasta, since_iso, max_deals, dry_run }.
+   */
+  private async handleRetryErrors(req: unknown, reply: unknown): Promise<unknown> {
+    const r = reply as { code: (n: number) => { send: (x: unknown) => unknown } }
+    const body = ((req as { body?: unknown }).body ?? {}) as {
+      pasta?: string
+      since_iso?: string
+      max_deals?: number
+      dry_run?: boolean
+    }
+    if (!this.scanner) {
+      return r.code(503).send({ error: 'scanner_not_ready' })
+    }
+    try {
+      const result = await this.scanner.runRetryErrorsJob({
+        pasta: body.pasta ?? null,
+        since_iso: body.since_iso,
+        max_deals: body.max_deals,
+        dry_run: body.dry_run,
+      })
+      return r.code(202).send(result)
+    } catch (e: unknown) {
+      if (e !== null && typeof e === 'object' && 'constructor' in e && (e as { constructor?: { name?: string } }).constructor?.name === 'ScanInProgressError') {
+        const err = e as { pasta?: string; current?: unknown }
+        return r.code(409).send({
+          error: 'scan_in_progress',
+          pasta: err.pasta,
+          current: err.current,
+        })
+      }
+      throw e
     }
   }
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { PrecheckScanner } from './scanner.js'
 import type { ScannerDeps } from './scanner.js'
-import type { PhoneResult, ProvConsultaRow } from './types.js'
+import type { DealKey, PhoneResult, ProvConsultaRow } from './types.js'
 
 /**
  * Smoke tests for the invalidation orchestration: verify scanner records
@@ -1254,5 +1254,328 @@ describe('PrecheckScanner — scan.<pasta> lock (Task D5)', () => {
     // The fence guard should have prevented the second retry iteration.
     // retryCallCount should be 1 (guard fired before second deal).
     expect(retryCallCount).toBe(1)
+  })
+})
+
+// ── Task E1: runRetryErrorsJob — Level 3 sweep entrypoint ─────────────────
+//
+// Manual entrypoint that re-validates phones with outcome='error' from PRIOR
+// scan jobs. Returns immediately with a job_id; processing is async via
+// setImmediate. Reuses the per-pasta scan lock per group.
+//
+describe('Scanner — runRetryErrorsJob (Level 3 sweep)', () => {
+  /** Build a scanner wired with a real in-memory SQLite + PastaLockManager. */
+  function buildSweepScanner(opts: {
+    errorDeals: Array<{
+      key: DealKey
+      phones: PhoneResult[]
+      last_job_id: string
+    }>
+    validateImpl?: (phone: string, opts?: Record<string, unknown>) => unknown
+    locks?: PastaLockManager
+    pipedrive?: {
+      enqueueDealAllFail: ReturnType<typeof vi.fn>
+      enqueuePastaSummary: ReturnType<typeof vi.fn>
+      flush: ReturnType<typeof vi.fn>
+      pendingCount: ReturnType<typeof vi.fn>
+      dedupSize: ReturnType<typeof vi.fn>
+    }
+  }) {
+    const validateImpl =
+      opts.validateImpl ??
+      ((_phone: string) => ({
+        exists_on_wa: 0,
+        from_cache: false,
+        phone_normalized: _phone,
+        source: 'waha',
+        confidence: 0.9,
+        attempts: [],
+      }))
+
+    // Minimal validator mock.
+    const validator = { validate: vi.fn(async (p: string, o?: Record<string, unknown>) => validateImpl(p, o)) }
+
+    // We inject a listDealsWithErrorsByFilter-enabled store mock that also
+    // exposes listDealsForPasta and createJob/markStarted/bumpProgress/finishJob/getJob.
+    const upsertDeal = vi.fn()
+    const createdJobs: Array<{ id: string; started_at: string | null; finished_at: string | null }> = []
+    let jobCounter = 0
+    const store = {
+      listDealsWithErrorsByFilter: vi.fn(
+        (_opts: { since_iso: string; pasta: string | null; limit: number }) => opts.errorDeals,
+      ),
+      listDealsForPasta: vi.fn((pasta: string) =>
+        opts.errorDeals.filter((d) => d.key.pasta === pasta),
+      ),
+      createJob: vi.fn(
+        (
+          _params: unknown,
+          _extRef?: string,
+          createOpts?: { triggeredBy?: string; parentJobId?: string },
+        ) => {
+          const id = `sweep-job-${++jobCounter}`
+          const job = {
+            id,
+            status: 'queued',
+            started_at: null,
+            finished_at: null,
+            triggered_by: createOpts?.triggeredBy ?? 'manual',
+            parent_job_id: createOpts?.parentJobId ?? null,
+          }
+          createdJobs.push(job)
+          return job
+        },
+      ),
+      markStarted: vi.fn(),
+      upsertDeal,
+      bumpProgress: vi.fn(),
+      finishJob: vi.fn((id: string, status: string, _err?: string) => {
+        const job = createdJobs.find((j) => j.id === id)
+        if (job) (job as unknown as Record<string, string>)['status'] = status
+      }),
+      getJob: vi.fn((id: string) => createdJobs.find((j) => j.id === id) ?? null),
+      // Satisfy other store call-sites in scanner (not exercised by sweep tests).
+      getDealLastScannedAt: vi.fn(() => null),
+      listRecentlyScannedKeys: vi.fn(() => []),
+      listDealsWithErrors: vi.fn(() => []),
+    }
+
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
+
+    const deps = {
+      pg: {
+        countPool: vi.fn(async () => 0),
+        iterateDeals: vi.fn(async function* () { /* empty */ }),
+        applyDealInvalidation: vi.fn(async () => ({ requestId: 'r', idempotent: false, applied: [], archived: false, clearedColumns: [] })),
+        applyDealLocalization: vi.fn(async () => ({ requestId: 'r', idempotent: false, applied: true })),
+      },
+      store,
+      validator,
+      logger,
+      shouldCancel: () => false,
+      locks: opts.locks,
+      pipedrive: opts.pipedrive as unknown as ScannerDeps['pipedrive'],
+    } as unknown as ScannerDeps
+
+    const scanner = new PrecheckScanner(deps)
+    return { scanner, validator, store, upsertDeal, logger, createdJobs }
+  }
+
+  /** Flush the event loop (allows setImmediate callbacks to run). */
+  async function flushEventLoop() {
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    // Give the async sweep a moment to settle.
+    await new Promise<void>((resolve) => setTimeout(resolve, 20))
+  }
+
+  function makeErrorPhone(column: string, normalized: string): PhoneResult {
+    return {
+      column,
+      raw: normalized.replace(/^\+?55/, ''),
+      normalized,
+      outcome: 'error',
+      source: 'cache',
+      confidence: null,
+      variant_tried: null,
+      error: 'timeout',
+    }
+  }
+
+  it('lists error deals and processes only error phones (attempt_phase=sweep_retry)', async () => {
+    const errorDeals = [
+      {
+        key: { pasta: 'P-1', deal_id: 10, contato_tipo: 'PRINCIPAL', contato_id: 1 },
+        phones: [makeErrorPhone('telefone_1', '5543991938235')],
+        last_job_id: 'job-parent-1',
+      },
+      {
+        // This deal has no error phones — should not trigger a validator call.
+        key: { pasta: 'P-1', deal_id: 20, contato_tipo: 'PRINCIPAL', contato_id: 2 },
+        phones: [
+          { column: 'telefone_1', raw: '43991938236', normalized: '5543991938236', outcome: 'valid' as const, source: 'adb', confidence: 0.95, variant_tried: null, error: null },
+        ],
+        last_job_id: 'job-parent-1',
+      },
+    ]
+
+    const { scanner, validator, upsertDeal } = buildSweepScanner({ errorDeals })
+
+    const result = await scanner.runRetryErrorsJob({ pasta: 'P-1' })
+    expect(result.status).toBe('started')
+    expect(result.deals_planned).toBe(2)
+    expect(result.job_id).toBeTruthy()
+
+    await flushEventLoop()
+
+    // Validator called exactly once — only for the error phone, not the valid one.
+    expect(validator.validate).toHaveBeenCalledTimes(1)
+    const [calledPhone, calledOpts] = validator.validate.mock.calls[0]!
+    expect(calledPhone).toBe('5543991938235')
+    expect((calledOpts as Record<string, unknown>).attempt_phase).toBe('sweep_retry')
+
+    // upsertDeal called once (only the mutated deal).
+    expect(upsertDeal).toHaveBeenCalledTimes(1)
+    const [_jobId, upsertedResult] = upsertDeal.mock.calls[0]! as [string, { phones: PhoneResult[] }]
+    const phone = upsertedResult.phones.find((p: PhoneResult) => p.column === 'telefone_1')
+    expect(phone?.outcome).toBe('invalid')
+    expect(phone?.error).toBeNull()
+  })
+
+  it('creates sweep job with triggered_by=retry-errors-sweep', async () => {
+    const errorDeals = [
+      {
+        key: { pasta: 'P-2', deal_id: 30, contato_tipo: 'PRINCIPAL', contato_id: 3 },
+        phones: [makeErrorPhone('telefone_1', '5543991938235')],
+        last_job_id: 'job-parent-99',
+      },
+    ]
+
+    const { scanner, store } = buildSweepScanner({ errorDeals })
+
+    await scanner.runRetryErrorsJob({})
+    await flushEventLoop()
+
+    expect(store.createJob).toHaveBeenCalledTimes(1)
+    const [_params, _extRef, createOpts] = store.createJob.mock.calls[0]! as [
+      unknown, unknown, { triggeredBy?: string; parentJobId?: string }
+    ]
+    expect(createOpts.triggeredBy).toBe('retry-errors-sweep')
+  })
+
+  it('sets parent_job_id when all deals share a single last_job_id', async () => {
+    const errorDeals = [
+      {
+        key: { pasta: 'P-3', deal_id: 40, contato_tipo: 'PRINCIPAL', contato_id: 4 },
+        phones: [makeErrorPhone('telefone_1', '5543991938235')],
+        last_job_id: 'single-parent-job',
+      },
+      {
+        key: { pasta: 'P-3', deal_id: 41, contato_tipo: 'PRINCIPAL', contato_id: 5 },
+        phones: [makeErrorPhone('telefone_1', '5543991938236')],
+        last_job_id: 'single-parent-job',
+      },
+    ]
+
+    const { scanner, store } = buildSweepScanner({ errorDeals })
+
+    await scanner.runRetryErrorsJob({})
+    await flushEventLoop()
+
+    const [_params, _extRef, createOpts] = store.createJob.mock.calls[0]! as [
+      unknown, unknown, { triggeredBy?: string; parentJobId?: string }
+    ]
+    // All deals share 'single-parent-job' → parentJobId must be set.
+    expect(createOpts.parentJobId).toBe('single-parent-job')
+  })
+
+  it('does NOT set parent_job_id when deals come from multiple source jobs', async () => {
+    const errorDeals = [
+      {
+        key: { pasta: 'P-4', deal_id: 50, contato_tipo: 'PRINCIPAL', contato_id: 6 },
+        phones: [makeErrorPhone('telefone_1', '5543991938235')],
+        last_job_id: 'job-A',
+      },
+      {
+        key: { pasta: 'P-4', deal_id: 51, contato_tipo: 'PRINCIPAL', contato_id: 7 },
+        phones: [makeErrorPhone('telefone_1', '5543991938236')],
+        last_job_id: 'job-B',
+      },
+    ]
+
+    const { scanner, store } = buildSweepScanner({ errorDeals })
+
+    await scanner.runRetryErrorsJob({})
+    await flushEventLoop()
+
+    const [_params, _extRef, createOpts] = store.createJob.mock.calls[0]! as [
+      unknown, unknown, { triggeredBy?: string; parentJobId?: string }
+    ]
+    // Two distinct parents → no parent_job_id.
+    expect(createOpts.parentJobId).toBeUndefined()
+  })
+
+  it('dry_run returns deals_planned without calling the validator', async () => {
+    const errorDeals = [
+      {
+        key: { pasta: 'P-5', deal_id: 60, contato_tipo: 'PRINCIPAL', contato_id: 8 },
+        phones: [makeErrorPhone('telefone_1', '5543991938235')],
+        last_job_id: 'job-X',
+      },
+    ]
+
+    const { scanner, validator, store } = buildSweepScanner({ errorDeals })
+
+    const result = await scanner.runRetryErrorsJob({ dry_run: true })
+    await flushEventLoop()
+
+    expect(result.status).toBe('dry_run')
+    expect(result.deals_planned).toBe(1)
+    // Validator must NOT have been called.
+    expect(validator.validate).not.toHaveBeenCalled()
+    // Job must be marked cancelled (not started/completed).
+    const finishedWith = store.finishJob.mock.calls.find((c) => c[1] === 'cancelled')
+    expect(finishedWith).toBeTruthy()
+  })
+
+  it('skips pastas already locked by another scan and logs a warning', async () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const locks = new PastaLockManager(db)
+    locks.initialize()
+
+    // Pre-acquire the lock for pasta P-6 so the sweep cannot get it.
+    const preLock = locks.acquire('scan:P-6', 60_000, { job_id: 'external', pasta: 'P-6' })
+    expect(preLock).not.toBeNull()
+
+    const errorDeals = [
+      {
+        key: { pasta: 'P-6', deal_id: 70, contato_tipo: 'PRINCIPAL', contato_id: 9 },
+        phones: [makeErrorPhone('telefone_1', '5543991938235')],
+        last_job_id: 'job-Y',
+      },
+    ]
+
+    const { scanner, validator, logger } = buildSweepScanner({ errorDeals, locks })
+
+    await scanner.runRetryErrorsJob({})
+    await flushEventLoop()
+
+    // Validator must NOT have been called (pasta was skipped).
+    expect(validator.validate).not.toHaveBeenCalled()
+    // A warn must have been logged about the locked pasta.
+    const warnCalls = logger.warn.mock.calls as Array<[string, ...unknown[]]>
+    const lockWarn = warnCalls.find((c) => c[0].includes('scan in progress'))
+    expect(lockWarn).toBeTruthy()
+
+    preLock!.release()
+  })
+
+  it('re-publishes pasta_summary for touched pastas via pipedrive publisher', async () => {
+    const pub = {
+      enqueueDealAllFail: vi.fn(),
+      enqueuePastaSummary: vi.fn(),
+      flush: vi.fn(async () => {}),
+      pendingCount: vi.fn(() => 0),
+      dedupSize: vi.fn(() => 0),
+    }
+
+    const errorDeals = [
+      {
+        key: { pasta: 'P-7', deal_id: 80, contato_tipo: 'PRINCIPAL', contato_id: 10 },
+        phones: [makeErrorPhone('telefone_1', '5543991938235')],
+        last_job_id: 'job-Z',
+      },
+    ]
+
+    const { scanner } = buildSweepScanner({ errorDeals, pipedrive: pub })
+
+    await scanner.runRetryErrorsJob({})
+    await flushEventLoop()
+
+    // pasta_summary should have been enqueued for the touched pasta.
+    expect(pub.enqueuePastaSummary).toHaveBeenCalledTimes(1)
+    const arg = pub.enqueuePastaSummary.mock.calls[0]![0] as { pasta: string; scenario: string }
+    expect(arg.pasta).toBe('P-7')
+    expect(arg.scenario).toBe('pasta_summary')
   })
 })
