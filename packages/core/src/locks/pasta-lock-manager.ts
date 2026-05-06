@@ -106,7 +106,10 @@ export class PastaLockManager {
       if (handle) return handle
       await new Promise((r) => setTimeout(r, opts.pollMs))
     }
-    return null
+    // Final attempt at-or-after deadline — covers the case where the holder
+    // released during the last sleep window. Without this the effective wait
+    // is timeoutMs - pollMs, not timeoutMs as the contract promises.
+    return this.acquire(key, ttlMs, opts.context)
   }
 
   releaseExpired(): number {

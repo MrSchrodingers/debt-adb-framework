@@ -130,6 +130,14 @@ describe('PastaLockManager — extended API', () => {
     expect(b).toBeNull()
   })
 
+  it('acquireWithWait honors the full timeoutMs window (late release)', async () => {
+    const a = mgr.acquire('scan:foo', 60_000)!
+    // Release at deadline - 10ms, when the waiter would already be in its final sleep.
+    setTimeout(() => a.release(), 190)
+    const b = await mgr.acquireWithWait('scan:foo', 60_000, { timeoutMs: 200, pollMs: 50 })
+    expect(b).not.toBeNull()
+  })
+
   it('releaseExpired removes only expired rows', () => {
     mgr.acquire('a', 60_000)
     mgr.acquire('b', 60_000)
