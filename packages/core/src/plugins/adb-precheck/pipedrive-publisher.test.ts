@@ -3,6 +3,7 @@ import { createRequire } from 'node:module'
 import { PipedrivePublisher } from './pipedrive-publisher.js'
 import type { PipedriveClient } from './pipedrive-client.js'
 import { PipedriveActivityStore } from './pipedrive-activity-store.js'
+import { PastaLockManager } from '../../locks/pasta-lock-manager.js'
 import type {
   PipedriveDealAllFailIntent,
   PipedrivePastaSummaryIntent,
@@ -305,6 +306,166 @@ describe('PipedrivePublisher — persistence (with store)', () => {
     const row = store.list({ scenario: 'deal_all_fail' }).items[0]
     expect(row.pipedrive_response_status).toBe('success')
     expect(row.pipedrive_response_id).toBeNull()
+    db.close()
+  })
+})
+
+describe('PipedrivePublisher — upsert (PUT path)', () => {
+  function makeStore() {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PipedriveActivityStore(db)
+    store.initialize()
+    return { db, store }
+  }
+
+  function makeLocks(db: ReturnType<typeof Database>) {
+    const mgr = new PastaLockManager(db)
+    mgr.initialize()
+    return mgr
+  }
+
+  // Minimum required fields for PipedrivePastaSummaryIntent.
+  const pastaSummaryP1: PipedrivePastaSummaryIntent = {
+    scenario: 'pasta_summary',
+    pasta: 'P-1',
+    first_deal_id: 1,
+    job_id: 'j1',
+    job_started: null,
+    job_ended: null,
+    total_deals: 1,
+    ok_deals: 1,
+    archived_deals: 0,
+    total_phones_checked: 1,
+    ok_phones: 1,
+    strategy_counts: { adb: 1, waha: 0, cache: 0 },
+  }
+
+  it('first call creates note via POST (no update_target_id)', async () => {
+    const { db, store } = makeStore()
+    const locks = makeLocks(db)
+    const seenIntents: unknown[] = []
+    const { client } = fakeClient(async (intent: unknown) => {
+      seenIntents.push(intent)
+      return { ok: true, status: 201, attempts: 1, responseId: 999 }
+    })
+    const pub = new PipedrivePublisher(client, fakeLogger(), store, null, undefined, locks)
+    pub.enqueuePastaSummary(pastaSummaryP1)
+    await pub.flush()
+    expect(seenIntents.length).toBe(1)
+    const intent = seenIntents[0] as { update_target_id?: string }
+    expect(intent.update_target_id).toBeUndefined()
+    // Row must be recorded as a POST.
+    const rows = db.prepare('SELECT http_verb FROM pipedrive_activities ORDER BY created_at ASC').all() as Array<{ http_verb: string }>
+    expect(rows[0].http_verb).toBe('POST')
+    db.close()
+  })
+
+  it('second call PUTs the existing note with update_target_id and records revises_row_id', async () => {
+    const { db, store } = makeStore()
+    const locks = makeLocks(db)
+    let dispatchCount = 0
+    const seenIntents: unknown[] = []
+    const { client } = fakeClient(async (intent: unknown) => {
+      seenIntents.push(intent)
+      dispatchCount++
+      return dispatchCount === 1
+        ? { ok: true, status: 201, attempts: 1, responseId: 999 }
+        : { ok: true, status: 200, attempts: 1, responseId: 999 }
+    })
+    const pub = new PipedrivePublisher(client, fakeLogger(), store, null, undefined, locks)
+
+    // First publish → POST, stores responseId=999.
+    pub.enqueuePastaSummary(pastaSummaryP1)
+    await pub.flush()
+
+    // Second publish → must be PUT targeting note 999.
+    const secondIntent: PipedrivePastaSummaryIntent = { ...pastaSummaryP1, job_id: 'j2', first_deal_id: 2 }
+    pub.enqueuePastaSummary(secondIntent)
+    await pub.flush()
+
+    expect(dispatchCount).toBe(2)
+    const putIntent = seenIntents[1] as { update_target_id?: string; kind: string }
+    expect(putIntent.update_target_id).toBe('999')
+
+    const rows = db
+      .prepare('SELECT id, http_verb, revises_row_id FROM pipedrive_activities ORDER BY created_at ASC')
+      .all() as Array<{ id: string; http_verb: string; revises_row_id: string | null }>
+
+    expect(rows.length).toBe(2)
+    expect(rows[0].http_verb).toBe('POST')
+    expect(rows[1].http_verb).toBe('PUT')
+    // The PUT row must point back to the POST row's id.
+    expect(rows[1].revises_row_id).toBe(rows[0].id)
+    db.close()
+  })
+
+  it('PUT 404 falls back to POST and orphans the previous row', async () => {
+    const { db, store } = makeStore()
+    const locks = makeLocks(db)
+    let dispatchCount = 0
+    const { client } = fakeClient(async () => {
+      dispatchCount++
+      if (dispatchCount === 1) return { ok: true, status: 201, attempts: 1, responseId: 999 }
+      if (dispatchCount === 2) return { ok: false, status: 404, attempts: 1, error: 'not found' }
+      return { ok: true, status: 201, attempts: 1, responseId: 1001 }
+    })
+    const pub = new PipedrivePublisher(client, fakeLogger(), store, null, undefined, locks)
+
+    // First publish → POST.
+    pub.enqueuePastaSummary(pastaSummaryP1)
+    await pub.flush()
+
+    // Second publish → PUT 404 → fallback POST.
+    const secondIntent: PipedrivePastaSummaryIntent = { ...pastaSummaryP1, job_id: 'j2', first_deal_id: 2 }
+    pub.enqueuePastaSummary(secondIntent)
+    await pub.flush()
+
+    // Three dispatch calls: initial POST, failed PUT, fallback POST.
+    expect(dispatchCount).toBe(3)
+
+    // The original POST row gets orphaned when the PUT 404 fallback fires.
+    const orphanedCount = (
+      db
+        .prepare("SELECT COUNT(*) AS n FROM pipedrive_activities WHERE pipedrive_response_status = 'orphaned'")
+        .get() as { n: number }
+    ).n
+    expect(orphanedCount).toBe(1)
+
+    // The fallback POST should have succeeded with responseId=1001.
+    const successRows = db
+      .prepare("SELECT pipedrive_response_id, http_verb FROM pipedrive_activities WHERE pipedrive_response_status = 'success' ORDER BY created_at ASC")
+      .all() as Array<{ pipedrive_response_id: number | null; http_verb: string }>
+
+    // 1 success row: the fallback POST (the original POST row was orphaned).
+    expect(successRows.length).toBe(1)
+    expect(successRows[0].http_verb).toBe('POST')
+    expect(successRows[0].pipedrive_response_id).toBe(1001)
+    db.close()
+  })
+
+  it('dedup is bypassed for PUT (same pasta different jobs always dispatched)', async () => {
+    const { db, store } = makeStore()
+    const locks = makeLocks(db)
+    let dispatchCount = 0
+    const { client } = fakeClient(async () => {
+      dispatchCount++
+      return { ok: true, status: dispatchCount === 1 ? 201 : 200, attempts: 1, responseId: 999 }
+    })
+    // Short idempotency window (1ms) would normally block second publish via store dedup,
+    // but PUT bypasses dedup entirely.
+    const pub = new PipedrivePublisher(client, fakeLogger(), store, null, 30 * 24 * 60 * 60_000, locks)
+
+    pub.enqueuePastaSummary(pastaSummaryP1)
+    await pub.flush()
+
+    // Second publish for same pasta with a different job_id → should PUT, not be deduped.
+    const secondIntent: PipedrivePastaSummaryIntent = { ...pastaSummaryP1, job_id: 'j2', first_deal_id: 2 }
+    pub.enqueuePastaSummary(secondIntent)
+    await pub.flush()
+
+    // Both calls must go through: the PUT bypasses idempotency.
+    expect(dispatchCount).toBe(2)
     db.close()
   })
 })

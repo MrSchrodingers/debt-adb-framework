@@ -314,6 +314,8 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
         ctx.logger,
         this.pipedriveActivityStore,
         this.pipedriveCompanyDomain,
+        undefined, // idempotencyWindowMs uses default
+        this.pastaLocks,
       )
       ctx.logger.info('Pipedrive integration enabled', {
         companyDomain: this.pipedriveCompanyDomain ?? '(unset — links disabled)',
