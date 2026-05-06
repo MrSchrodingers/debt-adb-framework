@@ -59,9 +59,13 @@ export function classifyUiState(input: ClassifierInput): ClassifierResult {
   const { xml } = input
 
   // Rule 1: chat_open — decisive 'exists'
+  // Note: the resource-id branch is unconditional; the EditText fallback is guarded
+  // to exclude the contact_picker screen (which also contains an EditText for search).
+  const hasChatInputId = /resource-id="com\.whatsapp:id\/(entry|conversation_entry|text_entry)"/.test(xml)
+  const hasPickerSearch = /resource-id="com\.whatsapp:id\/picker_search"/.test(xml)
   if (
-    /resource-id="com\.whatsapp:id\/(entry|conversation_entry|text_entry)"/.test(xml) ||
-    (/class="android\.widget\.EditText"/.test(xml) && /com\.whatsapp/.test(xml))
+    hasChatInputId ||
+    (!hasPickerSearch && /class="android\.widget\.EditText"/.test(xml) && /com\.whatsapp/.test(xml))
   ) {
     return build('chat_open', 'whatsapp_input_field', xml)
   }
@@ -98,8 +102,35 @@ export function classifyUiState(input: ClassifierInput): ClassifierResult {
     return build('searching', 'whatsapp_progress_bar', xml)
   }
 
-  // Rules 4-7 (disappearing_msg_dialog, contact_picker, chat_list, unknown_dialog)
-  // come in B5 and B6 below the current branch.
+  // Rule 4: disappearing_msg_dialog — retryable, recover via BACK keyevent
+  if (
+    /text="[^"]*(Mensagens temporárias|Disappearing messages|Mensajes temporales)[^"]*"/i.test(xml) &&
+    /android:id\/button[12]/.test(xml)
+  ) {
+    return build('disappearing_msg_dialog', 'disappearing_messages_modal', xml)
+  }
+
+  // Rule 5: contact_picker — retryable, recover via force-stop
+  if (input.topActivity === 'com.whatsapp/.contact.ui.picker.ContactPicker') {
+    return build('contact_picker', 'top_activity_contact_picker', xml)
+  }
+  const contactRowMatches = xml.match(/resource-id="com\.whatsapp:id\/(contact_row|picker_search)"/g) ?? []
+  if (contactRowMatches.length >= 2) {
+    return build('contact_picker', 'contact_row_repeated', xml)
+  }
+
+  // Rule 6: chat_list — retryable, recover via force-stop
+  const conversationRows = xml.match(/resource-id="com\.whatsapp:id\/conversations_row(_[^"]+)?"/g) ?? []
+  if (conversationRows.length >= 3) {
+    return build('chat_list', 'conversations_row_repeated', xml)
+  }
+  const hasChatsTab = /text="(Chats|Conversas)"/i.test(xml)
+  const hasStatusTab = /text="(Status|Atualizações)"/i.test(xml)
+  const hasCallsTab = /text="(Calls|Chamadas|Ligações)"/i.test(xml)
+  const inTabsContext = /resource-id="[^"]*(tabs?_|bottom_)[^"]*"/i.test(xml)
+  if (hasChatsTab && hasStatusTab && hasCallsTab && inTabsContext) {
+    return build('chat_list', 'bottom_nav_tabs', xml)
+  }
 
   return build('unknown', 'fallback_no_rule_matched', xml)
 }

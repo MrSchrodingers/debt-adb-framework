@@ -80,3 +80,47 @@ describe('classifyUiState — invite_modal', () => {
     expect(classifyUiState({ xml }).state).toBe('invite_modal')
   })
 })
+
+describe('classifyUiState — wrong screens', () => {
+  it('disappearing_msg_dialog (synthesized fixture)', () => {
+    const r = classifyUiState({ xml: FIX('disappearing_msg_dialog.xml') })
+    expect(r.state).toBe('disappearing_msg_dialog')
+    expect(r.decisive).toBe(false)
+    expect(r.retryable).toBe(true)
+    expect(r.evidence.matched_rule).toBe('disappearing_messages_modal')
+  })
+
+  it('contact_picker via topActivity', () => {
+    const r = classifyUiState({
+      xml: '<hierarchy/>',
+      topActivity: 'com.whatsapp/.contact.ui.picker.ContactPicker',
+    })
+    expect(r.state).toBe('contact_picker')
+    expect(r.evidence.matched_rule).toBe('top_activity_contact_picker')
+  })
+
+  it('contact_picker via xml hint (synthesized fixture)', () => {
+    const r = classifyUiState({ xml: FIX('contact_picker.xml') })
+    expect(r.state).toBe('contact_picker')
+    expect(r.evidence.matched_rule).toBe('contact_row_repeated')
+  })
+
+  it('chat_list via repeated conversations_row markers (real device fixture)', () => {
+    const r = classifyUiState({ xml: FIX('chat_list_full.xml') })
+    expect(r.state).toBe('chat_list')
+    expect(r.decisive).toBe(false)
+    expect(r.retryable).toBe(true)
+    expect(r.evidence.matched_rule).toBe('conversations_row_repeated')
+  })
+
+  it('chat_list via bottom-nav tabs (synthesized inline)', () => {
+    const xml = `<hierarchy>
+      <node resource-id="com.whatsapp:id/tabs_root">
+        <node text="Conversas" />
+        <node text="Atualizações" />
+        <node text="Chamadas" />
+      </node>
+    </hierarchy>`
+    expect(classifyUiState({ xml }).state).toBe('chat_list')
+  })
+})
