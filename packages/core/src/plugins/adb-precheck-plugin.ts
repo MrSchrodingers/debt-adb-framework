@@ -12,6 +12,7 @@ import {
   WahaCheckStrategy,
 } from '../check-strategies/index.js'
 import type { DispatchPlugin, PluginContext } from './types.js'
+import { PastaLockManager } from '../locks/index.js'
 import type { DispatchEventName } from '../events/index.js'
 import type { DispatchEmitter } from '../events/dispatch-emitter.js'
 import {
@@ -117,6 +118,8 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   private readonly pipedriveCompanyDomain: string | null
   private readonly pauseState: DispatchPauseState | undefined
   private readonly hygienizationOperator: string
+  private pastaLocks: PastaLockManager | null = null
+  private pastaLockReapTimer: NodeJS.Timeout | null = null
 
   constructor(
     opts: {
@@ -269,6 +272,22 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       )
     }
     this.store.initialize()
+    // A8: pasta locks shared across scan + note-publish paths.
+    // SQLite-backed manager survives restart via the `pasta_locks` table.
+    this.pastaLocks = new PastaLockManager(this.db)
+    this.pastaLocks.initialize()
+    const reapedLocks = this.pastaLocks.releaseExpired()
+    if (reapedLocks > 0) {
+      ctx.logger.warn('reaped expired pasta locks on boot', { count: reapedLocks })
+    }
+    this.pastaLockReapTimer = setInterval(() => {
+      try {
+        this.pastaLocks?.releaseExpired()
+      } catch (e) {
+        ctx.logger.warn('pasta lock reap failed', { error: e instanceof Error ? e.message : String(e) })
+      }
+    }, 5 * 60_000)
+    this.pastaLockReapTimer.unref()
     // Boot-time watchdog: anything still flagged `running` in the job
     // table belongs to a previous process that died without finishing.
     // Mark them as failed so the UI / metrics don't carry phantom
@@ -377,6 +396,10 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   }
 
   async destroy(): Promise<void> {
+    if (this.pastaLockReapTimer) {
+      clearInterval(this.pastaLockReapTimer)
+      this.pastaLockReapTimer = null
+    }
     if (this.pipedrivePublisher) {
       try { await this.pipedrivePublisher.flush() }
       catch (e) {
