@@ -214,10 +214,55 @@ export class AdbProbeStrategy implements CheckStrategy {
       lastClassifierResult = result
 
       // Layer 2 defense — verify the XML actually shows the probed number.
-      // On a decisive result, the XML should contain the probed variant's
-      // digits (in some formatting). If not, the classifier matched stale
-      // UI from a previous attempt — discard the result and let the wrapper
-      // recover + retry.
+      //
+      // Layer 2a (stricter, runs first): for decisive results from modal-text
+      // rules that embed the phone number directly in matched_text, verify
+      // that the matched_text ITSELF contains the probed variant's digits.
+      // The whole-XML check below is insufficient for these rules because the
+      // probed variant's digits can appear elsewhere in the dump (sidebar,
+      // previous chat header) while the decisive signal came from a stale
+      // modal about a completely different number.
+      //
+      // Production case: probed 5571988096378, modal text said "+55 71
+      // 93233-6885 não está no WhatsApp", whole-XML still passed because
+      // the probed variant appeared in a sidebar node.
+      const STRICT_TEXT_RULES = new Set([
+        'not_on_whatsapp_pt',
+        'not_on_whatsapp_en',
+        'not_on_whatsapp_es',
+      ])
+
+      if (
+        result.decisive &&
+        STRICT_TEXT_RULES.has(result.evidence.matched_rule) &&
+        typeof result.evidence.matched_text === 'string'
+      ) {
+        if (!xmlContainsVariantDigits(result.evidence.matched_text, variant)) {
+          return {
+            source: this.source,
+            result: 'inconclusive',
+            confidence: null,
+            evidence: {
+              ...result.evidence,
+              ui_state: 'stale_ui',
+              suspected_state: result.state,
+              suspected_rule: result.evidence.matched_rule,
+              stale_layer: 'matched_text_mismatch',
+              polls: pollCount,
+              saw_searching: sawSearching,
+              attempt_phase: attemptPhase,
+            },
+            latency_ms: Date.now() - started,
+            variant_tried: variant,
+            device_serial: deviceSerial,
+          }
+        }
+      }
+
+      // Layer 2b (backstop): for all decisive results, the full XML must
+      // contain the probed variant's digits somewhere. This catches stale
+      // UI for rules that do NOT embed a phone number in matched_text
+      // (invite_cta_id, invite_button_localized, whatsapp_input_field).
       if (result.decisive && !xmlContainsVariantDigits(xml, variant)) {
         return {
           source: this.source,
@@ -228,6 +273,7 @@ export class AdbProbeStrategy implements CheckStrategy {
             ui_state: 'stale_ui',
             suspected_state: result.state,
             suspected_rule: result.evidence.matched_rule,
+            stale_layer: 'whole_xml',
             polls: pollCount,
             saw_searching: sawSearching,
             attempt_phase: attemptPhase,

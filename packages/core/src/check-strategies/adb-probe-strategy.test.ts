@@ -376,3 +376,46 @@ describe('AdbProbeStrategy — Layer 2 (sanity verification)', () => {
     expect((result.evidence as any).suspected_state).toBe('chat_open')
   })
 })
+
+describe('AdbProbeStrategy — stricter Layer 2 (matched_text vs whole-xml)', () => {
+  it('returns stale_ui when matched_text mismatches variant even if XML contains variant digits elsewhere', async () => {
+    const adb = {
+      shell: async (_s: string, cmd: string) => {
+        if (cmd.includes('cat /sdcard/dispatch-probe.xml')) {
+          // Stale modal for a DIFFERENT number, but the probed variant happens
+          // to appear elsewhere in the XML (e.g. a previous chat sidebar).
+          // The whole-XML sanity would pass; the stricter matched_text sanity must catch it.
+          return [
+            '<hierarchy>',
+            '  <node text="O número de telefone +55 71 93233-6885 não está no WhatsApp." resource-id="android:id/message"/>',
+            '  <node resource-id="android:id/button1"/>',
+            // The probed variant 5571988096378 appears in another text node:
+            '  <node text="Recent: 5571988096378" resource-id="some/other/id"/>',
+            '</hierarchy>',
+          ].join('')
+        }
+        return ''
+      },
+    } as any
+    const strat = new AdbProbeStrategy(adb, async () => {})
+    const result = await strat.probe('5571988096378', { deviceSerial: 'X' })
+    expect(result.result).toBe('inconclusive')
+    expect((result.evidence as any).ui_state).toBe('stale_ui')
+    expect((result.evidence as any).suspected_rule).toBe('not_on_whatsapp_pt')
+    expect((result.evidence as any).stale_layer).toBe('matched_text_mismatch')
+  })
+
+  it('accepts when matched_text contains the probed variant', async () => {
+    const adb = {
+      shell: async (_s: string, cmd: string) => {
+        if (cmd.includes('cat /sdcard/dispatch-probe.xml')) {
+          return '<hierarchy><node text="O número de telefone +55 71 98809-6378 não está no WhatsApp." resource-id="android:id/message"/><node resource-id="android:id/button1"/></hierarchy>'
+        }
+        return ''
+      },
+    } as any
+    const strat = new AdbProbeStrategy(adb, async () => {})
+    const result = await strat.probe('5571988096378', { deviceSerial: 'X' })
+    expect(result.result).toBe('not_exists')
+  })
+})
