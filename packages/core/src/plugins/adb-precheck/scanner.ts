@@ -905,6 +905,9 @@ export class PrecheckScanner {
               primary_valid_phone: primaryValid,
             })
             touchedPastas.add(pasta)
+            // Closes the propagation gap discovered in case 99386 (2026-05-07):
+            // sweep mutations now flow back to the Pipeboard blocklist.
+            await this.submitRetryInvalidation(jobId, deal.key, deal.phones, 'sweep_retry')
           }
 
           this.deps.store.bumpProgress(jobId, {
@@ -947,6 +950,101 @@ export class PrecheckScanner {
       touched_pastas: touchedPastas.size,
     })
     this.deps.store.finishJob(jobId, 'completed')
+  }
+
+  /**
+   * Submit Pipeboard invalidation for a deal whose phones were mutated by
+   * a retry-pass (Level 2 `retryErrorsPass`) or sweep (Level 3
+   * `processSweep`). Mirrors the main-loop writeback logic at line ~466
+   * but operates on a deal whose phones array has ALREADY been updated
+   * by the retry caller.
+   *
+   * The main scan loop submits invalidations inline; retry paths used to
+   * skip this — they only updated the local deal cache and PUT-updated
+   * the pasta_summary note. That left the Pipeboard blocklist out of
+   * sync for any phone that went `error → invalid` during retry. This
+   * helper closes that gap.
+   *
+   * Idempotent: re-submitting the same `(deal, contato, phone)` tuple is a
+   * no-op on the Pipeboard side (blocklist is keyed on the tuple). Safe
+   * to call after every mutation.
+   */
+  private async submitRetryInvalidation(
+    jobId: string,
+    key: DealKey,
+    phones: PhoneResult[],
+    triggeredBy: 'scan_retry' | 'sweep_retry',
+  ): Promise<void> {
+    if (!this.deps.pendingWritebacks && !this.deps.pg) return
+    // Dedupe by normalized phone, same as main loop.
+    const dedupedInvalids = new Map<string, PhoneResult>()
+    for (const p of phones) {
+      if (p.outcome === 'invalid' && !dedupedInvalids.has(p.normalized)) {
+        dedupedInvalids.set(p.normalized, p)
+      }
+    }
+    if (dedupedInvalids.size === 0) return
+
+    const validCount = phones.filter((p) => p.outcome === 'valid').length
+    const invalidCount = phones.filter((p) => p.outcome === 'invalid').length
+    const errorCount = phones.filter((p) => p.outcome === 'error').length
+    const allInvalid = validCount === 0 && phones.length > 0
+    const populatedColumnsInRow = phones.length
+    const probeCoveredEverything = invalidCount === populatedColumnsInRow
+    const archiveIfEmpty = allInvalid && probeCoveredEverything
+
+    if (allInvalid && !probeCoveredEverything) {
+      this.deps.logger.warn(
+        'retry pass skipping archive_if_empty: residual error phones in deal',
+        { jobId, key, populatedColumnsInRow, invalidCount, errorCount },
+      )
+    }
+
+    const batchPhones: BatchInvalidPhone[] = [...dedupedInvalids.values()].map(
+      (p) => ({
+        // Send raw column digits (NOT normalized) — Pipeboard NULLIF
+        // matches by exact-string against the original column value.
+        // See main-loop comment at line ~481 for the full rationale.
+        telefone: p.raw.replace(/\D/g, ''),
+        colunaOrigem: p.column as BatchInvalidPhone['colunaOrigem'],
+        confidence: p.confidence,
+      }),
+    )
+    // `fonte` is a string-literal union typed by Pipeboard's CHECK constraint;
+    // we cannot synthesize new values per retry phase. Reuse the main-loop
+    // fonte. The retry path is captured separately in wa_contact_checks via
+    // `attempt_phase` ('scan_retry' or 'sweep_retry'), so audit-side can join
+    // by jobId + checked_at to distinguish.
+    const fonte = this.deps.fonte ?? 'dispatch_adb_precheck'
+    void triggeredBy
+
+    try {
+      const result = this.deps.pendingWritebacks
+        ? await this.deps.pendingWritebacks.submitInvalidation(key, {
+            motivo: INVALID_MOTIVO,
+            jobId,
+            fonte,
+            phones: batchPhones,
+            archiveIfEmpty,
+          })
+        : await this.deps.pg.applyDealInvalidation(key, {
+            motivo: INVALID_MOTIVO,
+            jobId,
+            fonte,
+            phones: batchPhones,
+            archiveIfEmpty,
+          })
+      if ('archived' in result && result.archived) {
+        this.deps.logger.info('deal archived from retry path (no valid phones)', {
+          jobId, key, triggeredBy,
+        })
+      }
+    } catch (e) {
+      this.deps.logger.warn('retry-pass invalidation submit failed', {
+        jobId, key, triggeredBy,
+        error: e instanceof Error ? e.message : String(e),
+      })
+    }
   }
 
   /**
@@ -1122,6 +1220,13 @@ export class PrecheckScanner {
         invalid_count: invalidCount,
         primary_valid_phone: primaryValid,
       })
+
+      // Closes the propagation gap discovered in case 99386: end-of-scan retry
+      // mutations now flow back to the Pipeboard blocklist (same call shape as
+      // the main loop). Honors `params.writeback_invalid` like the main path.
+      if (params.writeback_invalid) {
+        await this.submitRetryInvalidation(jobId, deal.key, deal.phones, 'scan_retry')
+      }
 
       // Mirror the new outcomes into pastaAgg so the resulting pasta_summary
       // note reflects the retry pass.

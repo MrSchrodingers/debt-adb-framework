@@ -1578,4 +1578,92 @@ describe('Scanner — runRetryErrorsJob (Level 3 sweep)', () => {
     expect(arg.pasta).toBe('P-7')
     expect(arg.scenario).toBe('pasta_summary')
   })
+
+  it('submits Pipeboard invalidation when sweep mutates phone error→invalid (closes case-99386 gap)', async () => {
+    // The validator says "not_exists" — sweep should mark phone as `invalid`
+    // AND propagate that to Pipeboard via applyDealInvalidation (since
+    // pendingWritebacks is not wired in this test scaffold). Pre-fix, the
+    // sweep only updated local cache + Pipedrive note and skipped the
+    // Pipeboard writeback — which is exactly how case 99386 ended up
+    // never reaching prov_telefones_invalidos.
+    const errorDeals = [
+      {
+        key: { pasta: 'P-99386', deal_id: 99386, contato_tipo: 'PRINCIPAL', contato_id: 9 },
+        phones: [makeErrorPhone('telefone_2', '5571988096378')],
+        last_job_id: 'job-original',
+      },
+    ]
+    const validateImpl = (_phone: string) => ({
+      exists_on_wa: 0,
+      from_cache: false,
+      phone_normalized: _phone,
+      source: 'adb_probe',
+      confidence: 0.95,
+      attempts: [],
+    })
+    const { scanner, deps } = buildSweepScannerWithDeps({ errorDeals, validateImpl })
+    await scanner.runRetryErrorsJob({})
+    await flushEventLoop()
+
+    expect(deps.pg.applyDealInvalidation).toHaveBeenCalledTimes(1)
+    const [calledKey, payload] = deps.pg.applyDealInvalidation.mock.calls[0]! as [
+      DealKey,
+      { motivo: string; jobId: string; fonte: string; phones: Array<{ telefone: string; colunaOrigem: string; confidence: number | null }>; archiveIfEmpty: boolean }
+    ]
+    expect(calledKey).toEqual(errorDeals[0]!.key)
+    expect(payload.motivo).toBe('whatsapp_nao_existe')
+    expect(payload.fonte).toBe('dispatch_adb_precheck')
+    expect(payload.phones).toEqual([
+      // raw='71988096378' (makeErrorPhone strips '^\+?55'); submitter
+      // preserves raw column digits per main-loop contract.
+      { telefone: '71988096378', colunaOrigem: 'telefone_2', confidence: 0.95 },
+    ])
+    // Single phone in deal, all invalid post-sweep → archiveIfEmpty true.
+    expect(payload.archiveIfEmpty).toBe(true)
+  })
 })
+
+/** Variant of buildSweepScanner that exposes deps so tests can assert on
+ *  pg.applyDealInvalidation calls. */
+function buildSweepScannerWithDeps(opts: {
+  errorDeals: Array<{ key: DealKey; phones: PhoneResult[]; last_job_id: string }>
+  validateImpl: (phone: string, opts?: Record<string, unknown>) => unknown
+}) {
+  const validator = { validate: vi.fn(async (p: string, o?: Record<string, unknown>) => opts.validateImpl(p, o)) }
+  const upsertDeal = vi.fn()
+  const createdJobs: Array<{ id: string; started_at: string | null; finished_at: string | null }> = []
+  let jobCounter = 0
+  const store = {
+    listDealsWithErrorsByFilter: vi.fn(() => opts.errorDeals),
+    listDealsForPasta: vi.fn(() => opts.errorDeals),
+    createJob: vi.fn((_p: unknown, _e?: string, co?: { triggeredBy?: string; parentJobId?: string }) => {
+      const id = `sweep-job-${++jobCounter}`
+      const job = { id, status: 'queued', started_at: null, finished_at: null, triggered_by: co?.triggeredBy ?? 'manual', parent_job_id: co?.parentJobId ?? null }
+      createdJobs.push(job)
+      return job
+    }),
+    markStarted: vi.fn(),
+    upsertDeal,
+    bumpProgress: vi.fn(),
+    finishJob: vi.fn(),
+    getJob: vi.fn((id: string) => createdJobs.find((j) => j.id === id) ?? null),
+    getDealLastScannedAt: vi.fn(() => null),
+    listRecentlyScannedKeys: vi.fn(() => []),
+    listDealsWithErrors: vi.fn(() => []),
+  }
+  const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
+  const deps = {
+    pg: {
+      countPool: vi.fn(async () => 0),
+      iterateDeals: vi.fn(async function* () { /* empty */ }),
+      applyDealInvalidation: vi.fn(async () => ({ requestId: 'r', idempotent: false, applied: [], archived: false, clearedColumns: [] })),
+      applyDealLocalization: vi.fn(async () => ({ requestId: 'r', idempotent: false, applied: true })),
+    },
+    store,
+    validator,
+    logger,
+    shouldCancel: () => false,
+  } as unknown as ScannerDeps
+  const scanner = new PrecheckScanner(deps)
+  return { scanner, deps: deps as unknown as { pg: { applyDealInvalidation: ReturnType<typeof vi.fn> } } }
+}
