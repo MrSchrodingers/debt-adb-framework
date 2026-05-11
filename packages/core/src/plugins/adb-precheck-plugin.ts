@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import type { ContactRegistry } from '../contacts/contact-registry.js'
 import type { AdbShellAdapter } from '../monitor/types.js'
+import { checkDeviceReady } from '../adb/device-health.js'
 import type { WahaApiClient } from '../waha/types.js'
 import type { DispatchPauseState } from '../engine/dispatch-pause-state.js'
 import { ContactValidator } from '../validator/contact-validator.js'
@@ -378,6 +379,13 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       pauseState: this.pauseState,
       hygienizationOperator: this.hygienizationOperator,
       locks: this.pastaLocks ?? undefined,
+      // Reactive device-failure recovery: scanner runs `checkDeviceReady`
+      // after 3 consecutive probe throws and waits up to 30min (exp
+      // backoff capped at 2min) for the device to come back. The shell
+      // adapter is the same one the L3 probe uses so the check shares
+      // its timeout and connection behaviour.
+      adbShell: this.adb,
+      appPackage: 'com.whatsapp',
     })
 
     ctx.registerRoute('GET',  '/health',     this.handleHealth.bind(this))
@@ -731,6 +739,30 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       pipedrive_enabled: pipedriveEnabled,
       hygienization_mode: hygienizationMode,
     }
+    // Pre-flight device readiness — fail fast (503) when the device that
+    // would receive the L3 probe is offline / booting / WA not running.
+    // Without this the scanner still creates the job, burns its first 3
+    // phones marking each `error`, then enters the recovery loop and
+    // typically fails ~30min later. A 503 here lets the operator fix the
+    // device (replug, unlock, restart WA) and retry immediately.
+    //
+    // Skipped when no device is wired (legacy callers / unit tests).
+    const effectiveSerial = rawParams.device_serial ?? this.defaultDeviceSerial
+    if (effectiveSerial) {
+      const ready = await checkDeviceReady(this.adb, effectiveSerial, { appPackage: 'com.whatsapp' })
+      if (!ready.ok) {
+        this.ctx?.logger.warn('scan rejected: device not ready', {
+          serial: effectiveSerial, reason: ready.reason, detail: ready.detail,
+        })
+        return r.status(503).send({
+          error: 'device_not_ready',
+          reason: ready.reason,
+          detail: ready.detail,
+          serial: effectiveSerial,
+        })
+      }
+    }
+
     const job = this.store.createJob(params, external_ref, { pipedriveEnabled, hygienizationMode })
     if (job.status === 'queued') {
       // Fire-and-forget; progress visible via GET /scan/:id

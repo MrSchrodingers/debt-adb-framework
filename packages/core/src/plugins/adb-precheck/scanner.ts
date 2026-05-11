@@ -1,6 +1,8 @@
 import type { ContactValidator } from '../../validator/contact-validator.js'
 import type { LockHandle, LockState, PastaLockManager } from '../../locks/pasta-lock-manager.js'
 import type { PluginLogger } from '../types.js'
+import type { AdbShellAdapter } from '../../monitor/types.js'
+import { checkDeviceReady, type DeviceReadiness } from '../../adb/device-health.js'
 import type {
   BatchInvalidPhone,
   IPipeboardClient,
@@ -151,6 +153,38 @@ export interface ScannerDeps {
    * the scanner runs without the cross-pasta safety net (legacy behaviour).
    */
   locks?: PastaLockManager
+  /**
+   * ADB shell adapter used to probe device health when consecutive probe
+   * failures suggest the device (not just a specific phone) is sick.
+   * Optional — when omitted, the scanner skips the recovery loop entirely
+   * and falls back to legacy per-phone error behaviour. Production wiring
+   * always supplies the same adapter that powers the L3 ADB probe.
+   */
+  adbShell?: AdbShellAdapter
+  /**
+   * Android package whose presence (via `pidof`) is treated as the
+   * "device is ready to probe" signal. Default `com.whatsapp`. Only
+   * meaningful when `adbShell` is also provided.
+   */
+  appPackage?: string
+  /**
+   * Test hooks for the recovery loop — production callers omit these and
+   * accept the defaults (threshold 3, max wait 30min, exponential backoff
+   * with 5s base capped at 2min between checks). Tests pass shrunk values
+   * so they don't sleep for real.
+   */
+  recoveryConfig?: {
+    /** Consecutive probe failures before we run `checkDeviceReady`. Default 3. */
+    threshold?: number
+    /** Hard upper bound on total wait time. Default 30 * 60 * 1000. */
+    maxWaitMs?: number
+    /** Initial delay in the exponential backoff. Default 5000. */
+    initialDelayMs?: number
+    /** Cap for any single sleep window. Default 120000. */
+    maxDelayMs?: number
+    /** Injectable sleeper for tests. Default `setTimeout`-based. */
+    sleeper?: (ms: number) => Promise<void>
+  }
 }
 
 interface PastaAggregate {
@@ -382,6 +416,57 @@ export class PrecheckScanner {
         params,
       })
 
+      // ── Reactive device-failure recovery ───────────────────────────────
+      // When the probe pipeline throws N consecutive times we treat it as a
+      // device-level failure (frozen, unplugged, OS reboot, WA killed by
+      // low-memory killer, etc.) rather than per-phone bad data. Burning
+      // 1000+ probes against a dead device costs an hour of wall-clock,
+      // marks every phone `error`, and leaves the operator with a huge
+      // sweep job. Instead we pause, ping the device, and resume — or fail
+      // the whole job cleanly so the operator can intervene.
+      const recoveryCfg = {
+        threshold:       this.deps.recoveryConfig?.threshold       ?? 3,
+        maxWaitMs:       this.deps.recoveryConfig?.maxWaitMs       ?? 30 * 60_000,
+        initialDelayMs:  this.deps.recoveryConfig?.initialDelayMs  ?? 5_000,
+        maxDelayMs:      this.deps.recoveryConfig?.maxDelayMs      ?? 120_000,
+        sleeper: this.deps.recoveryConfig?.sleeper ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))),
+      }
+      let consecutiveProbeErrors = 0
+
+      const tryRecoverDevice = async (probeDevice: string): Promise<DeviceReadiness> => {
+        // No adapter wired = no recovery possible. Caller sees ok=true so the
+        // legacy "mark phone error and keep going" path stays untouched.
+        if (!this.deps.adbShell) return { ok: true }
+        const appPackage = this.deps.appPackage ?? 'com.whatsapp'
+        const initial = await checkDeviceReady(this.deps.adbShell, probeDevice, { appPackage })
+        if (initial.ok) return initial
+        logger.error('device unready after consecutive probe errors', {
+          jobId, probeDevice, reason: initial.reason, detail: initial.detail,
+        })
+        const startWait = Date.now()
+        let attempt = 0
+        let last: DeviceReadiness = initial
+        while (Date.now() - startWait < recoveryCfg.maxWaitMs) {
+          if (shouldCancel(jobId)) return last
+          attempt++
+          const delay = Math.min(
+            recoveryCfg.maxDelayMs,
+            recoveryCfg.initialDelayMs * Math.pow(2, attempt - 1),
+          )
+          await recoveryCfg.sleeper(delay)
+          const probe = await checkDeviceReady(this.deps.adbShell!, probeDevice, { appPackage })
+          if (probe.ok) {
+            logger.info('device recovered', { jobId, probeDevice, attempt, elapsed_ms: Date.now() - startWait })
+            return probe
+          }
+          last = probe
+          logger.warn('device still unready, will retry', {
+            jobId, probeDevice, attempt, reason: probe.reason, next_delay_ms: delay,
+          })
+        }
+        return last
+      }
+
       outer: for await (const page of pg.iterateDeals(pgParams, 200)) {
         if (shouldCancel(jobId)) {
           store.finishJob(jobId, 'cancelled')
@@ -436,6 +521,11 @@ export class PrecheckScanner {
                 waha_session: probeSender,
                 profile_id: probeProfile,
               })
+              // Any successful validator call clears the consecutive-error
+              // streak — inconclusive (exists_on_wa === null) is allowed
+              // because that path didn't THROW; it just couldn't classify.
+              // Only thrown errors indicate the probe pipeline is sick.
+              consecutiveProbeErrors = 0
               if (r.from_cache) cacheHits++
               const outcome = r.exists_on_wa === 1 ? 'valid' : r.exists_on_wa === 0 ? 'invalid' : 'error'
               if (outcome === 'valid') {
@@ -474,6 +564,49 @@ export class PrecheckScanner {
                 variant_tried: null,
                 error: e instanceof Error ? e.message : String(e),
               })
+              consecutiveProbeErrors++
+              if (
+                consecutiveProbeErrors >= recoveryCfg.threshold &&
+                probeDevice &&
+                this.deps.adbShell
+              ) {
+                const recovery = await tryRecoverDevice(probeDevice)
+                if (!recovery.ok) {
+                  // Device did not recover within maxWaitMs. Persist the
+                  // partial deal so progress isn't lost, then fail the job
+                  // cleanly so the operator sees a precise reason instead
+                  // of "still running, scanning nothing".
+                  store.upsertDeal(jobId, {
+                    key,
+                    phones: phoneResults,
+                    valid_count: validCount,
+                    invalid_count: invalidCount,
+                    primary_valid_phone: primaryValid,
+                  })
+                  store.bumpProgress(jobId, {
+                    scanned_deals: 1,
+                    total_phones: phoneResults.length,
+                    valid_phones: validCount,
+                    invalid_phones: invalidCount,
+                    error_phones: errorCount,
+                    cache_hits: cacheHits,
+                  })
+                  const reason = `device_unrecoverable: ${recovery.reason ?? 'unknown'}`
+                  logger.error('aborting scan — device did not recover', {
+                    jobId, probeDevice, reason: recovery.reason, detail: recovery.detail,
+                  })
+                  store.finishJob(jobId, 'failed', reason)
+                  finalStatus = 'failed'
+                  this.resumeHygienizationIfActive(hygienizationActive, hygienizationOperator, jobId)
+                  if (onJobFinished) {
+                    try { await onJobFinished(jobId) } catch { /* swallow */ }
+                  }
+                  break outer
+                }
+                // Recovery succeeded — clear the counter and resume with
+                // the next phone in this deal.
+                consecutiveProbeErrors = 0
+              }
             }
           }
 

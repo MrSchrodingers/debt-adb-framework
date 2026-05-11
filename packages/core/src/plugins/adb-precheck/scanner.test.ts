@@ -75,6 +75,15 @@ function buildScanner(
       invalid_count: number
       primary_valid_phone: string | null
     }>
+    adbShell?: { shell: (serial: string, command: string) => Promise<string> }
+    deviceSerial?: string
+    recoveryConfig?: {
+      threshold?: number
+      maxWaitMs?: number
+      initialDelayMs?: number
+      maxDelayMs?: number
+      sleeper?: (ms: number) => Promise<void>
+    }
   } = {},
 ): FakeDeps {
   const cachedScans = opts.cachedScans ?? new Map<string, string>()
@@ -136,6 +145,10 @@ function buildScanner(
     validator,
     logger,
     shouldCancel: () => false,
+    adbShell: opts.adbShell,
+    deviceSerial: opts.deviceSerial,
+    appPackage: 'com.whatsapp',
+    recoveryConfig: opts.recoveryConfig,
   } as unknown as ScannerDeps
   return { scanner: new PrecheckScanner(deps), pg, validator, store }
 }
@@ -1667,3 +1680,141 @@ function buildSweepScannerWithDeps(opts: {
   const scanner = new PrecheckScanner(deps)
   return { scanner, deps: deps as unknown as { pg: { applyDealInvalidation: ReturnType<typeof vi.fn> } } }
 }
+
+describe('PrecheckScanner — reactive device-failure recovery', () => {
+  function makeAdbShell(handler: (cmd: string) => Promise<string> | string) {
+    const calls: string[] = []
+    return {
+      shell: vi.fn(async (_serial: string, command: string) => {
+        calls.push(command)
+        return await handler(command)
+      }),
+      calls,
+    }
+  }
+
+  function rows(n: number): ProvConsultaRow[] {
+    return Array.from({ length: n }).map((_, i) =>
+      buildRow({ deal_id: 100 + i, telefone_1: `5511900000${String(i).padStart(3, '0')}` }),
+    )
+  }
+
+  it('does NOT call adb shell when every probe succeeds (zero recovery overhead)', async () => {
+    const adb = makeAdbShell(() => '1\n')
+    const { scanner, validator } = buildScanner(
+      rows(3),
+      () => ({ phone_normalized: 'x', exists_on_wa: 1, source: 'cache', confidence: 0.95, from_cache: true, wa_chat_id: null, attempts: [] }),
+      { adbShell: adb, deviceSerial: 'serial-X', recoveryConfig: { threshold: 2, sleeper: async () => undefined } },
+    )
+    await scanner.runJob('job-1', { writeback_invalid: false })
+    expect(validator.validate).toHaveBeenCalledTimes(3)
+    expect(adb.shell).toHaveBeenCalledTimes(0)
+  })
+
+  it('does NOT call adb shell when probes are inconclusive but never throw', async () => {
+    // exists_on_wa === null → outcome 'error' but no throw → no recovery
+    const adb = makeAdbShell(() => '1\n')
+    const { scanner, validator } = buildScanner(
+      rows(3),
+      () => ({ phone_normalized: 'x', exists_on_wa: null, source: 'adb_probe', confidence: null, from_cache: false, wa_chat_id: null, attempts: [] }),
+      { adbShell: adb, deviceSerial: 'serial-X', recoveryConfig: { threshold: 2, sleeper: async () => undefined } },
+    )
+    await scanner.runJob('job-1', { writeback_invalid: false })
+    expect(validator.validate).toHaveBeenCalledTimes(3)
+    expect(adb.shell).toHaveBeenCalledTimes(0)
+  })
+
+  it('resets the counter after any successful validate, so isolated throws never trigger recovery', async () => {
+    // Pattern: throw, succeed, throw, succeed, throw — never 2 in a row.
+    const adb = makeAdbShell(() => '1\n')
+    let i = 0
+    const { scanner, validator } = buildScanner(
+      rows(5),
+      () => {
+        i++
+        if (i % 2 === 1) throw new Error('transient')
+        return { phone_normalized: 'x', exists_on_wa: 0, source: 'adb_probe', confidence: 0.95, from_cache: false, wa_chat_id: null, attempts: [] }
+      },
+      { adbShell: adb, deviceSerial: 'serial-X', recoveryConfig: { threshold: 2, sleeper: async () => undefined } },
+    )
+    await scanner.runJob('job-1', { writeback_invalid: false })
+    expect(validator.validate).toHaveBeenCalledTimes(5)
+    expect(adb.shell).toHaveBeenCalledTimes(0)
+  })
+
+  it('triggers checkDeviceReady after N consecutive throws and recovers when the device returns', async () => {
+    // adb stub: first poll says "device offline", second says ready.
+    let pollCount = 0
+    const adb = makeAdbShell((cmd) => {
+      pollCount++
+      if (cmd === 'getprop sys.boot_completed') {
+        if (pollCount === 1) throw new Error('error: device offline')
+        return '1\n'
+      }
+      if (cmd === 'pidof com.whatsapp') return '12345\n'
+      throw new Error('unexpected ' + cmd)
+    })
+
+    // Validator: throws for first 2 phones, then succeeds for the rest.
+    let attempts = 0
+    const { scanner, validator, store } = buildScanner(
+      rows(4),
+      () => {
+        attempts++
+        if (attempts <= 2) throw new Error('probe pipeline failed')
+        return { phone_normalized: 'x', exists_on_wa: 1, source: 'adb_probe', confidence: 0.95, from_cache: false, wa_chat_id: null, attempts: [] }
+      },
+      { adbShell: adb, deviceSerial: 'serial-X', recoveryConfig: { threshold: 2, sleeper: async () => undefined } },
+    )
+    await scanner.runJob('job-1', { writeback_invalid: false })
+
+    // Recovery happened: at least 2 boot_completed calls (one initial unready, one recovered).
+    const bootCalls = adb.calls.filter((c) => c === 'getprop sys.boot_completed').length
+    expect(bootCalls).toBeGreaterThanOrEqual(2)
+    // Scan continued past recovery — all 4 phones attempted.
+    expect(validator.validate).toHaveBeenCalledTimes(4)
+    // Job ended in completion (not failed).
+    expect(store.finishJob).toHaveBeenCalledWith('job-1', 'completed')
+  })
+
+  it('aborts the scan with device_unrecoverable when the wait window expires', async () => {
+    // adb shell ALWAYS reports offline.
+    const adb = makeAdbShell((cmd) => {
+      if (cmd === 'getprop sys.boot_completed') throw new Error('error: device offline')
+      return '1\n'
+    })
+    // Validator throws on every call.
+    const { scanner, store } = buildScanner(
+      rows(5),
+      () => { throw new Error('probe pipeline failed') },
+      {
+        adbShell: adb, deviceSerial: 'serial-X',
+        // Tiny window so the test bails fast without sleeping for real.
+        recoveryConfig: {
+          threshold: 2, maxWaitMs: 20, initialDelayMs: 1, maxDelayMs: 5,
+          sleeper: async () => undefined,
+        },
+      },
+    )
+    await scanner.runJob('job-1', { writeback_invalid: false })
+
+    // Job finished as 'failed' with the unrecoverable reason.
+    const finishCalls = (store.finishJob as ReturnType<typeof vi.fn>).mock.calls
+    const failedCall = finishCalls.find((c) => c[1] === 'failed')
+    expect(failedCall).toBeDefined()
+    expect(failedCall![2]).toMatch(/device_unrecoverable/)
+  })
+
+  it('skips the recovery path entirely when no adbShell is wired (legacy behaviour)', async () => {
+    // Without adbShell, every throw should just be a per-phone error and the
+    // scan finishes "completed" — no recovery code can run.
+    const { scanner, store, validator } = buildScanner(
+      rows(3),
+      () => { throw new Error('probe pipeline failed') },
+      { /* no adbShell */ recoveryConfig: { threshold: 1, sleeper: async () => undefined } },
+    )
+    await scanner.runJob('job-1', { writeback_invalid: false })
+    expect(validator.validate).toHaveBeenCalledTimes(3)
+    expect(store.finishJob).toHaveBeenCalledWith('job-1', 'completed')
+  })
+})
