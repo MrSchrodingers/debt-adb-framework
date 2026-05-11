@@ -515,3 +515,115 @@ describe('PrecheckJobStore — listDealsWithErrors json_each filter', () => {
     db.close()
   })
 })
+
+describe('PrecheckJobStore.tombstoneDeals', () => {
+  function setup() {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PrecheckJobStore(db)
+    store.initialize()
+    return { db, store }
+  }
+
+  function insertDeal(db: ReturnType<typeof Database>, key: { pasta: string; deal_id: number; contato_tipo: string; contato_id: number }) {
+    db.prepare(`INSERT INTO adb_precheck_deals (
+      pasta, deal_id, contato_tipo, contato_id, last_job_id,
+      valid_count, invalid_count, primary_valid_phone, phones_json, scanned_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+      key.pasta, key.deal_id, key.contato_tipo, key.contato_id, 'job-x', 1, 0, null, '[]', '2026-05-01T00:00:00Z',
+    )
+  }
+
+  it('empty input → returns 0 without touching the DB', () => {
+    const { db, store } = setup()
+    insertDeal(db, { pasta: 'A', deal_id: 1, contato_tipo: 'person', contato_id: 1 })
+    const r = store.tombstoneDeals([], '2026-05-12T00:00:00Z')
+    expect(r).toEqual({ tombstoned: 0 })
+    const row = db.prepare('SELECT deleted_at FROM adb_precheck_deals').get() as { deleted_at: string | null }
+    expect(row.deleted_at).toBeNull()
+    db.close()
+  })
+
+  it('marks the matched row as tombstoned and returns count=1', () => {
+    const { db, store } = setup()
+    insertDeal(db, { pasta: 'A', deal_id: 1, contato_tipo: 'person', contato_id: 1 })
+    const r = store.tombstoneDeals([{ pasta: 'A', deal_id: 1, contato_tipo: 'person', contato_id: 1 }], '2026-05-12T08:00:00Z')
+    expect(r.tombstoned).toBe(1)
+    const row = db.prepare('SELECT deleted_at FROM adb_precheck_deals').get() as { deleted_at: string }
+    expect(row.deleted_at).toBe('2026-05-12T08:00:00Z')
+    db.close()
+  })
+
+  it('only updates rows whose deleted_at is currently NULL — preserves the first tombstone', () => {
+    const { db, store } = setup()
+    insertDeal(db, { pasta: 'A', deal_id: 1, contato_tipo: 'person', contato_id: 1 })
+    const first = store.tombstoneDeals(
+      [{ pasta: 'A', deal_id: 1, contato_tipo: 'person', contato_id: 1 }],
+      '2026-05-12T08:00:00Z',
+    )
+    expect(first.tombstoned).toBe(1)
+    const second = store.tombstoneDeals(
+      [{ pasta: 'A', deal_id: 1, contato_tipo: 'person', contato_id: 1 }],
+      '2026-06-01T00:00:00Z',
+    )
+    expect(second.tombstoned).toBe(0)
+    const row = db.prepare('SELECT deleted_at FROM adb_precheck_deals').get() as { deleted_at: string }
+    expect(row.deleted_at).toBe('2026-05-12T08:00:00Z')
+    db.close()
+  })
+
+  it('counts only rows that actually existed and were live', () => {
+    const { db, store } = setup()
+    insertDeal(db, { pasta: 'A', deal_id: 1, contato_tipo: 'person', contato_id: 1 })
+    insertDeal(db, { pasta: 'A', deal_id: 2, contato_tipo: 'person', contato_id: 2 })
+    const r = store.tombstoneDeals(
+      [
+        { pasta: 'A', deal_id: 1, contato_tipo: 'person', contato_id: 1 },
+        { pasta: 'A', deal_id: 2, contato_tipo: 'person', contato_id: 2 },
+        { pasta: 'X', deal_id: 99, contato_tipo: 'person', contato_id: 99 },
+      ],
+      '2026-05-12T08:00:00Z',
+    )
+    expect(r.tombstoned).toBe(2)
+    db.close()
+  })
+
+  it('upsertDeal of a previously-tombstoned key clears deleted_at (resurrection)', () => {
+    const { db, store } = setup()
+    insertDeal(db, { pasta: 'A', deal_id: 1, contato_tipo: 'person', contato_id: 1 })
+    store.tombstoneDeals([{ pasta: 'A', deal_id: 1, contato_tipo: 'person', contato_id: 1 }], '2026-05-12T08:00:00Z')
+
+    const job = store.createJob({} as any)
+    store.upsertDeal(job.id, {
+      key: { pasta: 'A', deal_id: 1, contato_tipo: 'person', contato_id: 1 },
+      phones: [],
+      valid_count: 1, invalid_count: 0, primary_valid_phone: '5511',
+    })
+    const row = db.prepare('SELECT deleted_at FROM adb_precheck_deals').get() as { deleted_at: string | null }
+    expect(row.deleted_at).toBeNull()
+    db.close()
+  })
+
+  it('migration adds deleted_at to legacy DBs that lack it', () => {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    db.prepare(`CREATE TABLE adb_precheck_deals (
+      pasta TEXT NOT NULL,
+      deal_id INTEGER NOT NULL,
+      contato_tipo TEXT NOT NULL,
+      contato_id INTEGER NOT NULL,
+      last_job_id TEXT NOT NULL,
+      valid_count INTEGER NOT NULL,
+      invalid_count INTEGER NOT NULL,
+      primary_valid_phone TEXT,
+      phones_json TEXT NOT NULL,
+      scanned_at TEXT NOT NULL,
+      PRIMARY KEY (pasta, deal_id, contato_tipo, contato_id)
+    )`).run()
+    const store = new PrecheckJobStore(db)
+    store.initialize()
+    const cols = db.prepare("PRAGMA table_info('adb_precheck_deals')").all() as Array<{ name: string }>
+    expect(cols.find((c) => c.name === 'deleted_at')).toBeDefined()
+    db.close()
+  })
+})

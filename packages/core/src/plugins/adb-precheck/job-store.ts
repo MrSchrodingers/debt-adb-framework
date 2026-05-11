@@ -99,6 +99,22 @@ export class PrecheckJobStore {
     this.db.exec(
       'CREATE INDEX IF NOT EXISTS idx_jobs_trigger ON adb_precheck_jobs(triggered_by, created_at DESC)',
     )
+
+    // `deleted_at` records when Pipeboard confirmed the (pasta, deal_id,
+    // contato_tipo, contato_id) row was removed upstream — surfaced via
+    // `lookupDeals` and tombstoned by `tombstoneDeals`. NULL = live;
+    // ISO timestamp = tombstoned. Preserves the phones_json audit trail so
+    // we can still cite invalidations we sent before the row disappeared.
+    const dealsCols = this.db
+      .prepare("PRAGMA table_info('adb_precheck_deals')")
+      .all() as Array<{ name: string }>
+    const hasDeletedAt = dealsCols.some((c) => c.name === 'deleted_at')
+    if (!hasDeletedAt) {
+      this.db.exec('ALTER TABLE adb_precheck_deals ADD COLUMN deleted_at TEXT')
+    }
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_adb_precheck_deals_deleted_at ON adb_precheck_deals(deleted_at) WHERE deleted_at IS NOT NULL',
+    )
   }
 
   /** Mark every job left in `running` state as failed. */
@@ -306,7 +322,8 @@ export class PrecheckJobStore {
            invalid_count = excluded.invalid_count,
            primary_valid_phone = excluded.primary_valid_phone,
            phones_json = excluded.phones_json,
-           scanned_at = excluded.scanned_at`,
+           scanned_at = excluded.scanned_at,
+           deleted_at = NULL`,
       )
       .run(
         result.key.pasta,
@@ -320,6 +337,37 @@ export class PrecheckJobStore {
         JSON.stringify(result.phones),
         new Date().toISOString(),
       )
+  }
+
+  /**
+   * Mark the given deal-keys as tombstoned with `deletedAt`. Used by the
+   * Pipeboard `lookupDeals` reconciliation flow when Pipeboard confirms a
+   * row was removed upstream (`status='deleted'`). NULL → ISO timestamp;
+   * subsequent `upsertDeal` clears `deleted_at` automatically if the same
+   * key is ever re-scanned.
+   *
+   * Returns the actual count of rows transitioned from live to tombstoned.
+   * Repeated calls on already-tombstoned keys leave `deleted_at` UNCHANGED
+   * (preserves the original timestamp — the first tombstone wins) and are
+   * not counted in the return value.
+   */
+  tombstoneDeals(keys: DealKey[], deletedAt: string): { tombstoned: number } {
+    if (keys.length === 0) return { tombstoned: 0 }
+    const stmt = this.db.prepare(
+      `UPDATE adb_precheck_deals
+          SET deleted_at = ?
+        WHERE pasta = ? AND deal_id = ? AND contato_tipo = ? AND contato_id = ?
+          AND deleted_at IS NULL`,
+    )
+    const tx = this.db.transaction((rows: DealKey[]) => {
+      let n = 0
+      for (const k of rows) {
+        const r = stmt.run(deletedAt, k.pasta, k.deal_id, k.contato_tipo, k.contato_id)
+        n += r.changes ?? 0
+      }
+      return n
+    })
+    return { tombstoned: tx(keys) }
   }
 
   /**
