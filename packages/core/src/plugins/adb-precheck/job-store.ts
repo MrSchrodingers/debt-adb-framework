@@ -595,11 +595,15 @@ export class PrecheckJobStore {
     phones_checked_total: number
     last_scan_at: string | null
   } {
+    // `deals_all_invalid` requires `invalid_count > 0` so zero-phone deals
+    // (rows where the upstream prov_consultas had no telefone_* set, or
+    // had every phone stripped before our scan) don't get reported as
+    // "all invalid" in the UI's "nenhum telefone WhatsApp" card.
     const base = (this.db
       .prepare(
         `SELECT COUNT(*) AS deals_scanned,
-                SUM(CASE WHEN valid_count > 0 THEN 1 ELSE 0 END) AS deals_with_valid,
-                SUM(CASE WHEN valid_count = 0 THEN 1 ELSE 0 END) AS deals_all_invalid,
+                SUM(CASE WHEN valid_count > 0                          THEN 1 ELSE 0 END) AS deals_with_valid,
+                SUM(CASE WHEN valid_count = 0 AND invalid_count > 0    THEN 1 ELSE 0 END) AS deals_all_invalid,
                 MAX(scanned_at) AS last_scan_at
          FROM adb_precheck_deals`,
       )
@@ -614,16 +618,14 @@ export class PrecheckJobStore {
       deals_all_invalid: 0,
       last_scan_at: null,
     }
-    const phones = (this.db
-      .prepare(
-        `SELECT COALESCE(SUM(total_phones),0) AS n FROM adb_precheck_jobs WHERE status = 'completed'`,
-      )
-      .get() as { n: number } | undefined) ?? { n: 0 }
+    // Truth-set, same rationale as `aggregatePhoneStatsTruth`. The legacy
+    // SUM(adb_precheck_jobs.total_phones) double-counts every retry pass.
+    const phones = this.aggregatePhoneStatsTruth()
     return {
       deals_scanned: base.deals_scanned ?? 0,
       deals_with_valid: base.deals_with_valid ?? 0,
       deals_all_invalid: base.deals_all_invalid ?? 0,
-      phones_checked_total: phones.n,
+      phones_checked_total: phones.phones_checked,
       last_scan_at: base.last_scan_at,
     }
   }

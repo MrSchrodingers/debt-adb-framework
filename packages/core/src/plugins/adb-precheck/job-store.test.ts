@@ -377,6 +377,91 @@ describe('PrecheckJobStore.aggregatePhoneStatsTruth', () => {
   })
 })
 
+// `aggregateStats()` powers the `/stats` endpoint that drives the
+// `<StatCard>` row in the main pre-check tab. Two precision bugs were
+// found alongside the `/stats/global` fix:
+//   1. `phones_checked_total` summed `adb_precheck_jobs.total_phones` →
+//      inflated by every retry pass (same shape as `/stats/global`).
+//   2. `deals_all_invalid` counted deals with `valid_count = 0`, which
+//      also captured zero-phone deals (upstream prov_consultas row had
+//      no phones to begin with) — the UI labels this card "nenhum
+//      telefone WhatsApp" so the count must exclude rows that never
+//      had any phones to validate.
+describe('PrecheckJobStore.aggregateStats — precision regressions', () => {
+  function setup() {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PrecheckJobStore(db)
+    store.initialize()
+    return { db, store }
+  }
+
+  function phone(column: string, normalized: string, outcome: 'valid'|'invalid'|'error') {
+    return {
+      column, raw: normalized, normalized, outcome,
+      source: 'adb_probe', confidence: outcome === 'error' ? null : 0.95,
+      variant_tried: normalized, error: null,
+    } as any
+  }
+
+  it('phones_checked_total reflects current deals state, NOT the job retry sum', () => {
+    const { db, store } = setup()
+    const key = { pasta: 'P-1', deal_id: 1, contato_tipo: 'person', contato_id: 1 }
+
+    const job1 = store.createJob({} as any)
+    store.upsertDeal(job1.id, {
+      key,
+      phones: [phone('tel_1','5511900000001','valid'), phone('tel_2','5511900000002','invalid')],
+      valid_count: 1, invalid_count: 1, primary_valid_phone: '5511900000001',
+    })
+    db.prepare(`UPDATE adb_precheck_jobs SET status='completed', total_phones=2
+                WHERE id = ?`).run(job1.id)
+
+    // Retry pass — same deal, same phones, but jobs SUM would say 4.
+    const job2 = store.createJob({} as any, undefined, { triggeredBy: 'retry-errors-sweep' })
+    store.upsertDeal(job2.id, {
+      key,
+      phones: [phone('tel_1','5511900000001','valid'), phone('tel_2','5511900000002','invalid')],
+      valid_count: 1, invalid_count: 1, primary_valid_phone: '5511900000001',
+    })
+    db.prepare(`UPDATE adb_precheck_jobs SET status='completed', total_phones=2
+                WHERE id = ?`).run(job2.id)
+
+    expect(store.aggregateStats().phones_checked_total).toBe(2)
+    db.close()
+  })
+
+  it('deals_all_invalid excludes deals with NO phones (empty phones_json)', () => {
+    const { db, store } = setup()
+    const job = store.createJob({} as any)
+    // Three deals:
+    //  A: one valid phone   → deals_with_valid (not counted as all-invalid)
+    //  B: only invalid      → deals_all_invalid (the target meaning)
+    //  C: no phones at all  → must NOT be counted as all-invalid
+    store.upsertDeal(job.id, {
+      key: { pasta: 'A', deal_id: 1, contato_tipo: 'person', contato_id: 1 },
+      phones: [phone('tel_1','5511900000001','valid')],
+      valid_count: 1, invalid_count: 0, primary_valid_phone: '5511900000001',
+    })
+    store.upsertDeal(job.id, {
+      key: { pasta: 'B', deal_id: 2, contato_tipo: 'person', contato_id: 2 },
+      phones: [phone('tel_1','5511900000002','invalid'), phone('tel_2','5511900000003','invalid')],
+      valid_count: 0, invalid_count: 2, primary_valid_phone: null,
+    })
+    store.upsertDeal(job.id, {
+      key: { pasta: 'C', deal_id: 3, contato_tipo: 'person', contato_id: 3 },
+      phones: [],
+      valid_count: 0, invalid_count: 0, primary_valid_phone: null,
+    })
+
+    const s = store.aggregateStats()
+    expect(s.deals_scanned).toBe(3)
+    expect(s.deals_with_valid).toBe(1)
+    expect(s.deals_all_invalid).toBe(1)
+    db.close()
+  })
+})
+
 // I4 regression: json_each filter must not false-positive on error text
 describe('PrecheckJobStore — listDealsWithErrors json_each filter', () => {
   it('does NOT match phones whose error message contains the literal substring "outcome":"error"', () => {
