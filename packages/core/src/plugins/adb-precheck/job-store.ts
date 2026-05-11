@@ -367,12 +367,26 @@ export class PrecheckJobStore {
   }
 
   /**
-   * Lifetime phone-level aggregates from completed jobs. Powers the
-   * "Visão Geral" panel — the operator wants to know how many phones
-   * we have actually tested versus how many remain in the pool, to
-   * size the next batch (`limit=100` → ~N phones → ~M minutes).
+   * Truth-set phone counts derived from the CURRENT state of
+   * `adb_precheck_deals.phones_json`. Powers the "Visão Geral" panel —
+   * the operator needs the actual number of distinct phone-rows we
+   * are holding evidence for, not a running sum that inflates with
+   * every retry pass.
+   *
+   * Why not SUM(adb_precheck_jobs.*_phones)? Each retry pipeline
+   * (probe_recover, end-of-scan retry, manual sweep) creates a new
+   * job whose counters add to the lifetime sum, even when those
+   * retries operate on the SAME (pasta, deal, contato) and the
+   * resolved outcome simply replaces the prior phones_json via
+   * `upsertDeal`. The deals table is the only place where the row
+   * count tracks the population we actually have data for.
+   *
+   * Edge case: a deal's `phones_json` may still hold a phone with
+   * `outcome: 'error'` if all retry layers failed. Those are counted
+   * under `phones_error` so the operator can see the unresolved
+   * remainder (matches `listDealsWithErrors` semantics).
    */
-  aggregatePhoneStats(): {
+  aggregatePhoneStatsTruth(): {
     phones_checked: number
     phones_valid: number
     phones_invalid: number
@@ -380,17 +394,23 @@ export class PrecheckJobStore {
   } {
     const row = (this.db
       .prepare(
-        `SELECT COALESCE(SUM(total_phones),0)   AS phones_checked,
-                COALESCE(SUM(valid_phones),0)   AS phones_valid,
-                COALESCE(SUM(invalid_phones),0) AS phones_invalid,
-                COALESCE(SUM(error_phones),0)   AS phones_error
-           FROM adb_precheck_jobs
-          WHERE status = 'completed'`,
+        `SELECT
+           COUNT(*) AS phones_checked,
+           SUM(CASE WHEN json_extract(je.value, '$.outcome') = 'valid'   THEN 1 ELSE 0 END) AS phones_valid,
+           SUM(CASE WHEN json_extract(je.value, '$.outcome') = 'invalid' THEN 1 ELSE 0 END) AS phones_invalid,
+           SUM(CASE WHEN json_extract(je.value, '$.outcome') = 'error'   THEN 1 ELSE 0 END) AS phones_error
+         FROM adb_precheck_deals d, json_each(d.phones_json) je`,
       )
       .get() as
         | { phones_checked: number; phones_valid: number; phones_invalid: number; phones_error: number }
         | undefined) ?? { phones_checked: 0, phones_valid: 0, phones_invalid: 0, phones_error: 0 }
-    return row
+    // SUM over an empty set is NULL in SQLite; COALESCE each column.
+    return {
+      phones_checked: row.phones_checked ?? 0,
+      phones_valid:   row.phones_valid   ?? 0,
+      phones_invalid: row.phones_invalid ?? 0,
+      phones_error:   row.phones_error   ?? 0,
+    }
   }
 
   /**

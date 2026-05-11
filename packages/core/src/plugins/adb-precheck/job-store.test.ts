@@ -270,6 +270,113 @@ describe('PrecheckJobStore — retry stats', () => {
   })
 })
 
+// Truth-set phone stats: derive from adb_precheck_deals.phones_json (current
+// state), NOT from SUM(adb_precheck_jobs.*_phones) which double-counts retries
+// (probe_recover, scan_retry, sweep_retry) and re-runs.
+describe('PrecheckJobStore.aggregatePhoneStatsTruth', () => {
+  function setup() {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PrecheckJobStore(db)
+    store.initialize()
+    return { db, store }
+  }
+
+  function phone(column: string, normalized: string, outcome: 'valid'|'invalid'|'error') {
+    return {
+      column, raw: normalized, normalized, outcome,
+      source: 'adb_probe', confidence: outcome === 'error' ? null : 0.95,
+      variant_tried: normalized, error: null,
+    } as any
+  }
+
+  it('returns zeros on empty store', () => {
+    const { db, store } = setup()
+    expect(store.aggregatePhoneStatsTruth()).toEqual({
+      phones_checked: 0, phones_valid: 0, phones_invalid: 0, phones_error: 0,
+    })
+    db.close()
+  })
+
+  it('counts each phone-row from adb_precheck_deals.phones_json once per outcome', () => {
+    const { db, store } = setup()
+    const job = store.createJob({} as any)
+    store.upsertDeal(job.id, {
+      key: { pasta: 'P-1', deal_id: 1, contato_tipo: 'person', contato_id: 1 },
+      phones: [
+        phone('tel_1', '5511900000001', 'valid'),
+        phone('tel_2', '5511900000002', 'invalid'),
+        phone('tel_3', '5511900000003', 'invalid'),
+        phone('tel_4', '5511900000004', 'error'),
+      ],
+      valid_count: 1, invalid_count: 2, primary_valid_phone: '5511900000001',
+    })
+    expect(store.aggregatePhoneStatsTruth()).toEqual({
+      phones_checked: 4, phones_valid: 1, phones_invalid: 2, phones_error: 1,
+    })
+    db.close()
+  })
+
+  it('reflects CURRENT state after deal re-scan (upsert REPLACES prior phones_json)', () => {
+    // This is the bug we're fixing: SUM(jobs) keeps adding retries; truth from
+    // deals reflects only what is currently persisted for each (pasta, deal, contato).
+    const { db, store } = setup()
+    const key = { pasta: 'P-1', deal_id: 1, contato_tipo: 'person', contato_id: 1 }
+
+    // First scan: 3 phones (1 valid, 1 invalid, 1 error)
+    const job1 = store.createJob({} as any)
+    store.upsertDeal(job1.id, {
+      key,
+      phones: [
+        phone('tel_1', '5511900000001', 'valid'),
+        phone('tel_2', '5511900000002', 'invalid'),
+        phone('tel_3', '5511900000003', 'error'),
+      ],
+      valid_count: 1, invalid_count: 1, primary_valid_phone: '5511900000001',
+    })
+    // Bump completed-job counters as the real send pipeline would.
+    db.prepare(`UPDATE adb_precheck_jobs SET status='completed',
+                total_phones=3, valid_phones=1, invalid_phones=1, error_phones=1
+                WHERE id = ?`).run(job1.id)
+
+    // Retry pass resolves the error → invalid (same deal, upsert replaces row)
+    const job2 = store.createJob({} as any, undefined, { triggeredBy: 'retry-errors-sweep' })
+    store.upsertDeal(job2.id, {
+      key,
+      phones: [
+        phone('tel_1', '5511900000001', 'valid'),
+        phone('tel_2', '5511900000002', 'invalid'),
+        phone('tel_3', '5511900000003', 'invalid'), // was error, now resolved
+      ],
+      valid_count: 1, invalid_count: 2, primary_valid_phone: '5511900000001',
+    })
+    db.prepare(`UPDATE adb_precheck_jobs SET status='completed',
+                total_phones=3, valid_phones=1, invalid_phones=2, error_phones=0
+                WHERE id = ?`).run(job2.id)
+
+    // Job SUM would return 6 phones (3+3). Truth returns 3.
+    expect(store.aggregatePhoneStatsTruth()).toEqual({
+      phones_checked: 3, phones_valid: 1, phones_invalid: 2, phones_error: 0,
+    })
+
+    db.close()
+  })
+
+  it('ignores adb_precheck_jobs entirely — only adb_precheck_deals is consulted', () => {
+    // Pathological: jobs table claims phones tested, but no deals were persisted.
+    // Could happen if a job crashed mid-flight before any upsertDeal. Truth = 0.
+    const { db, store } = setup()
+    const job = store.createJob({} as any)
+    db.prepare(`UPDATE adb_precheck_jobs SET status='completed',
+                total_phones=999, valid_phones=300, invalid_phones=600, error_phones=99
+                WHERE id = ?`).run(job.id)
+    expect(store.aggregatePhoneStatsTruth()).toEqual({
+      phones_checked: 0, phones_valid: 0, phones_invalid: 0, phones_error: 0,
+    })
+    db.close()
+  })
+})
+
 // I4 regression: json_each filter must not false-positive on error text
 describe('PrecheckJobStore — listDealsWithErrors json_each filter', () => {
   it('does NOT match phones whose error message contains the literal substring "outcome":"error"', () => {

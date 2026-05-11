@@ -545,17 +545,22 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       poolTotal !== null && poolTotal > 0 ? (scannedTotal / poolTotal) * 100 : null
 
     const dealAgg = this.store.aggregateStats()
-    const phoneAgg = this.store.aggregatePhoneStats()
+    // Truth-set: derived from adb_precheck_deals.phones_json (current state),
+    // NOT from SUM(adb_precheck_jobs.*) which inflates with retry passes.
+    const phoneAgg = this.store.aggregatePhoneStatsTruth()
 
     // wa_contact_checks lives in the shared registry; query directly
-    // since the plugin already owns this DB.
+    // since the plugin already owns this DB. Count DISTINCT phones —
+    // the cache stores one row per (phone, attempt_phase) and ratios
+    // of ~2 rows/phone are normal once retries run, so a raw COUNT(*)
+    // would also overstate cache coverage.
     let cacheFresh = 0
     let cacheTotal = 0
     try {
       const cacheRow = (this.db
         .prepare(
-          `SELECT COUNT(*) AS total,
-                  COALESCE(SUM(CASE WHEN checked_at >= ? THEN 1 ELSE 0 END),0) AS fresh
+          `SELECT COUNT(DISTINCT phone_normalized) AS total,
+                  COUNT(DISTINCT CASE WHEN checked_at >= ? THEN phone_normalized END) AS fresh
              FROM wa_contact_checks`,
         )
         .get(thresholdIso) as { total: number; fresh: number } | undefined) ?? { total: 0, fresh: 0 }
