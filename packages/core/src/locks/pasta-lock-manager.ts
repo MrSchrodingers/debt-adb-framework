@@ -34,6 +34,17 @@ export interface LockHandle {
   readonly expiresAt: Date
   release(): void
   isStillValid(): boolean
+  /**
+   * Extend the lock's `expires_at` by `ttlMs` from now, but only if this
+   * worker is still the holder (matched by `acquired_by` + `fence_token`).
+   * Returns `false` when the lock has been reaped or taken over — caller
+   * should treat that as "I no longer own this; subsequent writes are
+   * racing with another holder" and surface it as a critical warning.
+   *
+   * The handle's own `expiresAt` field is NOT mutated (handle stays
+   * immutable). Callers that need the new deadline can call `describe()`.
+   */
+  renew(ttlMs: number): boolean
 }
 
 export class PastaLockManager {
@@ -92,6 +103,7 @@ export class PastaLockManager {
       expiresAt: result.expiresAt,
       release: () => this.releaseHolder(result.key, result.workerId, result.fenceToken),
       isStillValid: () => this.isHolder(result.key, result.workerId, result.fenceToken),
+      renew: (ttlMs: number) => this.renewHolder(result.key, result.workerId, result.fenceToken, ttlMs),
     }
   }
 
@@ -172,5 +184,16 @@ export class PastaLockManager {
       .prepare('SELECT 1 FROM pasta_locks WHERE lock_key = ? AND acquired_by = ? AND fence_token = ?')
       .get(key, workerId, fenceToken)
     return Boolean(row)
+  }
+
+  private renewHolder(key: string, workerId: string, fenceToken: number, ttlMs: number): boolean {
+    // Holder-scoped UPDATE: matches on (key, acquired_by, fence_token), so a
+    // takeover by another worker (different fence_token) makes this a no-op.
+    // The `changes` count tells us whether we still owned the row.
+    const newExpiresIso = new Date(Date.now() + ttlMs).toISOString()
+    const result = this.db
+      .prepare('UPDATE pasta_locks SET expires_at = ? WHERE lock_key = ? AND acquired_by = ? AND fence_token = ?')
+      .run(newExpiresIso, key, workerId, fenceToken)
+    return result.changes === 1
   }
 }

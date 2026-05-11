@@ -315,8 +315,10 @@ export class PrecheckScanner {
     // we skip the locking entirely to preserve backward compatibility.
     const lockPasta = params.pasta_prefix ?? 'all'
     const lockKey = `scan:${lockPasta}`
+    const LOCK_TTL_MS = 3_600_000 /* 1h */
+    const LOCK_RENEW_EVERY_MS = 15 * 60_000 /* 15min — three renew chances inside one TTL */
     const scanLock: LockHandle | null = this.deps.locks
-      ? this.deps.locks.acquire(lockKey, 3_600_000 /* 1h TTL */, {
+      ? this.deps.locks.acquire(lockKey, LOCK_TTL_MS, {
           job_id: jobId,
           pasta: lockPasta,
         })
@@ -335,6 +337,27 @@ export class PrecheckScanner {
       this.resumeHygienizationIfActive(hygienizationActive, hygienizationOperator, jobId)
       throw new ScanInProgressError(lockPasta, current)
     }
+
+    // Long scans (limit=1000 → ~7h at observed rates) outlast the 1h TTL.
+    // Renew every 15 min so the lock stays valid for the lifetime of the
+    // scan, and reaps automatically within 15 min if this process dies
+    // (matches the existing reaper contract). The interval is unref'd so a
+    // hung renewer can never keep the event loop alive on its own.
+    const renewTimer: NodeJS.Timeout | null = scanLock
+      ? setInterval(() => {
+          try {
+            const ok = scanLock.renew(LOCK_TTL_MS)
+            if (!ok) {
+              logger.error('scan lock lost mid-scan — another holder acquired the key', {
+                jobId, lockKey,
+              })
+            }
+          } catch (e) {
+            logger.error('scan lock renew threw', { jobId, lockKey, error: e instanceof Error ? e.message : String(e) })
+          }
+        }, LOCK_RENEW_EVERY_MS)
+      : null
+    renewTimer?.unref?.()
 
     // Scanner-side processing budget. `limit` now means "this many deals
     // ACTUALLY PROCESSED" (i.e. validator was called), not "this many rows
@@ -722,6 +745,9 @@ export class PrecheckScanner {
       this.resumeHygienizationIfActive(hygienizationActive, hygienizationOperator, jobId)
       throw e
     } finally {
+      // Stop renewing BEFORE releasing — a late renewal racing the release
+      // could re-extend a row about to be deleted, leaking a dead lock.
+      if (renewTimer) clearInterval(renewTimer)
       // Release the per-pasta scan lock unconditionally — whether the job
       // completed, was cancelled, or threw. This is safe to call even when
       // scanLock is null (no-op).

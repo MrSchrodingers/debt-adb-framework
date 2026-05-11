@@ -164,3 +164,65 @@ describe('PastaLockManager — extended API', () => {
     expect(live.map((l) => l.key)).toEqual(['b'])
   })
 })
+
+// Long-running scans (e.g. limit=1000 → 7+ hours of probe work) exceed the
+// 1h TTL the scanner uses today. Without renewal, the lock auto-expires
+// mid-flight and an operator could trigger a parallel scan that races our
+// writes. Renewal extends the deadline only while the original holder is
+// still alive — if the scanner crashes, missed renewals let the lock reap
+// itself naturally (matching the existing reaper contract).
+describe('PastaLockManager — renew', () => {
+  let db: Database.Database
+  let mgr: PastaLockManager
+  beforeEach(() => {
+    db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    mgr = new PastaLockManager(db)
+    mgr.initialize()
+  })
+  afterEach(() => db.close())
+
+  it('extends expires_at for a still-held lock and returns true', () => {
+    const handle = mgr.acquire('scan:foo', 60_000)!
+    const beforeRow = db.prepare('SELECT expires_at FROM pasta_locks WHERE lock_key=?').get('scan:foo') as { expires_at: string }
+    const ok = handle.renew(600_000)
+    expect(ok).toBe(true)
+    const afterRow = db.prepare('SELECT expires_at FROM pasta_locks WHERE lock_key=?').get('scan:foo') as { expires_at: string }
+    expect(new Date(afterRow.expires_at).getTime()).toBeGreaterThan(new Date(beforeRow.expires_at).getTime())
+  })
+
+  it('returns false and does NOT recreate the row after release', () => {
+    const handle = mgr.acquire('scan:foo', 60_000)!
+    handle.release()
+    expect(handle.renew(60_000)).toBe(false)
+    expect(mgr.describe('scan:foo')).toBeNull()
+  })
+
+  it('returns false after another worker has acquired the key', () => {
+    const a = mgr.acquire('scan:foo', 60_000)!
+    db.prepare("UPDATE pasta_locks SET expires_at = '2000-01-01T00:00:00Z' WHERE lock_key = 'scan:foo'").run()
+    const b = mgr.acquire('scan:foo', 60_000)!
+    expect(a.renew(60_000)).toBe(false)
+    // b's deadline must be intact — renew must not touch a different holder's row.
+    expect(b.isStillValid()).toBe(true)
+  })
+
+  it('keeps isStillValid true after a successful renew', () => {
+    const handle = mgr.acquire('scan:foo', 60_000)!
+    expect(handle.renew(60_000)).toBe(true)
+    expect(handle.isStillValid()).toBe(true)
+  })
+
+  it('handle.expiresAt does not auto-update — caller relies on the boolean (and DB) for truth', () => {
+    // The handle's expiresAt is the original acquire-time deadline. Renew
+    // updates the DB row; callers that need the new deadline should re-call
+    // describe(). This keeps the handle immutable and avoids surprising
+    // callers that captured `.expiresAt` earlier.
+    const handle = mgr.acquire('scan:foo', 60_000)!
+    const originalExpiresAt = handle.expiresAt.getTime()
+    handle.renew(600_000)
+    expect(handle.expiresAt.getTime()).toBe(originalExpiresAt)
+    const fresh = mgr.describe('scan:foo')!
+    expect(fresh.expiresAt.getTime()).toBeGreaterThan(originalExpiresAt)
+  })
+})
