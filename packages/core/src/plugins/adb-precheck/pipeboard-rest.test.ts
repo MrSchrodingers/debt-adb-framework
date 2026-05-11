@@ -352,3 +352,157 @@ function makeDeal(id: number) {
     telefone_localizado: null,
   }
 }
+
+describe('PipeboardRest.lookupDeals', () => {
+  beforeEach(() => metricsRegistry.resetMetrics())
+  afterEach(() => vi.restoreAllMocks())
+
+  function activeResult(deal_id: number, last_modified_at = '2026-05-09T14:22:01Z') {
+    return {
+      key: { pasta: '16071653-A', deal_id, contato_tipo: 'person', contato_id: 360411 },
+      status: 'active',
+      last_modified_at,
+      active_phones: {
+        telefone_1: '5551935646163',
+        telefone_2: null,
+        telefone_3: null,
+      },
+      invalidated_phones: [
+        { telefone: '5562982410247', coluna_origem: 'telefone_4', motivo: 'whatsapp_nao_existe',
+          fonte: 'dispatch_adb_precheck', invalidado_em: '2026-05-07T19:08:36Z' },
+      ],
+    }
+  }
+
+  function deletedResult(deal_id: number, deleted_at = '2026-04-26T08:14:32Z') {
+    return {
+      key: { pasta: '13735652-A', deal_id, contato_tipo: 'organization', contato_id: 15476 },
+      status: 'deleted',
+      last_modified_at: deleted_at,
+      deleted_at,
+      active_phones: null,
+      invalidated_phones: [],
+    }
+  }
+
+  function notFoundResult(deal_id: number) {
+    return {
+      key: { pasta: 'XX-9999', deal_id, contato_tipo: 'person', contato_id: 1 },
+      status: 'not_found',
+      last_modified_at: null,
+      active_phones: null,
+      // `invalidated_phones` may be absent or null per spec; both must work.
+    }
+  }
+
+  it('empty input → no HTTP call, returns []', async () => {
+    const fetchImpl = vi.fn()
+    const c = makeClient(fetchImpl)
+    expect(await c.lookupDeals([])).toEqual([])
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('happy path → POSTs to /precheck/deals/lookup with keys[] and remaps snake → camel', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, {
+      results: [activeResult(115277), deletedResult(108126), notFoundResult(99999)],
+    }))
+    const c = makeClient(fetchImpl)
+    const keys: DealKey[] = [
+      { pasta: '16071653-A', deal_id: 115277, contato_tipo: 'person', contato_id: 360411 },
+      { pasta: '13735652-A', deal_id: 108126, contato_tipo: 'organization', contato_id: 15476 },
+      { pasta: 'XX-9999', deal_id: 99999, contato_tipo: 'person', contato_id: 1 },
+    ]
+    const out = await c.lookupDeals(keys)
+
+    // Method + URL + body shape
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(url).toBe('http://test/api/v1/adb/precheck/deals/lookup')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body as string)).toEqual({ keys })
+    expect((init.headers as Record<string, string>)['X-API-Key']).toBe('pbk_test')
+
+    // Snake → camel remapping
+    expect(out).toHaveLength(3)
+    expect(out[0].status).toBe('active')
+    expect(out[0].lastModifiedAt).toBe('2026-05-09T14:22:01Z')
+    expect(out[0].deletedAt).toBeNull()
+    expect(out[0].activePhones).toEqual({ telefone_1: '5551935646163', telefone_2: null, telefone_3: null })
+    expect(out[0].invalidatedPhones).toHaveLength(1)
+    expect(out[0].invalidatedPhones[0].colunaOrigem).toBe('telefone_4')
+    expect(out[0].invalidatedPhones[0].invalidadoEm).toBe('2026-05-07T19:08:36Z')
+
+    expect(out[1].status).toBe('deleted')
+    expect(out[1].deletedAt).toBe('2026-04-26T08:14:32Z')
+    expect(out[1].activePhones).toBeNull()
+
+    expect(out[2].status).toBe('not_found')
+    expect(out[2].lastModifiedAt).toBeNull()
+    expect(out[2].invalidatedPhones).toEqual([])
+  })
+
+  it('chunks at 500 keys client-side and preserves order across chunks', async () => {
+    // 1100 keys → 3 HTTP calls (500 + 500 + 100)
+    const keys: DealKey[] = Array.from({ length: 1100 }, (_, i) => ({
+      pasta: 'P', deal_id: i, contato_tipo: 'person', contato_id: i,
+    }))
+    const fetchImpl = vi.fn().mockImplementation((_url: string, init: { body?: string }) => {
+      const body = JSON.parse(init.body!) as { keys: DealKey[] }
+      const results = body.keys.map((k) => ({
+        key: k, status: 'active', last_modified_at: '2026-05-01Z',
+        active_phones: {}, invalidated_phones: [],
+      }))
+      return Promise.resolve(jsonResponse(200, { results }))
+    })
+    const c = makeClient(fetchImpl)
+    const out = await c.lookupDeals(keys)
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).keys).toHaveLength(500)
+    expect(JSON.parse(fetchImpl.mock.calls[1][1].body).keys).toHaveLength(500)
+    expect(JSON.parse(fetchImpl.mock.calls[2][1].body).keys).toHaveLength(100)
+    // Order preserved across chunks
+    expect(out).toHaveLength(1100)
+    expect(out[0].key.deal_id).toBe(0)
+    expect(out[499].key.deal_id).toBe(499)
+    expect(out[500].key.deal_id).toBe(500)
+    expect(out[1099].key.deal_id).toBe(1099)
+  })
+
+  it('400 server error → propagates PipeboardRestError with body', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      textResponse(400, '{"error":"invalid_request","field":"keys[3].contato_tipo","detail":"must be person or organization"}'),
+    )
+    const c = makeClient(fetchImpl)
+    await expect(
+      c.lookupDeals([{ pasta: 'P', deal_id: 1, contato_tipo: 'PERSON' as 'person', contato_id: 1 }]),
+    ).rejects.toBeInstanceOf(PipeboardRestError)
+  })
+
+  it('honors duplicate keys (returns one result per input position, in order)', async () => {
+    const key: DealKey = { pasta: 'A', deal_id: 1, contato_tipo: 'person', contato_id: 1 }
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, {
+      results: [
+        { key, status: 'active', last_modified_at: 'T1', active_phones: {}, invalidated_phones: [] },
+        { key, status: 'active', last_modified_at: 'T1', active_phones: {}, invalidated_phones: [] },
+      ],
+    }))
+    const c = makeClient(fetchImpl)
+    const out = await c.lookupDeals([key, key])
+    expect(out).toHaveLength(2)
+    expect(out[0].key).toEqual(key)
+    expect(out[1].key).toEqual(key)
+  })
+
+  it('tolerates missing/null invalidated_phones field (spec allows omission)', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, {
+      results: [{
+        key: { pasta: 'A', deal_id: 1, contato_tipo: 'person', contato_id: 1 },
+        status: 'active', last_modified_at: 'T', active_phones: {},
+        // invalidated_phones omitted entirely
+      }],
+    }))
+    const c = makeClient(fetchImpl)
+    const out = await c.lookupDeals([{ pasta: 'A', deal_id: 1, contato_tipo: 'person', contato_id: 1 }])
+    expect(out[0].invalidatedPhones).toEqual([])
+  })
+})

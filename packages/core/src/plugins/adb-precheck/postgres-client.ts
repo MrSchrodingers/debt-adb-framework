@@ -7,6 +7,7 @@ function synthRequestId(): string {
 }
 import {
   PHONE_COLUMNS,
+  NotSupportedBySqlBackendError,
   type IPipeboardClient,
   type HealthcheckResult,
   type InvalidPhoneRecord,
@@ -348,6 +349,13 @@ export class PipeboardPg implements IPipeboardClient {
       idempotent: false,
       applied: true,
     }
+  }
+
+  // The SQL backend tunnels direct into Postgres and has no `prov_consultas_snapshot`
+  // join wired in. Reconciliation tooling that needs `lookupDeals` MUST run
+  // against the REST backend (which Pipeboard provides today).
+  async lookupDeals(_keys: DealKey[]): Promise<never> {
+    throw new NotSupportedBySqlBackendError('lookupDeals')
   }
 
   private buildWhere(

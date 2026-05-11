@@ -7,6 +7,7 @@ export {
   PHONE_COLUMNS,
   resolvePipeboardBackend,
   NotSupportedByRestBackendError,
+  NotSupportedBySqlBackendError,
 } from './pipeboard-client.js'
 export type {
   IPipeboardClient,
@@ -18,6 +19,9 @@ export type {
   DealInvalidationResponse,
   DealLocalizationRequest,
   DealLocalizationResponse,
+  DealLookupResult,
+  DealLookupStatus,
+  DealLookupInvalidatedPhone,
   AppliedPhone,
   AppliedPhoneStatus,
   BatchInvalidPhone,

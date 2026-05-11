@@ -103,6 +103,44 @@ export interface DealLocalizationResponse {
 }
 
 /**
+ * Status returned per-key by `POST /precheck/deals/lookup` (Pipeboard
+ * spec: `docs/pipeboard-spec/precheck-deals-lookup.md`).
+ *
+ *   - `active`     row exists in `prov_consultas` right now
+ *   - `deleted`    row was in the pool and has been removed (snapshot
+ *                  tombstone, ETL move, or only blocklist hits remain)
+ *   - `not_found`  Pipeboard has no record of this key in any table
+ */
+export type DealLookupStatus = 'active' | 'deleted' | 'not_found'
+
+/** Per-key invalidated phone history slice (capped @ 50 by Pipeboard). */
+export interface DealLookupInvalidatedPhone {
+  telefone: string
+  colunaOrigem: string | null
+  motivo: string
+  fonte: string
+  invalidadoEm: string
+}
+
+export interface DealLookupResult {
+  key: DealKey
+  status: DealLookupStatus
+  /**
+   * For `active` rows: `prov_consultas.update_time` (Pipedrive's
+   * row-level update timestamp — there is no Pipeboard-side
+   * `updated_at` column, see spec §4 Q1). For `deleted` rows: the
+   * tombstone timestamp (mirrors `deleted_at`). For `not_found`: null.
+   */
+  lastModifiedAt: string | null
+  /** Present only when `status='deleted'`. */
+  deletedAt: string | null
+  /** Full `telefone_*` map when active; null otherwise. */
+  activePhones: Record<string, string | null> | null
+  /** Capped at 50 per key on the Pipeboard side. */
+  invalidatedPhones: DealLookupInvalidatedPhone[]
+}
+
+/**
  * Single contract for any Pipeboard backend (raw SQL via SSH tunnel,
  * REST over HTTPS, or test fakes). Both `PipeboardPg` and the upcoming
  * `PipeboardRest` MUST implement this interface so the scanner can swap
@@ -167,6 +205,19 @@ export interface IPipeboardClient {
     payload: DealLocalizationRequest,
   ): Promise<DealLocalizationResponse>
 
+  /**
+   * Batch-lookup the current Pipeboard-side state of specific
+   * `(pasta, deal_id, contato_tipo, contato_id)` tuples. Maps 1:1 to
+   * `POST /precheck/deals/lookup` (see
+   * `docs/pipeboard-spec/precheck-deals-lookup.md`). Up to 500 keys
+   * per call; caller is responsible for batching larger sets.
+   *
+   * Used by reconciliation tooling (resolve `rejected_no_match`,
+   * crash-recovery diagnostics, mid-scan drift detection). SQL backend
+   * has no equivalent and throws `NotSupportedByRestBackendError`.
+   */
+  lookupDeals(keys: DealKey[]): Promise<DealLookupResult[]>
+
   // -----------------------------------------------------------------
   // Legacy per-operation methods. Kept on the SQL backend for backwards
   // compatibility with tests that exercise them directly. The REST
@@ -218,6 +269,23 @@ export class NotYetSupportedError extends Error {
   constructor(operation: string) {
     super(`${operation} is on the Pipeboard roadmap but not yet live.`)
     this.name = 'NotYetSupportedError'
+  }
+}
+
+/**
+ * Mirror of {@link NotSupportedByRestBackendError} for the opposite
+ * direction: operations that exist only on the REST backend (e.g.
+ * `lookupDeals`, which depends on the `prov_consultas_snapshot` /
+ * `prov_telefones_invalidos` joins the REST router materialises).
+ * Callers must run with `PLUGIN_ADB_PRECHECK_BACKEND=rest`.
+ */
+export class NotSupportedBySqlBackendError extends Error {
+  constructor(operation: string) {
+    super(
+      `${operation} is not supported by the SQL backend. ` +
+        `Run Dispatch with PLUGIN_ADB_PRECHECK_BACKEND=rest to call it.`,
+    )
+    this.name = 'NotSupportedBySqlBackendError'
   }
 }
 

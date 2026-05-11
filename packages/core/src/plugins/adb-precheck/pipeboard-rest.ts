@@ -8,12 +8,18 @@ import {
   type DealInvalidationResponse,
   type DealLocalizationRequest,
   type DealLocalizationResponse,
+  type DealLookupInvalidatedPhone,
+  type DealLookupResult,
+  type DealLookupStatus,
   type HealthcheckResult,
   type IPipeboardClient,
   type InvalidPhoneRecord,
 } from './pipeboard-client.js'
 
-type RestOp = 'invalidate' | 'localize' | 'deals' | 'healthz'
+type RestOp = 'invalidate' | 'localize' | 'deals' | 'healthz' | 'lookup'
+
+/** Server-side cap per spec — keep client requests under the limit. */
+const LOOKUP_BATCH_LIMIT = 500
 
 export interface PipeboardRestOpts {
   /** Full base URL including `/api/v1` and the tenant segment, e.g. http://pipeboard-router:18080/api/v1/adb */
@@ -249,6 +255,58 @@ export class PipeboardRest implements IPipeboardClient {
     }
   }
 
+  /**
+   * Batch point-lookup against `POST /precheck/deals/lookup`. Chunks
+   * client-side at 500 keys (server hard-cap, see Pipeboard spec §2).
+   * Preserves input order across chunks so callers can zip results
+   * back to their key list by index.
+   *
+   * The response shape uses snake_case from the wire (`last_modified_at`,
+   * `active_phones`, `invalidated_phones`); we remap to the camelCase
+   * `DealLookupResult` so consumers stay TypeScript-idiomatic.
+   */
+  async lookupDeals(keys: DealKey[]): Promise<DealLookupResult[]> {
+    if (keys.length === 0) return []
+    const out: DealLookupResult[] = []
+    for (let i = 0; i < keys.length; i += LOOKUP_BATCH_LIMIT) {
+      const chunk = keys.slice(i, i + LOOKUP_BATCH_LIMIT)
+      const res = await this.request('POST', '/precheck/deals/lookup', { keys: chunk })
+      const json = (await res.json()) as {
+        results: Array<{
+          key: DealKey
+          status: DealLookupStatus
+          last_modified_at: string | null
+          deleted_at?: string | null
+          active_phones: Record<string, string | null> | null
+          invalidated_phones?: Array<{
+            telefone: string
+            coluna_origem: string | null
+            motivo: string
+            fonte: string
+            invalidado_em: string
+          }> | null
+        }>
+      }
+      for (const r of json.results) {
+        out.push({
+          key: r.key,
+          status: r.status,
+          lastModifiedAt: r.last_modified_at,
+          deletedAt: r.deleted_at ?? null,
+          activePhones: r.active_phones,
+          invalidatedPhones: (r.invalidated_phones ?? []).map<DealLookupInvalidatedPhone>((p) => ({
+            telefone: p.telefone,
+            colunaOrigem: p.coluna_origem,
+            motivo: p.motivo,
+            fonte: p.fonte,
+            invalidadoEm: p.invalidado_em,
+          })),
+        })
+      }
+    }
+    return out
+  }
+
   // --- Legacy SQL-only methods (refuse explicitly) ---------------------
 
   async writeInvalid(_key: DealKey, _motivo: string): Promise<number> {
@@ -381,9 +439,10 @@ export class PipeboardRestError extends Error {
  */
 function pathToOp(path: string): RestOp {
   if (path.startsWith('/precheck/phones/invalidate')) return 'invalidate'
-  if (path.startsWith('/precheck/deals/localize')) return 'localize'
-  if (path.startsWith('/precheck/deals')) return 'deals'
-  if (path.startsWith('/precheck/healthz')) return 'healthz'
+  if (path.startsWith('/precheck/deals/localize'))    return 'localize'
+  if (path.startsWith('/precheck/deals/lookup'))      return 'lookup'
+  if (path.startsWith('/precheck/deals'))             return 'deals'
+  if (path.startsWith('/precheck/healthz'))           return 'healthz'
   return 'invalidate'
 }
 
