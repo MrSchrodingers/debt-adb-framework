@@ -1,0 +1,139 @@
+{
+  "session_id": "roadmap-v2-2026-05-13",
+  "currentPhase": "PHASE_5_QA_GATE",
+  "iterations": 1,
+  "alignment_decisions": {
+    "v1_classification": "5-category framework (KEEP / REVISE / DROP / ADD / DONE-SINCE-V1)",
+    "dispatch_mode": "all 5 tracks fan-out in single message",
+    "approved_at": "2026-05-12"
+  },
+  "tracks": {
+    "T1": {
+      "status": "ANSWERED",
+      "subagent_type": "general-purpose",
+      "topic": "anti-ban deep-dive",
+      "tokens": 69775,
+      "duration_ms": 107130,
+      "highlights": [
+        "8/10 v1 gaps VERIFIED-CURRENT",
+        "2 gaps to DROP (typing #3, uinput #4)",
+        "1 gap to DEFER (scrcpy #6)",
+        "6 new 2026 vectors: preemptive enforcement, read-to-response ratio, Play Integrity STRONG, PQXDH, Truecaller reputation, JA4",
+        "Top-3 priorities: quarantine+ack-rate, bi-directional warmup, entryPointSource variation"
+      ]
+    },
+    "T2": {
+      "status": "ANSWERED",
+      "subagent_type": "general-purpose",
+      "topic": "market competitive v2",
+      "tokens": 78548,
+      "duration_ms": 143583,
+      "highlights": [
+        "New BR competitor: Avisa App (launched 2026-04-28, Meta Tech Provider)",
+        "WAHA 2026.3 + Baileys 7.0.0-rc.10 released",
+        "6 features Dispatch lacks (multi-content, bi-dir warmup, quality-score, Cloud API fallback, A/B, wizard)",
+        "5 moat candidates: OCR ban-detect, plugin SDK+HMAC+Pipedrive, ADB/WAHA split, tombstone reconciliation, UIAutomator post-send validation",
+        "Meta BR Marketing US$0.0625 (+18% YoY)"
+      ]
+    },
+    "T3": {
+      "status": "ANSWERED",
+      "subagent_type": "general-purpose",
+      "topic": "UX patterns",
+      "tokens": 61945,
+      "duration_ms": 63011,
+      "highlights": [
+        "3 journeys × 5 patterns each: Twilio funnel, Pipedrive send-queue, AWS Device Farm right-rail mirror, Vanta evidence drawer, Drata role chips",
+        "Cross-journey debt: chip styling inconsistency, no Skeleton, mobile tables break, CommandPalette underused, a11y gaps"
+      ]
+    },
+    "T4": {
+      "status": "ANSWERED",
+      "subagent_type": "general-purpose",
+      "topic": "plugin architecture",
+      "tokens": 65263,
+      "duration_ms": 96693,
+      "highlights": [
+        "8 comparable products mapped (VS Code, Backstage, Vite, n8n, Probot, Strapi, Terraform, Sentry)",
+        "3 design decisions: D1 ctx.services with Pipedrive, D2 dispatch-plugin.json manifest, D3 hot-reload via destroy+init",
+        "Anti-patterns: god-context bloat, sync hooks blocking, no process boundary"
+      ]
+    },
+    "T5": {
+      "status": "ANSWERED",
+      "subagent_type": "Explore",
+      "topic": "internal codebase audit",
+      "tokens": "n/a",
+      "duration_ms": "n/a",
+      "highlights": [
+        "Claim #1 (contatos read-only) → AUDIT-ERROR (9.6/9.7 already wired live fetch)",
+        "Claim #4 (entryPointSource=click_to_chat_link 100%) → FALSE (field doesn't exist in code)",
+        "Claim #5 (sender:quarantined not emitted) → DONE-SINCE-V1",
+        "Claim #2 (fleet-page 2175 LOC) → VERIFIED, no decomposers exist yet",
+        "Claim #8 (3 Python scripts) → VERIFIED they don't exist (aspirational in v1)",
+        "Repo scale: core 34.6k LOC, ui 17.9k LOC, plugins 8.6k LOC, pipedrive 4.3k LOC"
+      ]
+    },
+    "T6": {
+      "status": "ANSWERED",
+      "subagent_type": "general-purpose",
+      "depends_on": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T5"
+      ],
+      "topic": "cross-val divergences",
+      "tokens": 52238,
+      "duration_ms": 34935,
+      "highlights": [
+        "3 high-confidence confluences (bi-dir warmup, multi-content, quality-score)",
+        "2 conflicts to resolve (T4-D1 vs T5 audit, scrcpy vs GeeLark)",
+        "3 falsifications (F1 entryPointSource, F2 Python scripts aspirational, F3 sender:quarantined)",
+        "5 lacunas (operator onboarding, pricing, BR Lei do Superendividamento, DR, Avisa UX)"
+      ]
+    },
+    "T7": {
+      "status": "ANSWERED",
+      "subagent_type": "general-purpose",
+      "depends_on": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T5"
+      ],
+      "topic": "cross-val KEEP/REVISE/DROP/ADD/DONE",
+      "tokens": 63617,
+      "duration_ms": 37816,
+      "highlights": [
+        "KEEP: 16-17 items",
+        "REVISE: 5 (A1/B2/C1/D3/D5)",
+        "DROP: 0",
+        "DONE-SINCE-V1: 1 (A3 sender quarantine)",
+        "ADD: 9 new items (NEW-1..NEW-9 from T1×3 + T2×1 + T3×4 + T4×1)",
+        "Re-sequenced into 5 sprints with NEW-* interleaved"
+      ]
+    }
+  },
+  "gates": {
+    "coverage": true,
+    "novidades": true,
+    "concorrencia": true,
+    "ux": true,
+    "plugin_arch": true,
+    "internal_audit": true,
+    "cross_val": true,
+    "format": true,
+    "plan_format": true,
+    "sources": true
+  },
+  "started_at": "2026-05-12T19:30:00-03:00",
+  "phase_2_completed_at": "2026-05-12T19:35:00-03:00",
+  "completed_at": null,
+  "phase_3_completed_at": "2026-05-12T19:45:00-03:00",
+  "v2_doc": "docs/strategy/2026-05-13-feature-roadmap-v2.md",
+  "v2_lines": 425,
+  "phase_4_completed_at": "2026-05-12T19:55:00-03:00"
+}
