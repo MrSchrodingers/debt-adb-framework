@@ -20,6 +20,7 @@ import {
   BadgeCheck,
   Ban,
   CircleAlert,
+  Archive,
 } from 'lucide-react'
 import { CORE_URL, authHeaders } from '../config'
 import {
@@ -140,6 +141,12 @@ interface DealRow {
   primary_valid_phone: string | null
   scanned_at: string
   last_job_id: string
+  /**
+   * Set when Pipeboard's `/precheck/deals/lookup` confirmed the row was
+   * removed upstream. Local `phones_json` is kept as audit trail; the
+   * UI dims the row + shows a tombstone badge to make the state obvious.
+   */
+  deleted_at: string | null
 }
 
 interface PhoneResult {
@@ -1363,7 +1370,7 @@ function JobStatusPill({ status }: { status: PrecheckJob['status'] }) {
 // ── Deals ──────────────────────────────────────────────────────────────────
 
 function DealsPanel() {
-  const [filter, setFilter] = useState<'all' | 'valid' | 'invalid'>('all')
+  const [filter, setFilter] = useState<'all' | 'valid' | 'invalid' | 'tombstoned'>('all')
   const [search, setSearch] = useState('')
   const [deals, setDeals] = useState<DealRow[] | null>(null)
   const [total, setTotal] = useState(0)
@@ -1391,17 +1398,30 @@ function DealsPanel() {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <div className="inline-flex gap-0.5 rounded-lg border border-zinc-800 bg-zinc-950 p-0.5">
-          {(['all', 'valid', 'invalid'] as const).map((f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                filter === f ? 'bg-sky-500/10 text-sky-300 ring-1 ring-sky-500/40' : 'text-zinc-400 hover:bg-zinc-900'
-              }`}
-            >
-              {f === 'all' ? 'Todos' : f === 'valid' ? 'Com valido' : 'Todos invalidos'}
-            </button>
-          ))}
+          {(['all', 'valid', 'invalid', 'tombstoned'] as const).map((f) => {
+            const label = f === 'all' ? 'Todos'
+              : f === 'valid' ? 'Com valido'
+              : f === 'invalid' ? 'Todos invalidos'
+              : 'Tombstoned'
+            // Tombstone tone is amber (warning, archival) — distinguishes
+            // from the regular sky-blue selection used for outcome filters.
+            const active = filter === f
+            const activeClass = f === 'tombstoned'
+              ? 'bg-amber-500/10 text-amber-300 ring-1 ring-amber-500/40'
+              : 'bg-sky-500/10 text-sky-300 ring-1 ring-sky-500/40'
+            return (
+              <button
+                key={f}
+                onClick={() => setFilter(f)}
+                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                  active ? activeClass : 'text-zinc-400 hover:bg-zinc-900'
+                }`}
+              >
+                {f === 'tombstoned' ? <Archive className="h-3.5 w-3.5" /> : null}
+                {label}
+              </button>
+            )
+          })}
         </div>
         <div className="relative flex-1 min-w-[200px] max-w-sm">
           <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-zinc-500" />
@@ -1424,7 +1444,15 @@ function DealsPanel() {
           </table>
         </div>
       ) : visibleDeals.length === 0 ? (
-        <EmptyState icon={FolderSearch} title="Nenhuma consulta encontrada" description="Ajuste o filtro ou rode um novo scan." />
+        filter === 'tombstoned' ? (
+          <EmptyState
+            icon={Archive}
+            title="Nenhum lead tombstoned"
+            description="Bom sinal — nenhum lead foi removido upstream após scan. Tombstones aparecem quando o Pipeboard confirma via lookupDeals que a row sumiu."
+          />
+        ) : (
+          <EmptyState icon={FolderSearch} title="Nenhuma consulta encontrada" description="Ajuste o filtro ou rode um novo scan." />
+        )
       ) : (
         <div className="rounded-lg border border-zinc-800 overflow-hidden">
           <table className="w-full text-sm">
@@ -1477,32 +1505,65 @@ function DealRowView({ deal, expanded, onToggle }: { deal: DealRow; expanded: bo
       .finally(() => setLoading(false))
   }, [expanded, detail, deal])
 
+  const isTombstoned = deal.deleted_at != null
   const tone: 'emerald' | 'rose' | 'amber' =
-    deal.valid_count > 0 ? 'emerald' : deal.invalid_count > 0 ? 'rose' : 'amber'
+    isTombstoned ? 'amber'
+      : deal.valid_count > 0 ? 'emerald'
+      : deal.invalid_count > 0 ? 'rose'
+      : 'amber'
+  // Tombstoned rows get a left-border tint + slightly dimmed text so the
+  // archival state reads at a glance without hiding the data (operator
+  // still needs to inspect phones_json for audit).
+  const rowClass = isTombstoned
+    ? 'cursor-pointer hover:bg-zinc-900/40 bg-amber-950/10 border-l-2 border-l-amber-500/40 opacity-80'
+    : 'cursor-pointer hover:bg-zinc-900/40'
 
   return (
     <>
-      <tr className="cursor-pointer hover:bg-zinc-900/40" onClick={onToggle}>
+      <tr className={rowClass} onClick={onToggle}>
         <td className="px-3 py-2">
           {expanded ? <ChevronDown className="h-4 w-4 text-zinc-500" /> : <ChevronRight className="h-4 w-4 text-zinc-500" />}
         </td>
-        <td className="px-3 py-2 font-mono text-xs text-zinc-300">{deal.pasta}</td>
+        <td className="px-3 py-2 font-mono text-xs">
+          <span className={isTombstoned ? 'text-zinc-400 line-through decoration-zinc-600' : 'text-zinc-300'}>
+            {deal.pasta}
+          </span>
+        </td>
         <td className="px-3 py-2">{deal.deal_id}</td>
         <td className="px-3 py-2 text-zinc-400">{deal.contato_tipo}:{deal.contato_id}</td>
         <td className="px-3 py-2 font-mono text-xs">
           {deal.primary_valid_phone ? (
-            <span className="text-emerald-300">{deal.primary_valid_phone}</span>
+            <span className={isTombstoned ? 'text-zinc-500 line-through decoration-zinc-600' : 'text-emerald-300'}>
+              {deal.primary_valid_phone}
+            </span>
           ) : (
             <span className="text-zinc-500">—</span>
           )}
         </td>
         <td className="px-3 py-2 text-center">
-          <Pill tone={tone}>
-            {deal.valid_count > 0 ? `${deal.valid_count} valido${deal.valid_count > 1 ? 's' : ''}` : 'nenhum valido'}
-            {deal.invalid_count > 0 ? ` · ${deal.invalid_count} invalido${deal.invalid_count > 1 ? 's' : ''}` : ''}
-          </Pill>
+          {isTombstoned ? (
+            <span className="inline-flex items-center gap-1.5">
+              <Pill tone="amber">
+                <Archive className="h-3 w-3 mr-0.5 inline" />
+                tombstoned
+              </Pill>
+            </span>
+          ) : (
+            <Pill tone={tone}>
+              {deal.valid_count > 0 ? `${deal.valid_count} valido${deal.valid_count > 1 ? 's' : ''}` : 'nenhum valido'}
+              {deal.invalid_count > 0 ? ` · ${deal.invalid_count} invalido${deal.invalid_count > 1 ? 's' : ''}` : ''}
+            </Pill>
+          )}
         </td>
-        <td className="px-3 py-2 text-right text-xs text-zinc-500">{fmtWhen(deal.scanned_at)}</td>
+        <td className="px-3 py-2 text-right text-xs text-zinc-500">
+          {isTombstoned ? (
+            <span title={`scan: ${fmtWhen(deal.scanned_at)}\nremovido: ${fmtWhen(deal.deleted_at!)}`}>
+              removido {fmtWhen(deal.deleted_at!)}
+            </span>
+          ) : (
+            fmtWhen(deal.scanned_at)
+          )}
+        </td>
       </tr>
       {expanded ? (
         <tr>

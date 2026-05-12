@@ -812,25 +812,47 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   }
 
   private async handleListDeals(req: unknown, reply: unknown): Promise<unknown> {
-    // Pagination over cached per-deal results. Filter on valid/invalid/all.
+    // Pagination over cached per-deal results.
+    //
+    // Filter semantics (aligned with aggregateStats):
+    //   all          no filter — includes tombstoned (audit view)
+    //   valid        LIVE (deleted_at IS NULL) AND valid_count > 0
+    //   invalid      LIVE AND valid_count = 0 AND invalid_count > 0
+    //                — zero-phone deals are NOT included; they sit outside
+    //                  the "all invalid" semantic ("nenhum telefone
+    //                  WhatsApp" means tried-and-failed, not never-tried).
+    //   tombstoned   deleted_at IS NOT NULL — rows Pipeboard's ETL removed
+    //                upstream after we scanned them.
     const q = (req as { query: Record<string, string | undefined> }).query ?? {}
     const limit = Math.min(Math.max(Number(q.limit ?? 50), 1), 500)
     const offset = Math.max(Number(q.offset ?? 0), 0)
-    const filter = q.filter === 'valid' ? 'valid_count > 0'
-      : q.filter === 'invalid' ? 'valid_count = 0'
-      : '1=1'
+    let where: string
+    switch (q.filter) {
+      case 'valid':
+        where = 'deleted_at IS NULL AND valid_count > 0'
+        break
+      case 'invalid':
+        where = 'deleted_at IS NULL AND valid_count = 0 AND invalid_count > 0'
+        break
+      case 'tombstoned':
+        where = 'deleted_at IS NOT NULL'
+        break
+      default:
+        where = '1=1' // all
+        break
+    }
     const stmt = this.db.prepare(
       `SELECT pasta, deal_id, contato_tipo, contato_id,
               valid_count, invalid_count, primary_valid_phone,
-              scanned_at, last_job_id
+              scanned_at, last_job_id, deleted_at
        FROM adb_precheck_deals
-       WHERE ${filter}
-       ORDER BY scanned_at DESC
+       WHERE ${where}
+       ORDER BY COALESCE(deleted_at, scanned_at) DESC
        LIMIT ? OFFSET ?`,
     )
     const rows = stmt.all(limit, offset)
     const totalRow = this.db
-      .prepare(`SELECT COUNT(*) AS n FROM adb_precheck_deals WHERE ${filter}`)
+      .prepare(`SELECT COUNT(*) AS n FROM adb_precheck_deals WHERE ${where}`)
       .get() as { n: number }
     return (reply as { send: (x: unknown) => unknown }).send({
       data: rows,
