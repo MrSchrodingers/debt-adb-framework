@@ -6,6 +6,7 @@ import type { SenderMappingRecord, ResolvedSender, SenderConfig } from '../engin
 import type { IdempotencyCache } from '../queue/idempotency-cache.js'
 import type { PluginManifest } from './manifest.js'
 import type { PluginServicesRegistry } from './services-registry.js'
+import type { GeoViewDefinition } from '../geo/types.js'
 
 // ── Plugin Interface (what plugins implement) ──
 
@@ -38,6 +39,12 @@ export interface PluginContext {
   registerContact(senderPhone: string, patientPhone: string, patientName: string): Promise<{ status: 'registered' | 'exists' | 'error'; error?: string }>
   on(event: DispatchEventName, handler: (data: unknown) => Promise<void>): void
   registerRoute(method: HttpMethod, path: string, handler: RouteHandler): void
+  /**
+   * Register a geographic view. Core hosts /api/v1/geo/views/:id/aggregate
+   * and /drill that delegate to view.aggregate/view.drill. View id MUST
+   * start with `${plugin.name}.` — loader enforces.
+   */
+  registerGeoView(view: GeoViewDefinition): void
   logger: PluginLogger
   /** Time-bounded idempotency deduplication cache (Task 4.3).
    *  Present when the server boots with a DB — undefined in minimal test fixtures

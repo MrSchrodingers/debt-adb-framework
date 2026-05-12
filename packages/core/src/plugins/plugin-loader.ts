@@ -18,6 +18,8 @@ import type {
 import type { DispatchEventName } from '../events/index.js'
 import { validateManifest, type ManifestValidationResult } from './manifest.js'
 import { InMemoryServicesRegistry, type PluginServicesRegistry } from './services-registry.js'
+import type { GeoViewRegistry } from '../geo/registry.js'
+import type { GeoViewDefinition } from '../geo/types.js'
 
 const PRIORITY_MAP: Record<string, number> = {
   high: 1,
@@ -62,6 +64,12 @@ export class PluginLoader {
      */
     private deviceMutex?: { acquire(deviceSerial: string): Promise<() => void> },
     services?: PluginServicesRegistry,
+    /**
+     * Optional registry for plugin-contributed geographic views (Geolocalização tab).
+     * When provided, plugins can call `ctx.registerGeoView(...)`; loader removes the
+     * plugin's views on unload/reload to preserve plugin isolation.
+     */
+    private geoRegistry?: GeoViewRegistry,
   ) {
     this.services = services ?? new InMemoryServicesRegistry()
     this.loggerFactory = logger ?? {
@@ -196,6 +204,7 @@ export class PluginLoader {
       })
     }
     this.loadedPlugins.delete(name)
+    this.geoRegistry?.unregisterPlugin(name)
 
     try {
       const ctx = this.createContext(name)
@@ -221,6 +230,7 @@ export class PluginLoader {
     if (plugin) {
       await plugin.destroy()
       this.loadedPlugins.delete(name)
+      this.geoRegistry?.unregisterPlugin(name)
     }
   }
 
@@ -229,6 +239,7 @@ export class PluginLoader {
       try {
         await plugin.destroy()
         this.loadedPlugins.delete(name)
+        this.geoRegistry?.unregisterPlugin(name)
       } catch (err) {
         this.loggerFactory.child({ plugin: name }).warn('Plugin destroy failed', {
           err: err instanceof Error ? err.message : String(err),
@@ -337,6 +348,15 @@ export class PluginLoader {
       registerRoute: (method: HttpMethod, path: string, handler: RouteHandler): void => {
         this.registeredRoutes.push({ pluginName, method, path, handler })
         logger.debug(`Route registered: ${method} /api/v1/plugins/${pluginName}${path}`)
+      },
+
+      registerGeoView: (view: GeoViewDefinition): void => {
+        if (!this.geoRegistry) {
+          logger.warn('registerGeoView called but GeoViewRegistry not provided to PluginLoader', { viewId: view.id })
+          return
+        }
+        this.geoRegistry.register(pluginName, view)
+        logger.debug(`GeoView registered: ${view.id}`)
       },
 
       logger,
