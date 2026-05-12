@@ -30,6 +30,14 @@ export interface DispatchEventMap {
   'contact:opted_out': { phone: string; pattern: string; sourceSession: string; messageText: string }
   'sender:quarantined': { sender: string; failureCount: number; quarantinedUntil: string }
   'sender:released': { sender: string; quarantineDurationActualMs: number }
+  // NEW-2 — ack=-1 cluster timelock (research/ack-cluster-detector.ts)
+  'sender:timelock_suspected': {
+    sender: string
+    timelockUntil: string
+    clusterCount: number
+    windowMs: number
+  }
+  'sender:timelock_released': { sender: string }
   'device:circuit:opened': {
     serial: string
     reason: string

@@ -75,30 +75,52 @@ export class SenderHealth {
 
   isQuarantined(sender: string): boolean {
     const row = this.db.prepare(
-      'SELECT quarantined_until FROM sender_health WHERE sender_number = ?',
-    ).get(sender) as { quarantined_until: string | null } | undefined
+      'SELECT quarantined_until, timelock_until FROM sender_health WHERE sender_number = ?',
+    ).get(sender) as
+      | { quarantined_until: string | null; timelock_until: string | null }
+      | undefined
 
-    if (!row || !row.quarantined_until) return false
+    if (!row) return false
 
     const now = new Date().toISOString()
-    if (row.quarantined_until <= now) {
-      // Quarantine expired — clear it
-      this.db.prepare(`
-        UPDATE sender_health
-        SET consecutive_failures = 0, quarantined_until = NULL, updated_at = ?
-        WHERE sender_number = ? AND quarantined_until IS NOT NULL AND quarantined_until <= ?
-      `).run(now, sender, now)
-      // Calculate actual quarantine duration
-      const quarantineStart = new Date(row.quarantined_until).getTime() - this.config.quarantineDurationMs
-      const actualMs = Date.now() - quarantineStart
-      this.emitter?.emit('sender:released', {
-        sender,
-        quarantineDurationActualMs: actualMs,
-      })
-      return false
+    let stillPaused = false
+
+    // Path 1: consecutive_failures quarantine (existing flow)
+    if (row.quarantined_until) {
+      if (row.quarantined_until > now) {
+        stillPaused = true
+      } else {
+        // Quarantine expired — clear it
+        this.db.prepare(`
+          UPDATE sender_health
+          SET consecutive_failures = 0, quarantined_until = NULL, updated_at = ?
+          WHERE sender_number = ? AND quarantined_until IS NOT NULL AND quarantined_until <= ?
+        `).run(now, sender, now)
+        const quarantineStart =
+          new Date(row.quarantined_until).getTime() - this.config.quarantineDurationMs
+        const actualMs = Date.now() - quarantineStart
+        this.emitter?.emit('sender:released', {
+          sender,
+          quarantineDurationActualMs: actualMs,
+        })
+      }
     }
 
-    return true
+    // Path 2: timelock (ack-cluster path, written by AckClusterDetector)
+    if (row.timelock_until) {
+      if (row.timelock_until > now) {
+        stillPaused = true
+      } else {
+        this.db.prepare(`
+          UPDATE sender_health
+          SET timelock_until = NULL, pause_reason = NULL, updated_at = ?
+          WHERE sender_number = ? AND timelock_until IS NOT NULL AND timelock_until <= ?
+        `).run(now, sender, now)
+        this.emitter?.emit('sender:timelock_released', { sender })
+      }
+    }
+
+    return stillPaused
   }
 
   getStatus(sender: string): SenderHealthStatus | null {

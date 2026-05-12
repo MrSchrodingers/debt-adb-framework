@@ -222,23 +222,38 @@ export class SendEngine {
         await this.tapSendButton(deviceSerial)
         this.record(message.id, 'send_tapped', { method: 'media_share' })
       } else {
-        // Text-only flow — always use wa.me?text= prefill (preserves emojis, newlines, formatting)
-        method = 'prefill'
-        this.record(message.id, 'strategy_selected', { method, appPackage })
+        // Text-only flow — pick chat-open method via content-aware strategy.
+        // Bodies with non-ASCII or newlines cannot be rendered reliably by
+        // typing-based paths (search/typing/chatlist all funnel through
+        // Android `input text`), so the strategy falls back to prefill in
+        // those cases. See ce34766b for the prior "always prefill" rationale.
+        const pick = this.strategy.selectEffectiveMethod(message.body)
+        method = pick.method
+        this.record(message.id, 'strategy_selected', {
+          method,
+          selectedRaw: pick.selectedRaw,
+          fallbackToPrefill: pick.fallbackToPrefill,
+          appPackage,
+        })
 
-        const encodedBody = encodeURIComponent(message.body)
-        const deepLink = `https://wa.me/${phoneDigits}?text=${encodedBody}`
+        if (method === 'prefill') {
+          const encodedBody = encodeURIComponent(message.body)
+          const deepLink = `https://wa.me/${phoneDigits}?text=${encodedBody}`
+          await this.adb.shell(
+            deviceSerial,
+            `am start -a android.intent.action.VIEW -d '${deepLink}' -p ${appPackage}`,
+          )
+          await this.delay(isFirstInBatch ? 4000 : 2000)
+          await this.detectNoWhatsAppPopup(deviceSerial, phoneDigits)
+          dialogsDismissed = await this.waitForChatReady(deviceSerial)
+        } else if (method === 'search') {
+          await this.openViaSearch(deviceSerial, phoneDigits, message.body, appPackage)
+        } else if (method === 'typing') {
+          await this.openViaTyping(deviceSerial, phoneDigits, message.body, appPackage)
+        } else if (method === 'chatlist') {
+          await this.openViaChatList(deviceSerial, phoneDigits, message.body, appPackage)
+        }
 
-        await this.adb.shell(
-          deviceSerial,
-          `am start -a android.intent.action.VIEW -d '${deepLink}' -p ${appPackage}`,
-        )
-        await this.delay(isFirstInBatch ? 4000 : 2000)
-
-        // Check for "number not on WhatsApp" popup BEFORE waiting for chat
-        await this.detectNoWhatsAppPopup(deviceSerial, phoneDigits)
-
-        dialogsDismissed = await this.waitForChatReady(deviceSerial)
         this.record(message.id, 'chat_opened', { method, dialogsDismissed })
         this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
 

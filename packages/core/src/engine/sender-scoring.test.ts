@@ -13,6 +13,8 @@ function createTestDb(): Database.Database {
       sender_number TEXT PRIMARY KEY,
       consecutive_failures INTEGER NOT NULL DEFAULT 0,
       quarantined_until TEXT,
+      timelock_until TEXT,
+      pause_reason TEXT,
       last_failure_at TEXT,
       last_success_at TEXT,
       total_failures INTEGER NOT NULL DEFAULT 0,

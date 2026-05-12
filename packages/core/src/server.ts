@@ -47,6 +47,7 @@ import { ContactValidator } from './validator/contact-validator.js'
 import type { DispatchEventName } from './events/index.js'
 import type { DispatchPlugin, PluginRecord } from './plugins/types.js'
 import { BanPredictionDaemon, type SerialResolver, type ThresholdProvider } from './research/ban-prediction-daemon.js'
+import { AckClusterDetector } from './research/ack-cluster-detector.js'
 import { AckRateThresholds } from './research/ack-rate-thresholds.js'
 import { QualityHistory } from './research/quality-history.js'
 import { QualityWatcher } from './research/quality-watcher.js'
@@ -309,6 +310,29 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   ackRateThresholds.initialize()
   const ackPersistFailures = new AckPersistFailures(db)
   ackPersistFailures.initialize()
+
+  // NEW-2 (Sprint 1, v2 roadmap) — Reachout Timelock heuristic via ack=-1 cluster.
+  // Detector listens to `waha:message_ack` events; when N errors arrive for a
+  // sender within a window, writes timelock_until on sender_health so the
+  // worker/scoring layer skips the sender for the pause duration.
+  const ackClusterDetector = new AckClusterDetector(db, emitter, {
+    clusterCount: Number(process.env.DISPATCH_TIMELOCK_CLUSTER_COUNT) || undefined,
+    windowMs: Number(process.env.DISPATCH_TIMELOCK_WINDOW_MS) || undefined,
+    pauseMs: Number(process.env.DISPATCH_TIMELOCK_PAUSE_MS) || undefined,
+  })
+  ackClusterDetector.initialize()
+
+  emitter.on('waha:message_ack', (evt: { wahaMessageId?: string; ackLevel?: number }) => {
+    if (evt.ackLevel !== -1 || !evt.wahaMessageId) return
+    const row = db
+      .prepare(
+        'SELECT sender_phone FROM message_ack_history WHERE waha_message_id = ? AND ack_level = -1 ORDER BY observed_at DESC LIMIT 1',
+      )
+      .get(evt.wahaMessageId) as { sender_phone: string | null } | undefined
+    if (row?.sender_phone) {
+      ackClusterDetector.recordAckError(row.sender_phone)
+    }
+  })
 
   const wahaApiUrl = process.env.WAHA_API_URL
   const wahaApiKey = process.env.WAHA_API_KEY

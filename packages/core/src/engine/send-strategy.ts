@@ -58,4 +58,37 @@ export class SendStrategy {
   generatesTypingIndicator(method: ChatOpenMethod): boolean {
     return method !== 'prefill'
   }
+
+  /**
+   * Android's `input text` command only handles printable ASCII (0x20–0x7E).
+   * Emojis, accented chars (ç, ã, é), currency symbols (R$), and newlines
+   * are stripped/garbled. Typing-based chat-open methods (search/typing/chatlist)
+   * all funnel through `input text`, so any body that violates this constraint
+   * MUST fall back to the prefill deep-link path (wa.me?text= URL-encodes safely).
+   *
+   * See commit ce34766b — "always use wa.me prefill — preserves emojis,
+   * newlines, formatting". This guard restores strategy variation for bodies
+   * that are safe to type without breaking the message.
+   */
+  static isBodySafeForTyping(body: string): boolean {
+    return /^[\x20-\x7E]*$/.test(body)
+  }
+
+  /**
+   * Picks the strategy's chat-open method, then applies the content guard:
+   * if the raw pick is typing-based but the body cannot be reliably typed,
+   * fall back to prefill. Returns both values so callers can record analytics
+   * (what the strategy wanted vs what we ran).
+   */
+  selectEffectiveMethod(body: string): {
+    method: ChatOpenMethod
+    selectedRaw: ChatOpenMethod
+    fallbackToPrefill: boolean
+  } {
+    const selectedRaw = this.selectMethod(body.length)
+    if (selectedRaw === 'prefill' || SendStrategy.isBodySafeForTyping(body)) {
+      return { method: selectedRaw, selectedRaw, fallbackToPrefill: false }
+    }
+    return { method: 'prefill', selectedRaw, fallbackToPrefill: true }
+  }
 }

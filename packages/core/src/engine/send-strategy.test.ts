@@ -106,4 +106,65 @@ describe('SendStrategy', () => {
       expect(strategy.generatesTypingIndicator('prefill')).toBe(false)
     })
   })
+
+  describe('isBodySafeForTyping', () => {
+    it.each<[string, string, boolean]>([
+      ['plain ASCII', 'Hello world', true],
+      ['ASCII with digits + punctuation', 'Lembrete 123: pague.', true],
+      ['empty string', '', true],
+      ['emoji', 'Hello 👋', false],
+      ['Portuguese accent ç', 'cobrança', false],
+      ['Portuguese accent ã', 'manhã', false],
+      ['Portuguese accent é', 'até logo', false],
+      ['R$ alone is plain ASCII (safe)', 'Pague R$ 100,00', true],
+      ['R$ with cedilla becomes unsafe', 'Pague R$ 100,00 (com correção)', false],
+      ['newline', 'Linha 1\nLinha 2', false],
+      ['tab', 'a\tb', false],
+      ['tilde alone', 'a~b', true],
+    ])('%s → %s', (_label, body, expected) => {
+      expect(SendStrategy.isBodySafeForTyping(body)).toBe(expected)
+    })
+  })
+
+  describe('selectEffectiveMethod', () => {
+    it('returns strategy pick when body is safe to type', () => {
+      const strategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0, chatlistWeight: 0 })
+      const pick = strategy.selectEffectiveMethod('Hello world')
+      expect(pick.method).toBe('search')
+      expect(pick.selectedRaw).toBe('search')
+      expect(pick.fallbackToPrefill).toBe(false)
+    })
+
+    it('falls back to prefill when body contains emoji', () => {
+      const strategy = new SendStrategy({ prefillWeight: 0, searchWeight: 100, typingWeight: 0, chatlistWeight: 0 })
+      const pick = strategy.selectEffectiveMethod('Hello 👋')
+      expect(pick.method).toBe('prefill')
+      expect(pick.selectedRaw).toBe('search')
+      expect(pick.fallbackToPrefill).toBe(true)
+    })
+
+    it('falls back to prefill when body has Portuguese accent', () => {
+      const strategy = new SendStrategy({ prefillWeight: 0, searchWeight: 0, typingWeight: 100, chatlistWeight: 0 })
+      const pick = strategy.selectEffectiveMethod('Olá, sua cobrança vence amanhã')
+      expect(pick.method).toBe('prefill')
+      expect(pick.selectedRaw).toBe('typing')
+      expect(pick.fallbackToPrefill).toBe(true)
+    })
+
+    it('falls back to prefill when body has newline', () => {
+      const strategy = new SendStrategy({ prefillWeight: 0, searchWeight: 0, typingWeight: 0, chatlistWeight: 100 })
+      const pick = strategy.selectEffectiveMethod('Linha 1\nLinha 2')
+      expect(pick.method).toBe('prefill')
+      expect(pick.selectedRaw).toBe('chatlist')
+      expect(pick.fallbackToPrefill).toBe(true)
+    })
+
+    it('does not flag fallback when strategy already chose prefill', () => {
+      const strategy = new SendStrategy({ prefillWeight: 100, searchWeight: 0, typingWeight: 0, chatlistWeight: 0 })
+      const pick = strategy.selectEffectiveMethod('Hello 👋')
+      expect(pick.method).toBe('prefill')
+      expect(pick.selectedRaw).toBe('prefill')
+      expect(pick.fallbackToPrefill).toBe(false)
+    })
+  })
 })

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { CORE_URL, authHeaders } from '../config'
+import { QualityInline } from './quality-inline'
 
 interface SenderStatus {
   phone: string
@@ -207,6 +208,9 @@ function SenderCard({
           <span className="text-amber-400">{sender.consecutiveFailures} consec.</span>
         )}
       </div>
+
+      {/* Quality score (NEW-1 surface — fetches /api/v1/quality/components/:phone) */}
+      <QualityInline phone={sender.phone} />
 
       {/* Quarantine info */}
       {sender.quarantined && sender.quarantinedUntil && (
