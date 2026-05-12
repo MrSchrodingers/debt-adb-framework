@@ -46,6 +46,7 @@ interface AggregateStats {
   deals_scanned: number
   deals_with_valid: number
   deals_all_invalid: number
+  deals_tombstoned: number
   phones_checked_total: number
   last_scan_at: string | null
 }
@@ -66,6 +67,7 @@ interface GlobalStats {
     coverage_percent: number | null
     with_valid: number
     all_invalid: number
+    tombstoned: number
   }
   phones: {
     checked: number
@@ -326,7 +328,11 @@ function OverviewPanel({ onStartScan }: { onStartScan: () => void }) {
         <StatCard
           label="Leads scanned"
           value={stats.deals_scanned}
-          hint="distinct (pasta, deal, contato)"
+          hint={
+            stats.deals_tombstoned > 0
+              ? `${stats.deals_tombstoned} removidos do pool (tombstoned)`
+              : 'distinct (pasta, deal, contato)'
+          }
           icon={Database}
         />
         <StatCard
@@ -598,7 +604,11 @@ function CoveragePanel({ data }: { data: GlobalStats }) {
         <CoverageMetric
           label="Já varridos"
           value={data.deals.scanned.toLocaleString('pt-BR')}
-          sub={`${data.deals.fresh.toLocaleString('pt-BR')} fresh · ${data.deals.stale.toLocaleString('pt-BR')} stale`}
+          sub={
+            data.deals.tombstoned > 0
+              ? `${data.deals.fresh.toLocaleString('pt-BR')} fresh · ${data.deals.stale.toLocaleString('pt-BR')} stale · ${data.deals.tombstoned.toLocaleString('pt-BR')} tombstoned`
+              : `${data.deals.fresh.toLocaleString('pt-BR')} fresh · ${data.deals.stale.toLocaleString('pt-BR')} stale`
+          }
           tone="emerald"
         />
         <CoverageMetric

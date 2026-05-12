@@ -547,12 +547,18 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
 
     const thresholdIso = new Date(Date.now() - recheckAfterDays * 86_400_000).toISOString()
     const { fresh, total: scannedTotal } = this.store.countScannedSince(thresholdIso)
-    const stale = Math.max(0, scannedTotal - fresh)
-    const dealsPending = poolTotal !== null ? Math.max(0, poolTotal - fresh) : null
-    const dealsCoveragePct =
-      poolTotal !== null && poolTotal > 0 ? (scannedTotal / poolTotal) * 100 : null
-
     const dealAgg = this.store.aggregateStats()
+    // Bucket math with tombstoned excluded from live coverage:
+    //   scannedTotal = fresh (live + window) + stale (live + outside window) + tombstoned
+    //   poolTotal already excludes tombstoned (they're gone from prov_consultas)
+    //   liveScanned = fresh + stale  → what we still cover today
+    //   pending = poolTotal − liveScanned
+    const tombstoned = dealAgg.deals_tombstoned
+    const stale = Math.max(0, scannedTotal - fresh - tombstoned)
+    const liveScanned = fresh + stale
+    const dealsPending = poolTotal !== null ? Math.max(0, poolTotal - liveScanned) : null
+    const dealsCoveragePct =
+      poolTotal !== null && poolTotal > 0 ? (liveScanned / poolTotal) * 100 : null
     // Truth-set: derived from adb_precheck_deals.phones_json (current state),
     // NOT from SUM(adb_precheck_jobs.*) which inflates with retry passes.
     const phoneAgg = this.store.aggregatePhoneStatsTruth()
@@ -613,6 +619,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
           dealsCoveragePct !== null ? Number(dealsCoveragePct.toFixed(2)) : null,
         with_valid: dealAgg.deals_with_valid,
         all_invalid: dealAgg.deals_all_invalid,
+        tombstoned: dealAgg.deals_tombstoned,
       },
       phones: {
         checked: phoneAgg.phones_checked,

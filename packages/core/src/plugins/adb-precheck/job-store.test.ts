@@ -627,3 +627,104 @@ describe('PrecheckJobStore.tombstoneDeals', () => {
     db.close()
   })
 })
+
+// Tombstoned deals are persisted but no longer "cover" the Pipeboard pool
+// — they were removed upstream. The dashboard semantics therefore treat
+// them as a separate bucket:
+//   `scanned`      total ever scanned (lifetime, includes tombstoned)
+//   `fresh`        scanned within window AND still live
+//   `tombstoned`   scanned at some point, since removed upstream
+//   `with_valid`   live deals with ≥1 valid phone
+//   `all_invalid`  live deals with phones but no valid one
+describe('PrecheckJobStore — tombstoned exclusion from live counters', () => {
+  function setup() {
+    const db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    const store = new PrecheckJobStore(db)
+    store.initialize()
+    return { db, store }
+  }
+
+  function insertDeal(
+    db: ReturnType<typeof Database>,
+    key: { pasta: string; deal_id: number; contato_tipo: string; contato_id: number },
+    opts: { valid?: number; invalid?: number; scanned_at?: string; deleted_at?: string | null } = {},
+  ) {
+    const valid_count = opts.valid ?? 0
+    const invalid_count = opts.invalid ?? 0
+    const scanned_at = opts.scanned_at ?? '2026-05-01T00:00:00Z'
+    const deleted_at = opts.deleted_at ?? null
+    db.prepare(`INSERT INTO adb_precheck_deals (
+      pasta, deal_id, contato_tipo, contato_id, last_job_id,
+      valid_count, invalid_count, primary_valid_phone, phones_json, scanned_at, deleted_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
+      key.pasta, key.deal_id, key.contato_tipo, key.contato_id, 'job-x',
+      valid_count, invalid_count, null, '[]', scanned_at, deleted_at,
+    )
+  }
+
+  it('countScannedSince: total is lifetime, fresh excludes tombstoned', () => {
+    const { db, store } = setup()
+    // 4 deals: 2 live (1 fresh, 1 stale), 2 tombstoned (1 fresh-by-scan-date, 1 stale)
+    insertDeal(db, { pasta: 'A', deal_id: 1, contato_tipo: 'p', contato_id: 1 },
+      { scanned_at: '2026-05-10T00:00:00Z' }) // live fresh
+    insertDeal(db, { pasta: 'A', deal_id: 2, contato_tipo: 'p', contato_id: 2 },
+      { scanned_at: '2026-01-01T00:00:00Z' }) // live stale
+    insertDeal(db, { pasta: 'A', deal_id: 3, contato_tipo: 'p', contato_id: 3 },
+      { scanned_at: '2026-05-10T00:00:00Z', deleted_at: '2026-05-11T00:00:00Z' }) // tombstoned (scan-date is fresh, but irrelevant)
+    insertDeal(db, { pasta: 'A', deal_id: 4, contato_tipo: 'p', contato_id: 4 },
+      { scanned_at: '2026-01-01T00:00:00Z', deleted_at: '2026-05-11T00:00:00Z' }) // tombstoned stale
+    const r = store.countScannedSince('2026-05-01T00:00:00Z')
+    expect(r.total).toBe(4)  // lifetime
+    expect(r.fresh).toBe(1)  // only the LIVE fresh one
+    db.close()
+  })
+
+  it('aggregateStats: with_valid/all_invalid exclude tombstoned; new field tombstoned counts them', () => {
+    const { db, store } = setup()
+    // A: live, has valid → with_valid
+    insertDeal(db, { pasta: 'A', deal_id: 1, contato_tipo: 'p', contato_id: 1 }, { valid: 1, invalid: 0 })
+    // B: live, all-invalid (valid=0 AND invalid>0) → all_invalid
+    insertDeal(db, { pasta: 'B', deal_id: 2, contato_tipo: 'p', contato_id: 2 }, { valid: 0, invalid: 3 })
+    // C: live, no phones → neither bucket
+    insertDeal(db, { pasta: 'C', deal_id: 3, contato_tipo: 'p', contato_id: 3 }, { valid: 0, invalid: 0 })
+    // D: tombstoned but had valid → tombstoned bucket, NOT with_valid
+    insertDeal(db, { pasta: 'D', deal_id: 4, contato_tipo: 'p', contato_id: 4 },
+      { valid: 1, invalid: 0, deleted_at: '2026-05-11T00:00:00Z' })
+    // E: tombstoned all-invalid → tombstoned bucket, NOT all_invalid
+    insertDeal(db, { pasta: 'E', deal_id: 5, contato_tipo: 'p', contato_id: 5 },
+      { valid: 0, invalid: 2, deleted_at: '2026-05-11T00:00:00Z' })
+
+    const s = store.aggregateStats()
+    expect(s.deals_scanned).toBe(5)       // lifetime
+    expect(s.deals_with_valid).toBe(1)    // only A
+    expect(s.deals_all_invalid).toBe(1)   // only B (C excluded because no phones, D+E excluded as tombstoned)
+    expect(s.deals_tombstoned).toBe(2)    // D, E
+    db.close()
+  })
+
+  it('aggregatePhoneStatsTruth: stays inclusive — historical phone classification work is still real', () => {
+    // Question: should phones from tombstoned deals count toward
+    // phones_checked? Decision: YES — the validator did the work, the
+    // phones were classified, and we sent invalidations to Pipeboard.
+    // The dashboard "Telefones testados" is a measure of effort spent,
+    // not current coverage. Coverage is per-deal via `deals_tombstoned`.
+    const { db, store } = setup()
+    db.prepare(`INSERT INTO adb_precheck_deals (
+      pasta, deal_id, contato_tipo, contato_id, last_job_id,
+      valid_count, invalid_count, primary_valid_phone, phones_json, scanned_at, deleted_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
+      'X', 1, 'p', 1, 'job-x', 0, 2, null,
+      JSON.stringify([
+        { column: 't1', raw: '5511', normalized: '5511', outcome: 'invalid', source: 'adb_probe', confidence: 0.95, variant_tried: '5511', error: null },
+        { column: 't2', raw: '5512', normalized: '5512', outcome: 'invalid', source: 'adb_probe', confidence: 0.95, variant_tried: '5512', error: null },
+      ]),
+      '2026-05-01T00:00:00Z',
+      '2026-05-11T00:00:00Z',
+    )
+    expect(store.aggregatePhoneStatsTruth()).toEqual({
+      phones_checked: 2, phones_valid: 0, phones_invalid: 2, phones_error: 0,
+    })
+    db.close()
+  })
+})

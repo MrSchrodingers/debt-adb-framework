@@ -299,8 +299,11 @@ export class PrecheckJobStore {
    * how many deals are still pending vs already covered.
    */
   countScannedSince(thresholdIso: string): { fresh: number; total: number } {
+    // `fresh` excludes tombstoned: those deals were removed upstream by
+    // Pipeboard's ETL and don't cover the pool anymore. `total` stays
+    // lifetime (audit truth — includes tombstoned).
     const fresh = (this.db
-      .prepare(`SELECT COUNT(*) AS n FROM adb_precheck_deals WHERE scanned_at >= ?`)
+      .prepare(`SELECT COUNT(*) AS n FROM adb_precheck_deals WHERE scanned_at >= ? AND deleted_at IS NULL`)
       .get(thresholdIso) as { n: number }).n
     const total = (this.db
       .prepare(`SELECT COUNT(*) AS n FROM adb_precheck_deals`)
@@ -640,18 +643,24 @@ export class PrecheckJobStore {
     deals_scanned: number
     deals_with_valid: number
     deals_all_invalid: number
+    deals_tombstoned: number
     phones_checked_total: number
     last_scan_at: string | null
   } {
-    // `deals_all_invalid` requires `invalid_count > 0` so zero-phone deals
-    // (rows where the upstream prov_consultas had no telefone_* set, or
-    // had every phone stripped before our scan) don't get reported as
-    // "all invalid" in the UI's "nenhum telefone WhatsApp" card.
+    // Counting rules:
+    //   `deals_scanned`     lifetime, includes tombstoned (audit truth).
+    //   `deals_with_valid`  LIVE only — tombstoned deals are no longer
+    //                       reachable from Pipeboard, so they don't count
+    //                       toward "I have a number to call".
+    //   `deals_all_invalid` LIVE only AND `invalid_count > 0` (zero-phone
+    //                       deals don't count as "nenhum telefone WhatsApp").
+    //   `deals_tombstoned`  exactly the rows with deleted_at NOT NULL.
     const base = (this.db
       .prepare(
         `SELECT COUNT(*) AS deals_scanned,
-                SUM(CASE WHEN valid_count > 0                          THEN 1 ELSE 0 END) AS deals_with_valid,
-                SUM(CASE WHEN valid_count = 0 AND invalid_count > 0    THEN 1 ELSE 0 END) AS deals_all_invalid,
+                SUM(CASE WHEN deleted_at IS NULL AND valid_count > 0                          THEN 1 ELSE 0 END) AS deals_with_valid,
+                SUM(CASE WHEN deleted_at IS NULL AND valid_count = 0 AND invalid_count > 0    THEN 1 ELSE 0 END) AS deals_all_invalid,
+                SUM(CASE WHEN deleted_at IS NOT NULL                                          THEN 1 ELSE 0 END) AS deals_tombstoned,
                 MAX(scanned_at) AS last_scan_at
          FROM adb_precheck_deals`,
       )
@@ -659,11 +668,13 @@ export class PrecheckJobStore {
       deals_scanned: number
       deals_with_valid: number
       deals_all_invalid: number
+      deals_tombstoned: number
       last_scan_at: string | null
     } | undefined) ?? {
       deals_scanned: 0,
       deals_with_valid: 0,
       deals_all_invalid: 0,
+      deals_tombstoned: 0,
       last_scan_at: null,
     }
     // Truth-set, same rationale as `aggregatePhoneStatsTruth`. The legacy
@@ -673,6 +684,7 @@ export class PrecheckJobStore {
       deals_scanned: base.deals_scanned ?? 0,
       deals_with_valid: base.deals_with_valid ?? 0,
       deals_all_invalid: base.deals_all_invalid ?? 0,
+      deals_tombstoned: base.deals_tombstoned ?? 0,
       phones_checked_total: phones.phones_checked,
       last_scan_at: base.last_scan_at,
     }
