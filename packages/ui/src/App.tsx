@@ -9,6 +9,7 @@ import { SendForm } from './components/send-form'
 import { SessionManager } from './components/session-manager'
 import { MetricsDashboard } from './components/metrics-dashboard'
 import { StatsBar } from './components/stats-bar'
+import { GlobalThrottleBar } from './components/global-throttle-bar'
 import { Sidebar } from './components/sidebar'
 import { LiveScreen } from './components/live-screen'
 import { ShellTerminal } from './components/shell-terminal'
@@ -311,6 +312,9 @@ export function App() {
         {/* Hygienization banner — visible across all tabs while a hygiene-mode
             scan has paused production globally. */}
         <HygienizationBanner />
+
+        {/* NEW-7 (Sprint 3) — manual global pause control. Sticky above StatsBar. */}
+        <GlobalThrottleBar />
 
         {/* Stats */}
         <StatsBar

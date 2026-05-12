@@ -3,6 +3,7 @@ import { CheckCircle, AlertTriangle as AlertTriangleIcon, Monitor } from 'lucide
 import { CORE_URL, authHeaders } from '../config'
 import type { DeviceRecord, Alert } from '../types'
 import { LiveScreenModal } from './live-screen-modal'
+import { DeviceHealthSparkline } from './device-health-sparkline'
 
 const statusColors: Record<string, string> = {
   online: 'bg-emerald-500',
@@ -199,6 +200,13 @@ export function DeviceGrid({ devices, alerts, selectedSerial, onSelect }: Device
                   </span>
                 )}
               </div>
+              {/* NEW-8 — Compact RAM/temp sparkline for online devices */}
+              {device.status === 'online' && (
+                <div onClick={(e) => e.stopPropagation()}>
+                  <DeviceHealthSparkline serial={device.serial} />
+                </div>
+              )}
+
               {/* Mirror button (Task 7.3) */}
               {device.status === 'online' && (
                 <button
