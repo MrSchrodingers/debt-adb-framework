@@ -1,7 +1,9 @@
+import type Database from 'better-sqlite3'
 import { nanoid } from 'nanoid'
 import { z } from 'zod'
 import type { DispatchPlugin, PluginContext, PluginEnqueueParams } from './types.js'
 import type { DispatchEventName } from '../events/index.js'
+import type { GeoViewDefinition } from '../geo/types.js'
 
 // ── Zod Schemas for request validation ──
 
@@ -71,7 +73,12 @@ export class OralsinPlugin implements DispatchPlugin {
 
   private ctx: PluginContext | null = null
 
-  constructor(webhookUrl: string) {
+  /**
+   * Optional DB handle for geo view aggregations. When provided, the plugin
+   * registers a `oralsin.sends` GeoView that queries `messages` filtered by
+   * plugin_name='oralsin'. Plugin remains functional without it (no geo tab).
+   */
+  constructor(webhookUrl: string, private db?: Database.Database) {
     this.webhookUrl = webhookUrl
   }
 
@@ -81,6 +88,9 @@ export class OralsinPlugin implements DispatchPlugin {
     ctx.registerRoute('POST', '/contacts/pre-register', this.handlePreRegister.bind(this))
     ctx.registerRoute('GET', '/status', this.handleStatus.bind(this))
     ctx.registerRoute('GET', '/queue', this.handleQueue.bind(this))
+    if (this.db) {
+      ctx.registerGeoView(buildOralsinSendsView(this.db))
+    }
     ctx.logger.info('Oralsin plugin initialized')
   }
 
@@ -304,4 +314,89 @@ export class OralsinPlugin implements DispatchPlugin {
       oldest_pending_age_seconds: stats.oldestPendingAgeSeconds,
     })
   }
+}
+
+// ── Geo View (Geolocalização tab) ──
+
+/**
+ * Build the Oralsin "sends" geo view. Aggregates messages by DDD of the
+ * destination number, filtered by plugin_name='oralsin' and configurable
+ * status. Pure SQL — no plugin state needed.
+ */
+export function buildOralsinSendsView(db: Database.Database): GeoViewDefinition {
+  return {
+    id: 'oralsin.sends',
+    label: 'Envios',
+    description: 'Heatmap de envios da fila por DDD do destinatário',
+    group: 'oralsin',
+    palette: 'sequential',
+    filters: [
+      { type: 'window', id: 'window', defaultValue: '7d', options: ['24h', '7d', '30d'] },
+      { type: 'select', id: 'status', label: 'Status', defaultValue: 'sent',
+        options: [
+          { value: 'sent', label: 'Enviadas' },
+          { value: 'failed', label: 'Falhadas' },
+          { value: 'permanently_failed', label: 'Permanentes' },
+          { value: 'queued', label: 'Em fila' },
+          { value: 'sending', label: 'Enviando' },
+        ] },
+    ],
+    aggregate: async (params) => {
+      const since = windowToIso(params.window)
+      const rows = db.prepare(`
+        SELECT substr(to_number, 3, 2) AS ddd, COUNT(*) AS count
+        FROM messages
+        WHERE plugin_name = 'oralsin'
+          AND status = ?
+          AND created_at >= ?
+        GROUP BY ddd
+      `).all(params.filters.status, since) as Array<{ ddd: string; count: number }>
+      const buckets: Record<string, number> = {}
+      for (const r of rows) if (r.ddd) buckets[r.ddd] = r.count
+      return {
+        buckets,
+        total: rows.reduce((s, r) => s + r.count, 0),
+        generatedAt: new Date().toISOString(),
+      }
+    },
+    drill: async (ddd, params) => {
+      const since = windowToIso(params.window)
+      const pageSize = params.pageSize ?? 50
+      const offset = ((params.page ?? 1) - 1) * pageSize
+      const rows = db.prepare(`
+        SELECT id, to_number AS phone, status, created_at, sender_number
+        FROM messages
+        WHERE plugin_name = 'oralsin'
+          AND status = ?
+          AND created_at >= ?
+          AND substr(to_number, 3, 2) = ?
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?
+      `).all(params.filters.status, since, ddd, pageSize, offset)
+      const total = (db.prepare(`
+        SELECT COUNT(*) AS c FROM messages
+        WHERE plugin_name = 'oralsin' AND status = ? AND created_at >= ?
+          AND substr(to_number, 3, 2) = ?
+      `).get(params.filters.status, since, ddd) as { c: number }).c
+      return {
+        columns: [
+          { key: 'id', label: 'ID', type: 'string' },
+          { key: 'phone', label: 'Telefone', type: 'phone' },
+          { key: 'status', label: 'Status', type: 'string' },
+          { key: 'created_at', label: 'Data', type: 'date' },
+          { key: 'sender_number', label: 'Sender', type: 'phone' },
+        ],
+        rows: rows as Array<Record<string, unknown>>,
+        total, page: params.page ?? 1, pageSize,
+      }
+    },
+  }
+}
+
+function windowToIso(window: '24h' | '7d' | '30d' | 'all'): string {
+  if (window === 'all') return '1970-01-01T00:00:00.000Z'
+  const ms = window === '24h' ? 24 * 60 * 60 * 1000
+           : window === '7d'  ? 7  * 24 * 60 * 60 * 1000
+           :                    30 * 24 * 60 * 60 * 1000
+  return new Date(Date.now() - ms).toISOString()
 }

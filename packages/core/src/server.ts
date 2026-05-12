@@ -772,7 +772,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // Load plugins from config
   const pluginNames = (process.env.DISPATCH_PLUGINS || '').split(',').map(s => s.trim()).filter(Boolean)
   const pluginMap: Record<string, () => DispatchPlugin> = {
-    oralsin: () => new OralsinPlugin(process.env.PLUGIN_ORALSIN_WEBHOOK_URL || 'http://localhost:8000/api/webhooks/dispatch/'),
+    oralsin: () => new OralsinPlugin(process.env.PLUGIN_ORALSIN_WEBHOOK_URL || 'http://localhost:8000/api/webhooks/dispatch/', db),
     'adb-precheck': () => {
       // Backend selection — config-schema already validated the matching
       // credentials exist for whichever backend was chosen. Here we
