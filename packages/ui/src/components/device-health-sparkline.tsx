@@ -3,10 +3,10 @@ import { Line, LineChart, ResponsiveContainer, YAxis } from 'recharts'
 import { CORE_URL, authHeaders } from '../config'
 
 interface HealthPoint {
-  battery_percent: number
-  temperature_celsius: number
-  ram_available_mb: number
-  collected_at: string
+  batteryPercent: number
+  temperatureCelsius: number
+  ramAvailableMb: number
+  collectedAt: string
 }
 
 const MAX_POINTS = 24
@@ -52,13 +52,13 @@ export function DeviceHealthSparkline({ serial }: { serial: string }) {
   // Normalize: RAM goes up=good (free MB), temp goes up=bad (degrees C).
   // Both rendered on the same compact chart with separate Y axes.
   const data = points.map((p) => ({
-    ts: p.collected_at,
-    ram: p.ram_available_mb,
-    temp: p.temperature_celsius,
+    ts: p.collectedAt,
+    ram: p.ramAvailableMb,
+    temp: p.temperatureCelsius,
   }))
 
-  const latestRam = points[points.length - 1]!.ram_available_mb
-  const latestTemp = points[points.length - 1]!.temperature_celsius
+  const latestRam = points[points.length - 1]!.ramAvailableMb
+  const latestTemp = points[points.length - 1]!.temperatureCelsius
 
   return (
     <div className="mt-2 rounded bg-zinc-950/40 border border-zinc-800/40 px-2 py-1.5">
