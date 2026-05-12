@@ -9,6 +9,10 @@ export interface SenderHealthConfig {
 export interface SenderHealthStatus {
   consecutiveFailures: number
   quarantinedUntil: string | null
+  /** Set when NEW-2 ack-cluster detector pauses the sender (ack=-1 cluster). */
+  timelockUntil: string | null
+  /** 'timelock_suspected' when the timelock path fired; null otherwise. */
+  pauseReason: string | null
   totalFailures: number
   totalSuccesses: number
 }
@@ -125,10 +129,12 @@ export class SenderHealth {
 
   getStatus(sender: string): SenderHealthStatus | null {
     const row = this.db.prepare(
-      'SELECT consecutive_failures, quarantined_until, total_failures, total_successes FROM sender_health WHERE sender_number = ?',
+      'SELECT consecutive_failures, quarantined_until, timelock_until, pause_reason, total_failures, total_successes FROM sender_health WHERE sender_number = ?',
     ).get(sender) as {
       consecutive_failures: number
       quarantined_until: string | null
+      timelock_until: string | null
+      pause_reason: string | null
       total_failures: number
       total_successes: number
     } | undefined
@@ -138,6 +144,8 @@ export class SenderHealth {
     return {
       consecutiveFailures: row.consecutive_failures,
       quarantinedUntil: row.quarantined_until,
+      timelockUntil: row.timelock_until,
+      pauseReason: row.pause_reason,
       totalFailures: row.total_failures,
       totalSuccesses: row.total_successes,
     }

@@ -1,9 +1,24 @@
 import type { FastifyInstance } from 'fastify'
 import type { SenderWarmup } from '../engine/sender-warmup.js'
 import type { SenderMapping } from '../engine/sender-mapping.js'
-import type { SenderHealth } from '../engine/sender-health.js'
+import type { SenderHealth, SenderHealthStatus } from '../engine/sender-health.js'
 import type { MessageQueue } from '../queue/index.js'
 import type { DeviceManager } from '../monitor/index.js'
+
+/**
+ * True when the sender is currently paused for any reason — either the
+ * consecutive-failures quarantine (`quarantined_until > now`) or the
+ * NEW-2 ack-cluster timelock (`timelock_until > now`). Returns false when
+ * the row exists but every pause window has expired (auto-release happens
+ * lazily on isQuarantined() — this is the read-only display equivalent).
+ */
+function isCurrentlyPaused(health: SenderHealthStatus | null | undefined): boolean {
+  if (!health) return false
+  const now = new Date().toISOString()
+  if (health.quarantinedUntil && health.quarantinedUntil > now) return true
+  if (health.timelockUntil && health.timelockUntil > now) return true
+  return false
+}
 
 export interface SenderRouteDeps {
   senderWarmup: SenderWarmup
@@ -68,7 +83,11 @@ export function registerSenderRoutes(
           active: m.active === 1,
           paused: m.paused === 1,
           pausedReason: m.paused_reason ?? null,
-          quarantined: health ? !!health.quarantinedUntil : false,
+          // Computed against `now`: a row with a past quarantined_until is no
+          // longer effectively quarantined (auto-release happens lazily on the
+          // next isQuarantined() call). Also honors timelock_until from the
+          // NEW-2 ack-cluster path so both pause sources are reflected in UI.
+          quarantined: isCurrentlyPaused(health),
           availability,
         },
         waha: {
@@ -181,8 +200,10 @@ export function registerSenderRoutes(
           warmupTier: tier.tier,
           dailyCap: tier.dailyCap,
           dailyCount,
-          quarantined: health ? !!health.quarantinedUntil : false,
+          quarantined: isCurrentlyPaused(health),
           quarantinedUntil: health?.quarantinedUntil ?? null,
+          timelockUntil: health?.timelockUntil ?? null,
+          pauseReason: health?.pauseReason ?? null,
           consecutiveFailures: health?.consecutiveFailures ?? 0,
           totalSent: health?.totalSuccesses ?? 0,
           totalFailed: health?.totalFailures ?? 0,
