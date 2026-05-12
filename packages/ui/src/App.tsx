@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, lazy, Suspense } from 'react'
 import { io, type Socket } from 'socket.io-client'
 import { CORE_URL, authHeaders } from './config'
 import { DeviceGrid } from './components/device-grid'
@@ -30,7 +30,9 @@ import { KeyboardShortcutsHelp } from './components/keyboard-shortcuts-help'
 import { useAuth } from './auth/auth-context'
 import type { DeviceRecord, HealthSnapshot, WhatsAppAccount, Alert } from './types'
 
-type Tab = 'devices' | 'queue' | 'senders' | 'sessions' | 'metricas' | 'auditoria' | 'plugins' | 'contatos' | 'admin' | 'mirror' | 'fleet'
+const GeoPage = lazy(() => import('./components/geo/geo-page').then(m => ({ default: m.GeoPage })))
+
+type Tab = 'devices' | 'queue' | 'senders' | 'sessions' | 'metricas' | 'auditoria' | 'plugins' | 'contatos' | 'admin' | 'mirror' | 'fleet' | 'geo'
 
 export function App() {
   const { logout } = useAuth()
@@ -245,6 +247,7 @@ export function App() {
       if (seqRef.current === 'gd') { setActiveTab('devices'); seqRef.current = '' }
       if (seqRef.current === 'gm') { setActiveTab('queue'); seqRef.current = '' }
       if (seqRef.current === 'ga') { setActiveTab('auditoria'); seqRef.current = '' }
+      if (seqRef.current === 'gl') { setActiveTab('geo'); seqRef.current = '' }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
@@ -331,6 +334,10 @@ export function App() {
         <main className="flex-1 overflow-y-auto p-4 lg:p-6">
           {activeTab === 'mirror' ? (
             <DevicesGridMirror />
+          ) : activeTab === 'geo' ? (
+            <Suspense fallback={<div className="text-xs text-zinc-500">Carregando geolocalização…</div>}>
+              <GeoPage />
+            </Suspense>
           ) : activeTab === 'admin' ? (
             <AdminPage />
           ) : activeTab === 'fleet' ? (

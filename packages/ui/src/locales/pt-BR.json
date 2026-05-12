@@ -11,6 +11,7 @@
     "admin": "Admin",
     "mirror": "Espelho",
     "fleet": "Frota",
+    "geo": "Geolocalização",
     "logout": "Sair"
   },
   "mirror": {

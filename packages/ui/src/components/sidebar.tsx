@@ -1,10 +1,10 @@
-import { Smartphone, Send, Users, Radio, BarChart3, FileText, X, AlertTriangle, Puzzle, BookUser, LogOut, ShieldOff, Monitor, CreditCard } from 'lucide-react'
+import { Smartphone, Send, Users, Radio, BarChart3, FileText, X, AlertTriangle, Puzzle, BookUser, LogOut, ShieldOff, Monitor, CreditCard, Map as MapIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../auth/auth-context'
 import { BrandMark } from './brand-mark'
 import { PreferencesMenu } from './preferences-menu'
 
-type TabId = 'devices' | 'queue' | 'senders' | 'sessions' | 'metricas' | 'auditoria' | 'plugins' | 'contatos' | 'admin' | 'mirror' | 'fleet'
+type TabId = 'devices' | 'queue' | 'senders' | 'sessions' | 'metricas' | 'auditoria' | 'plugins' | 'contatos' | 'admin' | 'mirror' | 'fleet' | 'geo'
 
 interface SidebarProps {
   activeTab: TabId
@@ -26,6 +26,7 @@ const NAV_ITEMS: { id: TabId; labelKey: string; icon: typeof Smartphone }[] = [
   { id: 'auditoria', labelKey: 'nav.audit',    icon: FileText },
   { id: 'contatos',  labelKey: 'nav.contacts', icon: BookUser },
   { id: 'fleet',     labelKey: 'nav.fleet',    icon: CreditCard },
+  { id: 'geo',       labelKey: 'nav.geo',      icon: MapIcon },
   { id: 'plugins',   labelKey: 'nav.plugins',  icon: Puzzle },
   { id: 'admin',     labelKey: 'nav.admin',    icon: ShieldOff },
 ]

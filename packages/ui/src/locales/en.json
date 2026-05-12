@@ -11,6 +11,7 @@
     "admin": "Admin",
     "mirror": "Mirror",
     "fleet": "Fleet",
+    "geo": "Geolocation",
     "logout": "Sign out"
   },
   "mirror": {
