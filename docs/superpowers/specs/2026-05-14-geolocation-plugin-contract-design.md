@@ -238,27 +238,46 @@ export function extractDdd(phone: string): string | null {
 
 Testes: 13 dígitos com 55, 11 dígitos sem, 12 dígitos com 55 (fixo antigo), inválido (DDD 20), phone muito curto, phone com `+` e espaço.
 
-### 6.2 Sources (REQUER PHASE_2 AUDIT antes do TDD)
+### 6.2 Sources (audit confirmado 2026-05-14)
 
-| View | Tabela candidata | Filtro | Confirmação |
+| View | Tabela | Filtro confirmado | Notas |
 |---|---|---|---|
-| `oralsin.sends` | `messages` (queue) | `plugin_name='oralsin' AND status=$status AND created_at>=...` | audit confirma plugin_name column |
-| `adb-precheck.no-match` | `hygiene_job_items` (Phase 9.2) | `status='not_exists' AND processed_at>=...` | audit confirma colunas |
-| `adb-precheck.valid` | `wa_contact_checks` (Phase 9.1) | `result='valid' AND checked_at>=...` | audit confirma colunas |
-| `adb-precheck.pipedrive-mapped` | `pipedrive_activities`/`pipedrive_*` | requer audit | T5 audit |
+| `oralsin.sends` | `messages` (queue) — `message-queue.ts:23-53` | `plugin_name='oralsin' AND status=$status AND created_at>=...` | Índice `idx_messages_plugin_name(plugin_name,status,created_at)` já cobre |
+| `adb-precheck.no-match` | `hygiene_job_items` — `hygiene-job-service.ts:42` | `status='invalid' AND updated_at>=... AND phone_normalized IS NOT NULL` | phone 12 dígitos (com 55). Status `'invalid'` = "não tem WA" |
+| `adb-precheck.valid` | `wa_contact_checks` — `contact-registry.ts:43` | `result='exists' AND checked_at>=...` | phone 12 dígitos (com 55). Result `'exists'` = "tem WA" |
+| `adb-precheck.pipedrive-mapped` | `adb_precheck_deals` — `job-store.ts:46` | `deleted_at IS NULL AND scanned_at>=... AND primary_valid_phone IS NOT NULL` | phone 11 dígitos (sem 55). `deleted_at` tombstone |
+
+**Reuso DDD extractor**: `validator/br-phone-resolver.ts` já tem `normalizePhone()` + `VALID_BR_DDDS` set. Estratégia: refactor pra exportar `extractDdd(phone): string|null` thin como utilitário; reusar `VALID_BR_DDDS` (evita duplicação).
+
+**Robustez 11 vs 12 vs 13 dígitos**: a função proposta cobre os 3 casos.
+- 13 dígitos com 55 (msg WAHA): `digits.startsWith('55') && len>=12` → strip 55 → DDD = slice(0,2) ✓
+- 12 dígitos com 55 (`phone_normalized`): mesma path ✓
+- 11 dígitos sem 55 (`primary_valid_phone`): `startsWith('55')` false → fica 11 → slice(0,2) = DDD ✓
 
 ### 6.3 Índices
 
-Adicionar em migration nova:
+Adicionar em migration nova. Schemas confirmados via audit:
 
 ```sql
-CREATE INDEX IF NOT EXISTS idx_messages_ddd_created
-  ON messages(substr(to_number, 3, 2), created_at);
-CREATE INDEX IF NOT EXISTS idx_hygiene_items_ddd_processed
-  ON hygiene_job_items(substr(phone_normalized, 3, 2), processed_at);
+-- View 1: messages.to_number tem 13 dígitos (com 55). DDD = chars 3-4.
+-- Mas idx_messages_plugin_name(plugin_name,status,created_at) já cobre filtros.
+-- Skip índice DDD aqui se aggregate <500ms; medir primeiro.
+
+-- View 2: hygiene_job_items.phone_normalized tem 12 dígitos. DDD = chars 3-4.
+CREATE INDEX IF NOT EXISTS idx_hygiene_items_ddd_updated
+  ON hygiene_job_items(substr(phone_normalized, 3, 2), updated_at);
+
+-- View 3: wa_contact_checks.phone_normalized idem.
 CREATE INDEX IF NOT EXISTS idx_wa_checks_ddd_checked
   ON wa_contact_checks(substr(phone_normalized, 3, 2), checked_at);
+
+-- View 4: adb_precheck_deals.primary_valid_phone tem 11 dígitos (sem 55). DDD = chars 1-2.
+CREATE INDEX IF NOT EXISTS idx_deals_ddd_scanned
+  ON adb_precheck_deals(substr(primary_valid_phone, 1, 2), scanned_at)
+  WHERE primary_valid_phone IS NOT NULL AND deleted_at IS NULL;
 ```
+
+Nota: View 1 (messages) tem índice composto suficiente — só criar idx DDD aqui se aggregate medir >500ms p99.
 
 Performance budget: aggregate < 500ms p99 com 90 dias de dado. Medir após index; se passar, denormalizar coluna `ddd` em follow-up.
 
@@ -328,7 +347,11 @@ packages/ui/src/
 
 ```
 packages/ui/public/topology/
-└── br-ddds.json                    # NEW — TopoJSON BR DDDs (source TBD: T2 audit)
+└── br-ddds.geojson                 # NEW — source: gist guilhermeprokisch (67 features, 2.9MB)
+                                    # https://gist.github.com/guilhermeprokisch/080c2cb1bd28e8aca54d114e453c91a4
+                                    # property `description` (float) = DDD code
+                                    # CAVEAT license: não declarada no gist; uso interno OK,
+                                    # follow-up: pedir MIT/CC0 ou migrar pro fallback IBGE+kelvins (MIT)
 ```
 
 ## 8. Testing strategy
@@ -366,7 +389,7 @@ packages/ui/public/topology/
 
 | Risco | Probabilidade | Mitigação |
 |---|---|---|
-| TopoJSON BR-DDDs não existir public/licensed | Média | T2 audit; fallback é montar manual via shapefile IBGE municípios + Anatel DDD lookup (custa horas). |
+| Gist do TopoJSON DDDs sem license declarada | Média | Aceitável pra uso interno; follow-up: pedir license explícita ao autor ou migrar pro fallback `kelvins/municipios-brasileiros` (MIT) + dissolve por DDD (~2-3h). Sem blocker imediato. |
 | deck.gl bundle empurra UI bundle inicial | Baixa | Lazy-load via React.lazy → bundle só baixa quando user abre aba. |
 | Pipedrive-mapped view requer query lenta | Média | Index expressional + LRU cache; se ainda >500ms, denormaliza ddd column em follow-up. |
 | Plugin registra view com id duplicado | Baixa | Loader rejeita no register; throw fatal no init → plugin status='error'. |
