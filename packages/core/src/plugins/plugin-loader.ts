@@ -16,6 +16,8 @@ import type {
   PluginLogger,
 } from './types.js'
 import type { DispatchEventName } from '../events/index.js'
+import { validateManifest, type ManifestValidationResult } from './manifest.js'
+import { InMemoryServicesRegistry, type PluginServicesRegistry } from './services-registry.js'
 
 const PRIORITY_MAP: Record<string, number> = {
   high: 1,
@@ -37,6 +39,12 @@ export class PluginLoader {
   private loadedPlugins = new Map<string, DispatchPlugin>()
   private registeredRoutes: RegisteredRoute[] = []
   private loggerFactory: PluginLoggerFactory
+  /** Shared services registry exposed to every plugin via ctx.services. */
+  private services: PluginServicesRegistry
+  /** Tracks manifest validation outcome per plugin for admin introspection. */
+  private manifestResults = new Map<string, ManifestValidationResult>()
+  /** Last successful (apiKey, hmacSecret) used to load each plugin — needed for reload. */
+  private loadCredentials = new Map<string, { apiKey: string; hmacSecret: string }>()
 
   constructor(
     private registry: PluginRegistry,
@@ -53,7 +61,9 @@ export class PluginLoader {
      * intents do not race the worker's typing/send sequence.
      */
     private deviceMutex?: { acquire(deviceSerial: string): Promise<() => void> },
+    services?: PluginServicesRegistry,
   ) {
+    this.services = services ?? new InMemoryServicesRegistry()
     this.loggerFactory = logger ?? {
       child: (bindings) => ({
         info: (msg, data) => console.log(JSON.stringify({ ...bindings, msg, ...data })),
@@ -68,6 +78,37 @@ export class PluginLoader {
     const existing = this.registry.getPlugin(plugin.name)
     if (existing && existing.enabled === 0) {
       return
+    }
+
+    // Manifest validation (NEW-5, Sprint 2 — gated by presence of plugin.manifest).
+    // Plugins without a manifest still load (backwards compat) but emit a warn.
+    const log = this.loggerFactory.child({ plugin: plugin.name })
+    if (plugin.manifest) {
+      const result = validateManifest(plugin.manifest, plugin.name)
+      this.manifestResults.set(plugin.name, result)
+      if (!result.ok) {
+        log.error('Plugin manifest validation failed', {
+          reason: result.reason,
+          detail: result.detail,
+        })
+        if (result.reason === 'sdk_incompatible') {
+          // Hard block: refuse to load a plugin built for a different SDK major.
+          this.registry.setPluginStatus(plugin.name, 'error')
+          throw new Error(
+            `Plugin ${plugin.name} manifest sdk_incompatible: ${result.detail}`,
+          )
+        }
+        // Schema/name issues warn but continue loading — operator should fix
+        // the manifest, but legacy plugins should not be locked out.
+        log.warn('Continuing without valid manifest (backwards compat)')
+      } else {
+        log.info('Plugin manifest validated', {
+          version: result.manifest.version,
+          sdkVersion: result.manifest.sdkVersion,
+        })
+      }
+    } else {
+      log.warn('Plugin has no manifest export — admin introspection limited')
     }
 
     this.registry.register({
@@ -88,13 +129,90 @@ export class PluginLoader {
     try {
       await plugin.init(ctx)
       this.loadedPlugins.set(plugin.name, plugin)
+      this.loadCredentials.set(plugin.name, { apiKey, hmacSecret })
     } catch (err) {
       // R2: log + re-throw on init error
       this.registry.setPluginStatus(plugin.name, 'error')
-      this.loggerFactory.child({ plugin: plugin.name }).error('Plugin init failed', {
+      log.error('Plugin init failed', {
         err: err instanceof Error ? err.message : String(err),
       })
       throw err
+    }
+  }
+
+  /**
+   * Inspect-only accessors used by the admin API (B4) + reload path.
+   */
+  getLoadedPlugin(name: string): DispatchPlugin | undefined {
+    return this.loadedPlugins.get(name)
+  }
+
+  getManifestResult(name: string): ManifestValidationResult | undefined {
+    return this.manifestResults.get(name)
+  }
+
+  getServices(): PluginServicesRegistry {
+    return this.services
+  }
+
+  /**
+   * Re-initialize a plugin in place. Calls destroy() on the current instance
+   * then init() with a fresh context. Useful in DEV to reset plugin-internal
+   * state without restarting the whole core process.
+   *
+   * Hard-gated by `NODE_ENV !== 'production'` OR explicit
+   * `DISPATCH_DEV_RELOAD=true` opt-in. Production callers receive a clear
+   * rejection so the admin UI can surface why the button is disabled.
+   *
+   * Caveats: Node.js does NOT re-import the plugin module, so this swaps
+   * runtime state, not code. Routes registered during the original init
+   * remain in the Fastify router (Fastify has no public unregister API in
+   * the version we use). Event handlers added by the plugin via
+   * `ctx.on(...)` are also additive — listeners from prior cycles linger
+   * until the process restarts. Treat reload as a state reset, not a code
+   * swap.
+   */
+  async reloadPlugin(name: string): Promise<
+    | { ok: true }
+    | { ok: false; reason: 'disabled_in_production' | 'plugin_not_found' | 'missing_credentials' | 'init_failed'; detail?: string }
+  > {
+    const allowed =
+      process.env.NODE_ENV !== 'production' ||
+      process.env.DISPATCH_DEV_RELOAD === 'true'
+    if (!allowed) {
+      return { ok: false, reason: 'disabled_in_production' }
+    }
+    const plugin = this.loadedPlugins.get(name)
+    if (!plugin) return { ok: false, reason: 'plugin_not_found' }
+    const creds = this.loadCredentials.get(name)
+    if (!creds) return { ok: false, reason: 'missing_credentials' }
+
+    const log = this.loggerFactory.child({ plugin: name })
+    try {
+      await plugin.destroy()
+    } catch (err) {
+      log.warn('Plugin destroy failed during reload', {
+        err: err instanceof Error ? err.message : String(err),
+      })
+    }
+    this.loadedPlugins.delete(name)
+
+    try {
+      const ctx = this.createContext(name)
+      await plugin.init(ctx)
+      this.loadedPlugins.set(name, plugin)
+      log.info('Plugin reloaded')
+      return { ok: true }
+    } catch (err) {
+      log.error('Plugin re-init failed during reload', {
+        err: err instanceof Error ? err.message : String(err),
+      })
+      this.registry.setPluginStatus(name, 'error')
+      return {
+        ok: false,
+        reason: 'init_failed',
+        detail: err instanceof Error ? err.message : String(err),
+      }
     }
   }
 
@@ -230,6 +348,8 @@ export class PluginLoader {
       },
 
       deviceMutex: this.deviceMutex,
+
+      services: this.services,
     }
   }
 }

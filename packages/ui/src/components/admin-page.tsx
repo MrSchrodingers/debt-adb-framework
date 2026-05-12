@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { CORE_URL, authHeaders } from '../config'
 import { AckRatePage } from './ack-rate-page'
 import { QualityDashboard } from './quality-dashboard'
+import { PluginAdmin } from './plugin-admin'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -432,7 +433,7 @@ function PausePanel() {
 
 // ── Main page ──────────────────────────────────────────────────────────────
 
-type AdminTab = 'dead-letter' | 'banned' | 'pause' | 'ack-rate' | 'quality'
+type AdminTab = 'dead-letter' | 'banned' | 'pause' | 'ack-rate' | 'quality' | 'plugins'
 
 export function AdminPage() {
   const { t } = useTranslation()
@@ -443,6 +444,7 @@ export function AdminPage() {
     if (id === 'dead-letter') return t('admin.deadLetterTab')
     if (id === 'banned') return t('admin.bannedTab')
     if (id === 'quality') return t('admin.qualityTab')
+    if (id === 'plugins') return 'Plugins'
     return t('admin.ackRateTab')
   }
   const tabIcon = (id: AdminTab) => {
@@ -459,7 +461,7 @@ export function AdminPage() {
       </div>
 
       <div className="flex gap-2 border-b border-zinc-800 flex-wrap">
-        {(['pause', 'dead-letter', 'banned', 'quality', 'ack-rate'] as AdminTab[]).map(id => (
+        {(['pause', 'dead-letter', 'banned', 'quality', 'ack-rate', 'plugins'] as AdminTab[]).map(id => (
           <button
             key={id}
             onClick={() => setTab(id)}
@@ -480,6 +482,7 @@ export function AdminPage() {
       {tab === 'banned' && <BannedNumbersPanel />}
       {tab === 'quality' && <QualityDashboard />}
       {tab === 'ack-rate' && <AckRatePage />}
+      {tab === 'plugins' && <PluginAdmin />}
     </div>
   )
 }

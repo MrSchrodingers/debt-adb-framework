@@ -4,6 +4,8 @@
 import type { DispatchEventName } from '../events/index.js'
 import type { SenderMappingRecord, ResolvedSender, SenderConfig } from '../engine/sender-mapping.js'
 import type { IdempotencyCache } from '../queue/idempotency-cache.js'
+import type { PluginManifest } from './manifest.js'
+import type { PluginServicesRegistry } from './services-registry.js'
 
 // ── Plugin Interface (what plugins implement) ──
 
@@ -12,6 +14,13 @@ export interface DispatchPlugin {
   version: string
   events: DispatchEventName[]
   webhookUrl: string
+  /**
+   * Optional declarative manifest. When present, the loader validates schema
+   * and SDK compatibility before calling init(). Plugins without a manifest
+   * still load (backwards compat) but emit a warn and cannot opt into
+   * reload/admin introspection features (NEW-5, Sprint 2 of v2 roadmap).
+   */
+  manifest?: PluginManifest
 
   init(ctx: PluginContext): Promise<void>
   destroy(): Promise<void>
@@ -52,6 +61,14 @@ export interface PluginContext {
   deviceMutex?: {
     acquire(deviceSerial: string): Promise<() => void>
   }
+  /**
+   * Cross-plugin services registry (NEW-5, Sprint 2). Plugins can register
+   * shared capabilities (e.g. a Pipedrive HTTP client with auth + rate
+   * limit) at init time; other plugins consume via ctx.services.get<T>().
+   * Empty in the MVP — services land in a follow-up sprint when a second
+   * CRM consumer materializes (B2 revisado).
+   */
+  services: PluginServicesRegistry
 }
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'

@@ -96,6 +96,13 @@ const scanParamsSchema = z
 export class AdbPrecheckPlugin implements DispatchPlugin {
   name = 'adb-precheck' as const
   version = '0.1.0'
+  manifest: import('./manifest.js').PluginManifest = {
+    name: 'adb-precheck',
+    version: '0.1.0',
+    sdkVersion: '^1.0.0',
+    description: 'WhatsApp number validation via ADB probe + Pipeboard reconciliation for hygienization workflows',
+    author: 'DEBT',
+  }
   events: DispatchEventName[] = []
   webhookUrl: string
 

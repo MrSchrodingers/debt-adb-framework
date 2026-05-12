@@ -10,7 +10,7 @@ import { AdbBridge } from './adb/index.js'
 import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, DeviceMutex, WahaFallback, SenderHealth, SenderScoring, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender } from './engine/index.js'
 import { DispatchPauseState, type PauseScope } from './engine/dispatch-pause-state.js'
 import { DispatchEmitter } from './events/index.js'
-import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes, registerMessageTimelineRoutes, registerAdminMessageRoutes, registerInsightsHeatmapRoutes, registerAckRateRoutes, registerQualityRoutes, registerFleetRoutes, registerSetupWizardRoutes } from './api/index.js'
+import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes, registerMessageTimelineRoutes, registerAdminMessageRoutes, registerAdminPluginRoutes, registerInsightsHeatmapRoutes, registerAckRateRoutes, registerQualityRoutes, registerFleetRoutes, registerSetupWizardRoutes } from './api/index.js'
 import { ChipRegistry } from './fleet/index.js'
 import { HygieneLog, AutoHygiene, SetupWizardStore } from './devices/index.js'
 import { registerAnomalyRoutes, registerChanged24hRoutes } from './insights/index.js'
@@ -743,6 +743,11 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const callbackDelivery = new CallbackDelivery(db, pluginRegistry, fetch)
   const pinoLogger = { child: (bindings: Record<string, unknown>) => ({ info: server.log.info.bind(server.log), warn: server.log.warn.bind(server.log), error: server.log.error.bind(server.log), debug: server.log.debug.bind(server.log) }) }
   const pluginLoader = new PluginLoader(pluginRegistry, pluginEventBus, queue, db, pinoLogger, senderMapping, engine, idempotencyCache, deviceMutex)
+
+  // Admin routes for plugin introspection + control (B4, Sprint 2 v2 roadmap).
+  // Registered after pluginLoader so the GET endpoint can surface loaded
+  // plugin manifests + reload availability.
+  registerAdminPluginRoutes(server, pluginRegistry, pluginLoader, auditLogger)
 
   // Load plugins from config
   const pluginNames = (process.env.DISPATCH_PLUGINS || '').split(',').map(s => s.trim()).filter(Boolean)

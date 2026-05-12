@@ -59,6 +59,13 @@ const enqueueRequestSchema = z.union([
 export class OralsinPlugin implements DispatchPlugin {
   name = 'oralsin' as const
   version = '1.0.0'
+  manifest: import('./manifest.js').PluginManifest = {
+    name: 'oralsin',
+    version: '1.0.0',
+    sdkVersion: '^1.0.0',
+    description: 'Oralsin debt collection adapter — batch enqueue + HMAC callbacks for notification billing flows',
+    author: 'DEBT',
+  }
   events: DispatchEventName[] = ['message:sent', 'message:failed']
   webhookUrl: string
 
