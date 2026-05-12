@@ -16,7 +16,7 @@ export class InvalidPhoneError extends Error {
 const NON_AMBIGUOUS_DDDS = new Set(['11','12','13','14','15','16','17','18','19','21','22','24','27','28'])
 
 // ANATEL-allocated BR DDDs (Area Codes)
-const VALID_BR_DDDS = new Set([
+export const VALID_BR_DDDS = new Set([
   '11','12','13','14','15','16','17','18','19',          // SP
   '21','22','24',                                         // RJ
   '27','28',                                              // ES
