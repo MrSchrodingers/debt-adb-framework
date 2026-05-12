@@ -1174,9 +1174,9 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   }
 
   // Admin routes for plugin management
-  server.get('/api/v1/admin/plugins', async (_req, reply) => {
-    return reply.send(pluginRegistry.listPlugins().map(sanitizePlugin))
-  })
+  // GET /api/v1/admin/plugins is now provided by registerAdminPluginRoutes
+  // (admin-plugins.ts) — richer payload with manifest + services + loaded
+  // state. The single-plugin GET below + PATCH/DELETE/rotate-key remain.
 
   server.get('/api/v1/admin/plugins/:name', async (req, reply) => {
     const { name } = req.params as { name: string }
