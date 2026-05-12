@@ -115,6 +115,11 @@ export class PrecheckJobStore {
     this.db.exec(
       'CREATE INDEX IF NOT EXISTS idx_adb_precheck_deals_deleted_at ON adb_precheck_deals(deleted_at) WHERE deleted_at IS NOT NULL',
     )
+    // Geo aggregation: DDD-based heatmap. primary_valid_phone is 11 digits
+    // (no 55 prefix), so DDD lives at chars 1-2. Partial index skips nulls + tombstones.
+    this.db.prepare(
+      'CREATE INDEX IF NOT EXISTS idx_deals_ddd_scanned ON adb_precheck_deals(substr(primary_valid_phone, 1, 2), scanned_at) WHERE primary_valid_phone IS NOT NULL AND deleted_at IS NULL'
+    ).run()
   }
 
   /** Mark every job left in `running` state as failed. */

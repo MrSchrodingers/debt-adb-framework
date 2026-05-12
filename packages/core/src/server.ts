@@ -23,6 +23,8 @@ import { createWahaHttpClient } from './waha/waha-http-client.js'
 import { createChatwootHttpClient, ManagedSessions, InboxAutomation } from './chatwoot/index.js'
 import { ManagedSessionAutoAttacher } from './chatwoot/managed-session-auto-attach.js'
 import { PluginRegistry, PluginEventBus, CallbackDelivery, PluginLoader } from './plugins/index.js'
+import { GeoViewRegistry } from './geo/registry.js'
+import { registerGeoRoutes } from './api/geo.js'
 import { buildLoggerConfig } from './config/logger.js'
 import { GracefulShutdown } from './config/graceful-shutdown.js'
 import { HotReloadCoordinator } from './config/hot-reload.js'
@@ -742,12 +744,30 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   const callbackDelivery = new CallbackDelivery(db, pluginRegistry, fetch)
   const pinoLogger = { child: (bindings: Record<string, unknown>) => ({ info: server.log.info.bind(server.log), warn: server.log.warn.bind(server.log), error: server.log.error.bind(server.log), debug: server.log.debug.bind(server.log) }) }
-  const pluginLoader = new PluginLoader(pluginRegistry, pluginEventBus, queue, db, pinoLogger, senderMapping, engine, idempotencyCache, deviceMutex)
+  // GeoViewRegistry — plugin-first geographic visualization. Plugins
+  // register views via `ctx.registerGeoView(...)`; core hosts the map
+  // framework + delegation endpoints; loader unregisters on plugin destroy.
+  const geoRegistry = new GeoViewRegistry({ cacheTtlMs: 60_000 })
+  const pluginLoader = new PluginLoader(pluginRegistry, pluginEventBus, queue, db, pinoLogger, senderMapping, engine, idempotencyCache, deviceMutex, undefined, geoRegistry)
 
   // Admin routes for plugin introspection + control (B4, Sprint 2 v2 roadmap).
   // Registered after pluginLoader so the GET endpoint can surface loaded
   // plugin manifests + reload availability.
   registerAdminPluginRoutes(server, pluginRegistry, pluginLoader, auditLogger)
+
+  // Generic geo endpoints — delegate to registered plugin views.
+  // Core knows nothing about plugin semantics; empty when no plugins active.
+  registerGeoRoutes(server, {
+    registry: geoRegistry,
+    apiKey: process.env.DISPATCH_API_KEY ?? '',
+    getPluginStatuses: () => {
+      const out: Record<string, 'active' | 'error' | 'disabled'> = {}
+      for (const p of pluginRegistry.listPlugins()) {
+        out[p.name] = p.status === 'active' ? 'active' : p.status === 'error' ? 'error' : 'disabled'
+      }
+      return out
+    },
+  })
 
   // Load plugins from config
   const pluginNames = (process.env.DISPATCH_PLUGINS || '').split(',').map(s => s.trim()).filter(Boolean)

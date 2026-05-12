@@ -60,6 +60,8 @@ const SCHEMA_SQL = `
     ON wa_contact_checks(source, checked_at);
   CREATE INDEX IF NOT EXISTS idx_wa_checks_trigger
     ON wa_contact_checks(triggered_by);
+  CREATE INDEX IF NOT EXISTS idx_wa_checks_ddd_checked
+    ON wa_contact_checks(substr(phone_normalized, 3, 2), checked_at);
 `
 
 export interface CheckInput {

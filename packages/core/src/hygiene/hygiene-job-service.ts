@@ -58,6 +58,8 @@ const SCHEMA_SQL = `
     ON hygiene_job_items(job_id, status);
   CREATE INDEX IF NOT EXISTS idx_hygiene_items_external
     ON hygiene_job_items(external_id);
+  CREATE INDEX IF NOT EXISTS idx_hygiene_items_ddd_updated
+    ON hygiene_job_items(substr(phone_normalized, 3, 2), updated_at);
 `
 
 function runSchema(db: Database.Database): void {
