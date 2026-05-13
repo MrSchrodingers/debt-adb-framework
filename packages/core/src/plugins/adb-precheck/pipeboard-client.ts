@@ -218,6 +218,20 @@ export interface IPipeboardClient {
    */
   lookupDeals(keys: DealKey[]): Promise<DealLookupResult[]>
 
+  /**
+   * Aggregate phone counts by Brazilian DDD across the entire Pipeboard
+   * pool. Returns `{ ddd: count }` covering every non-null phone in the
+   * standard phone columns (`telefone_hot_*`, `telefone_*`). Phones with
+   * a country-code prefix (55…) are stripped before extracting the DDD.
+   *
+   * Used by the geolocation tab to plot the global cohort, not just the
+   * subset Dispatch has already scanned.
+   *
+   * Optional — backends that don't have a cheap aggregation primitive
+   * (REST) may omit this method; callers should fall back to local data.
+   */
+  aggregatePhoneDddDistribution?(): Promise<Record<string, number>>
+
   // -----------------------------------------------------------------
   // Legacy per-operation methods. Kept on the SQL backend for backwards
   // compatibility with tests that exercise them directly. The REST

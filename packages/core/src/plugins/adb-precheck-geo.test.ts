@@ -139,4 +139,32 @@ describe('adb-precheck.pipedrive-mapped geo view', () => {
     // Deal 3 tombstoned would have added 1 to DDD 11. Total stays at 2.
     expect(r.buckets['11']).toBe(2)
   })
+
+  it('uses Pipeboard upstream aggregation when client provides it', async () => {
+    const registryWithUpstream = new GeoViewRegistry()
+    const pipeboardClient = {
+      aggregatePhoneDddDistribution: async () => ({ '11': 9999, '21': 5000, '41': 1234 }),
+    }
+    for (const v of buildAdbPrecheckGeoViews(db, pipeboardClient)) {
+      registryWithUpstream.register('adb-precheck', v)
+    }
+    const view = registryWithUpstream.get('adb-precheck.pipedrive-mapped')!
+    const r = await view.aggregate({ window: '7d', filters: {} })
+    expect(r.buckets).toEqual({ '11': 9999, '21': 5000, '41': 1234 })
+    expect(r.total).toBe(16233)
+  })
+
+  it('falls back to local SQLite when Pipeboard client throws', async () => {
+    const registryWithFailingUpstream = new GeoViewRegistry()
+    const failingClient = {
+      aggregatePhoneDddDistribution: async () => { throw new Error('postgres unreachable') },
+    }
+    for (const v of buildAdbPrecheckGeoViews(db, failingClient)) {
+      registryWithFailingUpstream.register('adb-precheck', v)
+    }
+    const view = registryWithFailingUpstream.get('adb-precheck.pipedrive-mapped')!
+    const r = await view.aggregate({ window: '7d', filters: {} })
+    // Should fall through to the local fixture (4 phones across 11/21/41)
+    expect(r.total).toBe(4)
+  })
 })

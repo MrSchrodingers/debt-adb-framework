@@ -58,6 +58,43 @@ export class PipeboardPg implements IPipeboardClient {
     await this.pool.end()
   }
 
+  /**
+   * Aggregate phone counts across the whole Pipeboard pool by DDD.
+   * UNION ALL across the 9 standard phone columns, strip 55 prefix when
+   * present, group by the first two digits.
+   * One round-trip; Postgres handles the GROUP BY in-memory.
+   */
+  async aggregatePhoneDddDistribution(): Promise<Record<string, number>> {
+    const phoneCols = PHONE_COLUMNS.map(
+      (c) => `SELECT ${c} AS phone FROM tenant_adb.prov_consultas WHERE ${c} IS NOT NULL`,
+    ).join(' UNION ALL ')
+    const sql = `
+      WITH all_phones AS (${phoneCols}),
+      normalized AS (
+        SELECT regexp_replace(phone, '\\D', '', 'g') AS digits FROM all_phones
+      ),
+      stripped AS (
+        SELECT
+          CASE
+            WHEN length(digits) >= 12 AND substring(digits, 1, 2) = '55'
+            THEN substring(digits, 3)
+            ELSE digits
+          END AS digits
+        FROM normalized
+        WHERE length(regexp_replace(digits, '\\D', '', 'g')) >= 10
+      )
+      SELECT substring(digits, 1, 2) AS ddd, COUNT(*)::int AS count
+      FROM stripped
+      WHERE length(digits) >= 10
+      GROUP BY ddd
+      ORDER BY count DESC
+    `
+    const { rows } = await this.pool.query<{ ddd: string; count: number }>(sql)
+    const out: Record<string, number> = {}
+    for (const r of rows) if (r.ddd && /^\d{2}$/.test(r.ddd)) out[r.ddd] = r.count
+    return out
+  }
+
   /** Count deals available to scan given the filter. */
   async countPool(params: PrecheckScanParams): Promise<number> {
     const where = this.buildWhere(params)

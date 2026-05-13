@@ -413,10 +413,10 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     ctx.registerRoute('GET',  '/admin/probe-snapshots', this.handleListSnapshots.bind(this))
 
     // Geo views — heatmap by DDD. Plugin contributes 3 cohort views:
-    //  - no-match: hygiene job items that failed validation
-    //  - valid:    WA contact checks that confirmed existence
-    //  - pipedrive-mapped: deals reconciled in Pipedrive (live, sem tombstone)
-    for (const view of buildAdbPrecheckGeoViews(this.db)) {
+    //  - no-match: WA checks that returned 'not_exists' (distinct phones)
+    //  - valid:    WA checks that confirmed existence (distinct phones)
+    //  - pipedrive-mapped: every phone in the Pipeboard pool (upstream)
+    for (const view of buildAdbPrecheckGeoViews(this.db, this.pg)) {
       ctx.registerGeoView(view)
     }
 
@@ -1023,7 +1023,10 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
  * Views 1-2 use phone_normalized (12 digits, with 55) so DDD = chars 3-4.
  * View 3 uses primary_valid_phone (11 digits, no 55) so DDD = chars 1-2.
  */
-export function buildAdbPrecheckGeoViews(db: Database.Database): GeoViewDefinition[] {
+export function buildAdbPrecheckGeoViews(
+  db: Database.Database,
+  pipeboardClient?: { aggregatePhoneDddDistribution?(): Promise<Record<string, number>> },
+): GeoViewDefinition[] {
   const windowFilter = {
     type: 'window' as const,
     id: 'window',
@@ -1121,13 +1124,28 @@ export function buildAdbPrecheckGeoViews(db: Database.Database): GeoViewDefiniti
   const pipedriveMappedView: GeoViewDefinition = {
     id: 'adb-precheck.pipedrive-mapped',
     label: 'Mapeados no Pipedrive',
-    description: 'Todos os telefones que vieram do Pipeboard (deals live, qualquer status de validação) — estado cumulativo',
+    description: 'Todos os telefones do pool Pipeboard upstream (5.689 deals × ~4.6 phones cada) — estado global',
     group: 'adb-precheck',
     palette: 'sequential',
-    // No window filter — this view shows the full Pipeboard cohort, not
-    // a time-bucketed metric. Reconciliation is cumulative state.
     filters: [],
     aggregate: async () => {
+      // Preferred: query Pipeboard upstream directly so the heatmap
+      // reflects the ENTIRE pool, including pending deals not yet
+      // scanned by Dispatch.
+      if (pipeboardClient?.aggregatePhoneDddDistribution) {
+        try {
+          const buckets = await pipeboardClient.aggregatePhoneDddDistribution()
+          const total = Object.values(buckets).reduce((s, v) => s + v, 0)
+          return { buckets, total, generatedAt: new Date().toISOString() }
+        } catch (err) {
+          // Fall through to local fallback rather than failing the view.
+          // eslint-disable-next-line no-console
+          console.warn('[geo] Pipeboard pool aggregate failed, falling back to local:', err)
+        }
+      }
+      // Fallback: phones inside locally-scanned deals only. Best-effort
+      // when Pipeboard upstream is unreachable or the backend doesn't
+      // support the aggregation primitive (REST).
       const rows = db.prepare(`
         SELECT ${dddFromJsonPhone} AS ddd, COUNT(*) AS count
         FROM adb_precheck_deals d, json_each(d.phones_json) p
