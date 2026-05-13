@@ -4,8 +4,6 @@ import { registerGeoRoutes } from './geo.js'
 import { GeoViewRegistry } from '../geo/registry.js'
 import type { GeoViewDefinition } from '../geo/types.js'
 
-const API_KEY = 'test-key'
-
 const makeView = (overrides: Partial<GeoViewDefinition> = {}): GeoViewDefinition => ({
   id: 'oralsin.sends', label: 'Envios', group: 'oralsin', palette: 'sequential',
   filters: [
@@ -29,26 +27,21 @@ describe('Geo routes', () => {
     app = Fastify()
     registry = new GeoViewRegistry()
     registerGeoRoutes(app, {
-      registry, apiKey: API_KEY,
+      registry,
       getPluginStatuses: () => ({ oralsin: 'active', 'adb-precheck': 'active' }),
     })
     await app.ready()
   })
 
-  it('rejects no API key', async () => {
-    const r = await app.inject({ method: 'GET', url: '/api/v1/geo/views' })
-    expect(r.statusCode).toBe(401)
-  })
-
   it('GET /views with zero plugins returns empty', async () => {
-    const r = await app.inject({ method: 'GET', url: '/api/v1/geo/views', headers: { 'x-api-key': API_KEY } })
+    const r = await app.inject({ method: 'GET', url: '/api/v1/geo/views' })
     expect(r.statusCode).toBe(200)
     expect(r.json().views).toEqual([])
   })
 
   it('GET /views lists registered views with plugin status', async () => {
     registry.register('oralsin', makeView())
-    const r = await app.inject({ method: 'GET', url: '/api/v1/geo/views', headers: { 'x-api-key': API_KEY } })
+    const r = await app.inject({ method: 'GET', url: '/api/v1/geo/views' })
     expect(r.statusCode).toBe(200)
     expect(r.json().views).toHaveLength(1)
     expect(r.json().views[0].pluginName).toBe('oralsin')
@@ -58,7 +51,6 @@ describe('Geo routes', () => {
   it('GET /views/:id/aggregate returns 404 for unknown view', async () => {
     const r = await app.inject({
       method: 'GET', url: '/api/v1/geo/views/foo.bar/aggregate?window=7d',
-      headers: { 'x-api-key': API_KEY },
     })
     expect(r.statusCode).toBe(404)
     expect(r.json().error).toBe('view_not_found')
@@ -68,7 +60,6 @@ describe('Geo routes', () => {
     registry.register('oralsin', makeView())
     const r = await app.inject({
       method: 'GET', url: '/api/v1/geo/views/oralsin.sends/aggregate?window=foo',
-      headers: { 'x-api-key': API_KEY },
     })
     expect(r.statusCode).toBe(400)
     expect(r.json().error).toBe('invalid_filter')
@@ -79,7 +70,6 @@ describe('Geo routes', () => {
     registry.register('oralsin', view)
     const r = await app.inject({
       method: 'GET', url: '/api/v1/geo/views/oralsin.sends/aggregate?window=7d&status=sent',
-      headers: { 'x-api-key': API_KEY },
     })
     expect(r.statusCode).toBe(200)
     expect(r.json().buckets).toEqual({ '11': 5 })
@@ -93,7 +83,6 @@ describe('Geo routes', () => {
     registry.register('oralsin', view)
     const r = await app.inject({
       method: 'GET', url: '/api/v1/geo/views/oralsin.sends/aggregate?window=7d',
-      headers: { 'x-api-key': API_KEY },
     })
     expect(r.statusCode).toBe(503)
     expect(r.json().error).toBe('plugin_aggregate_failed')
@@ -104,7 +93,6 @@ describe('Geo routes', () => {
     registry.register('oralsin', makeView())
     const r = await app.inject({
       method: 'GET', url: '/api/v1/geo/views/oralsin.sends/drill?ddd=20&window=7d',
-      headers: { 'x-api-key': API_KEY },
     })
     expect(r.statusCode).toBe(400)
     expect(r.json().field).toBe('ddd')
@@ -115,7 +103,6 @@ describe('Geo routes', () => {
     registry.register('oralsin', view)
     const r = await app.inject({
       method: 'GET', url: '/api/v1/geo/views/oralsin.sends/drill?ddd=11&window=7d',
-      headers: { 'x-api-key': API_KEY },
     })
     expect(r.statusCode).toBe(200)
     expect(r.json().rows).toEqual([{ phone: '5511987654321' }])

@@ -1,24 +1,17 @@
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
+import type { FastifyInstance } from 'fastify'
 import { GeoViewRegistry, RegistryError } from '../geo/registry.js'
 import { validateGeoQuery } from '../geo/filter-validator.js'
 import { VALID_BR_DDDS } from '../util/ddd.js'
 
 export interface GeoRoutesOptions {
   registry: GeoViewRegistry
-  apiKey: string
   getPluginStatuses(): Record<string, 'active' | 'error' | 'disabled'>
 }
 
 export function registerGeoRoutes(app: FastifyInstance, opts: GeoRoutesOptions): void {
-  const { registry, apiKey, getPluginStatuses } = opts
-
-  app.addHook('preHandler', async (req: FastifyRequest, reply: FastifyReply) => {
-    if (!req.url.startsWith('/api/v1/geo')) return
-    const provided = req.headers['x-api-key']
-    if (provided !== apiKey) {
-      reply.code(401).send({ error: 'unauthorized' })
-    }
-  })
+  const { registry, getPluginStatuses } = opts
+  // Auth: handled globally by registerApiAuth (JWT Bearer OR X-API-Key).
+  // Geo routes don't need their own auth hook.
 
   app.get('/api/v1/geo/views', async () => {
     return registry.listSummary({ statusByPlugin: getPluginStatuses() })

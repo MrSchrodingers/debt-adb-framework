@@ -759,7 +759,6 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // Core knows nothing about plugin semantics; empty when no plugins active.
   registerGeoRoutes(server, {
     registry: geoRegistry,
-    apiKey: process.env.DISPATCH_API_KEY ?? '',
     getPluginStatuses: () => {
       const out: Record<string, 'active' | 'error' | 'disabled'> = {}
       for (const p of pluginRegistry.listPlugins()) {
