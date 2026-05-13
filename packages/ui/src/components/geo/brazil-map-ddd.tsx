@@ -24,28 +24,32 @@ export function BrazilMapDDD(props: BrazilMapDDDProps) {
 
   const layer = useMemo(() => new GeoJsonLayer({
     id: 'br-ddd-choropleth',
+    // Pass the features array directly — more reliable across deck.gl versions
+    // than passing the whole FeatureCollection.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    data: topology as any,
+    data: topology.features as any,
     pickable: true,
     stroked: true,
     filled: true,
-    lineWidthMinPixels: 0.5,
-    getLineColor: [255, 255, 255, 80] as [number, number, number, number],
+    lineWidthMinPixels: 1,
+    getLineColor: [120, 120, 130, 200] as [number, number, number, number],
     getFillColor: (f: object) => {
-      const feat = f as { properties: { description: number } }
-      const ddd = String(Math.trunc(Number(feat.properties.description)))
+      const feat = f as { properties?: { description?: number | string } }
+      const rawDdd = feat?.properties?.description
+      if (rawDdd === undefined || rawDdd === null) return [80, 80, 90, 120]
+      const ddd = String(Math.trunc(Number(rawDdd)))
       const count = buckets[ddd] ?? 0
-      const t = count === 0 ? 0 : count / max
+      if (max <= 0 || count === 0) return [60, 60, 70, 140] as [number, number, number, number]
+      const t = Math.min(1, count / max)
       const [r, g, b] = parseRgb(colorFn(t))
-      return count === 0
-        ? [40, 40, 40, 60] as [number, number, number, number]
-        : [r, g, b, 220] as [number, number, number, number]
+      return [r, g, b, 230] as [number, number, number, number]
     },
     updateTriggers: { getFillColor: [buckets, max, palette] },
     onClick: (info) => {
-      const f = info.object as { properties: { description: number } } | undefined
-      if (!f) return
-      onDddClick(String(Math.trunc(Number(f.properties.description))))
+      const f = info.object as { properties?: { description?: number | string } } | undefined
+      const rawDdd = f?.properties?.description
+      if (rawDdd === undefined || rawDdd === null) return
+      onDddClick(String(Math.trunc(Number(rawDdd))))
     },
   }), [topology, buckets, max, palette, onDddClick, colorFn])
 
@@ -56,9 +60,10 @@ export function BrazilMapDDD(props: BrazilMapDDDProps) {
         controller={true}
         layers={[layer]}
         getTooltip={({ object }) => {
-          const f = object as { properties: { description: number } } | undefined
-          if (!f) return null
-          const ddd = String(Math.trunc(Number(f.properties.description)))
+          const f = object as { properties?: { description?: number | string } } | undefined
+          const rawDdd = f?.properties?.description
+          if (rawDdd === undefined || rawDdd === null) return null
+          const ddd = String(Math.trunc(Number(rawDdd)))
           const count = buckets[ddd] ?? 0
           return {
             html: `<div style="padding:6px 8px;"><b>DDD ${ddd}</b><br/>${count} ${count === 1 ? 'registro' : 'registros'}</div>`,
