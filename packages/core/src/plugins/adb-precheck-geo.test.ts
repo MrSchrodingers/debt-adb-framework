@@ -84,18 +84,20 @@ describe('adb-precheck.pipedrive-mapped geo view', () => {
     db = new Database(':memory:')
     db.prepare(`
       CREATE TABLE adb_precheck_deals (
-        id INTEGER PRIMARY KEY, primary_valid_phone TEXT,
-        scanned_at TEXT NOT NULL, deleted_at TEXT
+        pasta TEXT NOT NULL, deal_id INTEGER NOT NULL,
+        contato_tipo TEXT NOT NULL, contato_id INTEGER NOT NULL,
+        primary_valid_phone TEXT, scanned_at TEXT NOT NULL, deleted_at TEXT,
+        PRIMARY KEY (pasta, deal_id, contato_tipo, contato_id)
       )
     `).run()
     const now = new Date().toISOString()
-    const ins = db.prepare(`INSERT INTO adb_precheck_deals (primary_valid_phone, scanned_at, deleted_at) VALUES (?, ?, ?)`)
-    ins.run('11987654321', now, null)    // 11 digits (no country code)
-    ins.run('11987654322', now, null)    // 11 digits
-    ins.run('21987654323', now, null)    // 11 digits
-    ins.run('5511987654328', now, null)  // 13 digits with country code
-    ins.run('11987654324', now, now)     // tombstoned
-    ins.run(null,           now, null)   // null phone
+    const ins = db.prepare(`INSERT INTO adb_precheck_deals (pasta, deal_id, contato_tipo, contato_id, primary_valid_phone, scanned_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    ins.run('p', 1, 'cli', 1, '11987654321', now, null)    // 11 digits
+    ins.run('p', 2, 'cli', 1, '11987654322', now, null)    // 11 digits
+    ins.run('p', 3, 'cli', 1, '21987654323', now, null)    // 11 digits
+    ins.run('p', 4, 'cli', 1, '5511987654328', now, null)  // 13 digits with country code
+    ins.run('p', 5, 'cli', 1, '11987654324', now, now)     // tombstoned
+    ins.run('p', 6, 'cli', 1, null,           now, null)   // null phone
     registry = new GeoViewRegistry()
     for (const v of buildAdbPrecheckGeoViews(db)) registry.register('adb-precheck', v)
   })

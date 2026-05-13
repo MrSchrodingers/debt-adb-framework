@@ -1152,7 +1152,8 @@ export function buildAdbPrecheckGeoViews(db: Database.Database): GeoViewDefiniti
       const pageSize = params.pageSize ?? 50
       const offset = ((params.page ?? 1) - 1) * pageSize
       const rows = db.prepare(`
-        SELECT id, primary_valid_phone AS phone, scanned_at
+        SELECT pasta, deal_id, contato_tipo, contato_id,
+               primary_valid_phone AS phone, scanned_at
         FROM adb_precheck_deals
         WHERE deleted_at IS NULL AND scanned_at >= ?
           AND primary_valid_phone IS NOT NULL
@@ -1167,7 +1168,9 @@ export function buildAdbPrecheckGeoViews(db: Database.Database): GeoViewDefiniti
       `).get(since, ddd) as { c: number }).c
       return {
         columns: [
-          { key: 'id', label: 'Deal ID', type: 'string' },
+          { key: 'deal_id', label: 'Deal ID', type: 'number' },
+          { key: 'pasta', label: 'Pasta', type: 'string' },
+          { key: 'contato_tipo', label: 'Tipo', type: 'string' },
           { key: 'phone', label: 'Telefone', type: 'phone' },
           { key: 'scanned_at', label: 'Scaneado em', type: 'date' },
         ],
