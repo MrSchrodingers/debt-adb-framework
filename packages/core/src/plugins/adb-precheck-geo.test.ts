@@ -17,22 +17,26 @@ describe('adb-precheck.no-match geo view', () => {
     `).run()
     const now = new Date().toISOString()
     const ins = db.prepare(`INSERT INTO wa_contact_checks VALUES (?, ?, ?, ?)`)
+    // Re-check the same phone 3 times — DISTINCT should de-dupe.
     ins.run('c1', '551187654321', 'not_exists', now)
-    ins.run('c2', '551187654322', 'not_exists', now)
-    ins.run('c3', '552187654323', 'not_exists', now)
-    ins.run('c4', '551187654324', 'exists',     now)  // ignored (different cohort)
+    ins.run('c2', '551187654321', 'not_exists', now)
+    ins.run('c3', '551187654321', 'not_exists', now)
+    ins.run('c4', '551187654322', 'not_exists', now)
+    ins.run('c5', '552187654323', 'not_exists', now)
+    ins.run('c6', '551187654324', 'exists',     now)  // ignored (different cohort)
     registry = new GeoViewRegistry()
     for (const v of buildAdbPrecheckGeoViews(db)) registry.register('adb-precheck', v)
   })
 
-  it('aggregates result=not_exists by DDD', async () => {
+  it('aggregates DISTINCT phones by DDD (re-checks dedup)', async () => {
     const view = registry.get('adb-precheck.no-match')!
     const r = await view.aggregate({ window: '7d', filters: {} })
+    // 5 rows but only 3 distinct phones: 2 in DDD 11, 1 in DDD 21
     expect(r.buckets).toEqual({ '11': 2, '21': 1 })
     expect(r.total).toBe(3)
   })
 
-  it('drill returns rows for given DDD', async () => {
+  it('drill returns DISTINCT phones for given DDD', async () => {
     const view = registry.get('adb-precheck.no-match')!
     const r = await view.drill('11', { window: '7d', filters: {}, page: 1, pageSize: 50 })
     expect(r.rows).toHaveLength(2)
@@ -85,34 +89,54 @@ describe('adb-precheck.pipedrive-mapped geo view', () => {
       CREATE TABLE adb_precheck_deals (
         pasta TEXT NOT NULL, deal_id INTEGER NOT NULL,
         contato_tipo TEXT NOT NULL, contato_id INTEGER NOT NULL,
-        primary_valid_phone TEXT, scanned_at TEXT NOT NULL, deleted_at TEXT,
+        primary_valid_phone TEXT, phones_json TEXT NOT NULL,
+        scanned_at TEXT NOT NULL, deleted_at TEXT,
         PRIMARY KEY (pasta, deal_id, contato_tipo, contato_id)
       )
     `).run()
     const now = new Date().toISOString()
-    const ins = db.prepare(`INSERT INTO adb_precheck_deals (pasta, deal_id, contato_tipo, contato_id, primary_valid_phone, scanned_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    ins.run('p', 1, 'cli', 1, '11987654321', now, null)    // 11 digits
-    ins.run('p', 2, 'cli', 1, '11987654322', now, null)    // 11 digits
-    ins.run('p', 3, 'cli', 1, '21987654323', now, null)    // 11 digits
-    ins.run('p', 4, 'cli', 1, '5511987654328', now, null)  // 13 digits with country code
-    ins.run('p', 5, 'cli', 1, '11987654324', now, now)     // tombstoned
-    ins.run('p', 6, 'cli', 1, null,           now, null)   // null phone
+    const ins = db.prepare(`INSERT INTO adb_precheck_deals (pasta, deal_id, contato_tipo, contato_id, primary_valid_phone, phones_json, scanned_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    // Deal 1: 2 phones (both DDD 11)
+    ins.run('p', 1, 'cli', 1, '5511987654321',
+      JSON.stringify([
+        { column: 't1', normalized: '5511987654321', outcome: 'valid' },
+        { column: 't2', normalized: '5511987654322', outcome: 'invalid' },
+      ]), now, null)
+    // Deal 2: 1 phone (DDD 21)
+    ins.run('p', 2, 'cli', 1, '5521987654323',
+      JSON.stringify([{ column: 't1', normalized: '5521987654323', outcome: 'valid' }]), now, null)
+    // Deal 3: 1 phone (DDD 11), tombstoned — excluded
+    ins.run('p', 3, 'cli', 1, '5511987654324',
+      JSON.stringify([{ column: 't1', normalized: '5511987654324', outcome: 'valid' }]), now, now)
+    // Deal 4: empty phones_json — excluded
+    ins.run('p', 4, 'cli', 1, null, JSON.stringify([]), now, null)
+    // Deal 5: phone without primary_valid (all invalid) — STILL counted
+    ins.run('p', 5, 'cli', 1, null,
+      JSON.stringify([{ column: 't1', normalized: '5541987654329', outcome: 'invalid' }]), now, null)
     registry = new GeoViewRegistry()
     for (const v of buildAdbPrecheckGeoViews(db)) registry.register('adb-precheck', v)
   })
 
-  it('handles 11-digit and 13-digit phone formats (strips 55 prefix)', async () => {
+  it('explodes phones_json and counts every phone by DDD (not just primary)', async () => {
     const view = registry.get('adb-precheck.pipedrive-mapped')!
     const r = await view.aggregate({ window: '7d', filters: {} })
-    // 3 phones with 11 digits → DDD chars 1-2 → 11,11,21
-    // 1 phone with 13 digits + 55 → strip 55 → DDD chars 1-2 → 11
-    expect(r.buckets).toEqual({ '11': 3, '21': 1 })
+    // Live deals: deal 1 (2 phones DDD 11), deal 2 (1 phone DDD 21), deal 5 (1 phone DDD 41)
+    // Deal 3 tombstoned, deal 4 empty.
+    expect(r.buckets).toEqual({ '11': 2, '21': 1, '41': 1 })
+    expect(r.total).toBe(4)
   })
 
-  it('excludes tombstoned deals', async () => {
+  it('counts phones without primary_valid (no-primary deals still mapped)', async () => {
     const view = registry.get('adb-precheck.pipedrive-mapped')!
     const r = await view.aggregate({ window: '7d', filters: {} })
-    // 1 tombstoned (deleted_at !== null) excluded — would have been DDD 11
-    expect(r.buckets['11']).toBe(3)
+    // Deal 5 has no primary but its phone should still be counted in DDD 41
+    expect(r.buckets['41']).toBe(1)
+  })
+
+  it('excludes tombstoned deals (deleted_at NOT NULL)', async () => {
+    const view = registry.get('adb-precheck.pipedrive-mapped')!
+    const r = await view.aggregate({ window: '7d', filters: {} })
+    // Deal 3 tombstoned would have added 1 to DDD 11. Total stays at 2.
+    expect(r.buckets['11']).toBe(2)
   })
 })

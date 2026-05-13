@@ -1031,21 +1031,29 @@ export function buildAdbPrecheckGeoViews(db: Database.Database): GeoViewDefiniti
     options: ['24h', '7d', '30d', 'all'] as const,
   }
 
-  const noMatch: GeoViewDefinition = {
-    id: 'adb-precheck.no-match',
-    label: 'Não existentes',
-    description: 'DDDs com mais números que NÃO existem no WhatsApp (validação direta)',
+  // Helper: build a wa_contact_checks-based cohort view. `result` is the
+  // outcome value to filter by. Counts are DISTINCT phone_normalized so
+  // re-checks of the same number don't inflate the heatmap.
+  const cohortView = (
+    id: string,
+    label: string,
+    description: string,
+    resultValue: 'exists' | 'not_exists',
+    dateLabel: string,
+  ): GeoViewDefinition => ({
+    id, label, description,
     group: 'adb-precheck',
     palette: 'sequential',
     filters: [{ ...windowFilter, options: [...windowFilter.options] }],
     aggregate: async (params) => {
       const since = windowToIso(params.window)
       const rows = db.prepare(`
-        SELECT substr(phone_normalized, 3, 2) AS ddd, COUNT(*) AS count
+        SELECT substr(phone_normalized, 3, 2) AS ddd,
+               COUNT(DISTINCT phone_normalized) AS count
         FROM wa_contact_checks
-        WHERE result = 'not_exists' AND checked_at >= ?
+        WHERE result = ? AND checked_at >= ?
         GROUP BY ddd
-      `).all(since) as Array<{ ddd: string; count: number }>
+      `).all(resultValue, since) as Array<{ ddd: string; count: number }>
       const buckets: Record<string, number> = {}
       for (const r of rows) if (r.ddd) buckets[r.ddd] = r.count
       return { buckets, total: rows.reduce((s, r) => s + r.count, 0), generatedAt: new Date().toISOString() }
@@ -1054,91 +1062,77 @@ export function buildAdbPrecheckGeoViews(db: Database.Database): GeoViewDefiniti
       const since = windowToIso(params.window)
       const pageSize = params.pageSize ?? 50
       const offset = ((params.page ?? 1) - 1) * pageSize
+      // DISTINCT phone with latest check timestamp — so a phone re-checked
+      // 5 times appears once with the most recent date.
       const rows = db.prepare(`
-        SELECT id, phone_normalized AS phone, result, checked_at
+        SELECT phone_normalized AS phone, MAX(checked_at) AS last_check
         FROM wa_contact_checks
-        WHERE result = 'not_exists' AND checked_at >= ?
+        WHERE result = ? AND checked_at >= ?
           AND substr(phone_normalized, 3, 2) = ?
-        ORDER BY checked_at DESC
+        GROUP BY phone_normalized
+        ORDER BY last_check DESC
         LIMIT ? OFFSET ?
-      `).all(since, ddd, pageSize, offset)
+      `).all(resultValue, since, ddd, pageSize, offset)
       const total = (db.prepare(`
-        SELECT COUNT(*) AS c FROM wa_contact_checks
-        WHERE result='not_exists' AND checked_at >= ?
-          AND substr(phone_normalized,3,2)=?
-      `).get(since, ddd) as { c: number }).c
+        SELECT COUNT(DISTINCT phone_normalized) AS c FROM wa_contact_checks
+        WHERE result = ? AND checked_at >= ?
+          AND substr(phone_normalized, 3, 2) = ?
+      `).get(resultValue, since, ddd) as { c: number }).c
       return {
         columns: [
           { key: 'phone', label: 'Telefone', type: 'phone' },
-          { key: 'checked_at', label: 'Verificado em', type: 'date' },
+          { key: 'last_check', label: dateLabel, type: 'date' },
         ],
         rows: rows as Array<Record<string, unknown>>,
         total, page: params.page ?? 1, pageSize,
       }
     },
-  }
+  })
 
-  const validView: GeoViewDefinition = {
-    id: 'adb-precheck.valid',
-    label: 'Validados',
-    description: 'DDDs com mais números validados como existentes',
-    group: 'adb-precheck',
-    palette: 'sequential',
-    filters: [{ ...windowFilter, options: [...windowFilter.options] }],
-    aggregate: async (params) => {
-      const since = windowToIso(params.window)
-      const rows = db.prepare(`
-        SELECT substr(phone_normalized, 3, 2) AS ddd, COUNT(*) AS count
-        FROM wa_contact_checks
-        WHERE result = 'exists' AND checked_at >= ?
-        GROUP BY ddd
-      `).all(since) as Array<{ ddd: string; count: number }>
-      const buckets: Record<string, number> = {}
-      for (const r of rows) if (r.ddd) buckets[r.ddd] = r.count
-      return { buckets, total: rows.reduce((s, r) => s + r.count, 0), generatedAt: new Date().toISOString() }
-    },
-    drill: async (ddd, params) => {
-      const since = windowToIso(params.window)
-      const pageSize = params.pageSize ?? 50
-      const offset = ((params.page ?? 1) - 1) * pageSize
-      const rows = db.prepare(`
-        SELECT id, phone_normalized AS phone, result, checked_at
-        FROM wa_contact_checks
-        WHERE result = 'exists' AND checked_at >= ?
-          AND substr(phone_normalized, 3, 2) = ?
-        ORDER BY checked_at DESC
-        LIMIT ? OFFSET ?
-      `).all(since, ddd, pageSize, offset)
-      const total = (db.prepare(`
-        SELECT COUNT(*) AS c FROM wa_contact_checks
-        WHERE result='exists' AND checked_at >= ? AND substr(phone_normalized,3,2)=?
-      `).get(since, ddd) as { c: number }).c
-      return {
-        columns: [
-          { key: 'phone', label: 'Telefone', type: 'phone' },
-          { key: 'checked_at', label: 'Validado em', type: 'date' },
-        ],
-        rows: rows as Array<Record<string, unknown>>,
-        total, page: params.page ?? 1, pageSize,
-      }
-    },
-  }
+  const noMatch = cohortView(
+    'adb-precheck.no-match',
+    'Não existentes',
+    'DDDs com mais números que NÃO existem no WhatsApp (telefones únicos, última checagem)',
+    'not_exists',
+    'Verificado em',
+  )
+
+  const validView = cohortView(
+    'adb-precheck.valid',
+    'Validados',
+    'DDDs com mais números validados como existentes no WhatsApp (telefones únicos)',
+    'exists',
+    'Validado em',
+  )
+
+  // SQL fragment that extracts DDD from a JSON phone object. The phone is
+  // stored as 12-13 digits with leading 55. Strip the 55 prefix when present.
+  const dddFromJsonPhone = `
+    substr(
+      CASE
+        WHEN length(json_extract(p.value, '$.normalized')) >= 12
+             AND substr(json_extract(p.value, '$.normalized'), 1, 2) = '55'
+        THEN substr(json_extract(p.value, '$.normalized'), 3)
+        ELSE json_extract(p.value, '$.normalized')
+      END,
+      1, 2)
+  `
 
   const pipedriveMappedView: GeoViewDefinition = {
     id: 'adb-precheck.pipedrive-mapped',
     label: 'Mapeados no Pipedrive',
-    description: 'Distribuição global dos deals reconciliados (live, sem tombstone) — janela temporal não se aplica',
+    description: 'Todos os telefones que vieram do Pipeboard (deals live, qualquer status de validação) — estado cumulativo',
     group: 'adb-precheck',
     palette: 'sequential',
-    // No window filter — this view is intentionally global. Pipeboard
-    // reconciliation is a cumulative state, not a time-bucketed metric.
+    // No window filter — this view shows the full Pipeboard cohort, not
+    // a time-bucketed metric. Reconciliation is cumulative state.
     filters: [],
     aggregate: async () => {
       const rows = db.prepare(`
-        SELECT substr(CASE WHEN length(primary_valid_phone) >= 12 AND substr(primary_valid_phone, 1, 2) = '55' THEN substr(primary_valid_phone, 3) ELSE primary_valid_phone END, 1, 2) AS ddd, COUNT(*) AS count
-        FROM adb_precheck_deals
-        WHERE deleted_at IS NULL
-          AND primary_valid_phone IS NOT NULL
+        SELECT ${dddFromJsonPhone} AS ddd, COUNT(*) AS count
+        FROM adb_precheck_deals d, json_each(d.phones_json) p
+        WHERE d.deleted_at IS NULL
+          AND json_extract(p.value, '$.normalized') IS NOT NULL
         GROUP BY ddd
       `).all() as Array<{ ddd: string; count: number }>
       const buckets: Record<string, number> = {}
@@ -1149,26 +1143,32 @@ export function buildAdbPrecheckGeoViews(db: Database.Database): GeoViewDefiniti
       const pageSize = params.pageSize ?? 50
       const offset = ((params.page ?? 1) - 1) * pageSize
       const rows = db.prepare(`
-        SELECT pasta, deal_id, contato_tipo, contato_id,
-               primary_valid_phone AS phone, scanned_at
-        FROM adb_precheck_deals
-        WHERE deleted_at IS NULL
-          AND primary_valid_phone IS NOT NULL
-          AND substr(CASE WHEN length(primary_valid_phone) >= 12 AND substr(primary_valid_phone, 1, 2) = '55' THEN substr(primary_valid_phone, 3) ELSE primary_valid_phone END, 1, 2) = ?
-        ORDER BY scanned_at DESC
+        SELECT d.pasta, d.deal_id, d.contato_tipo, d.contato_id,
+               json_extract(p.value, '$.normalized') AS phone,
+               json_extract(p.value, '$.column')     AS phone_column,
+               json_extract(p.value, '$.outcome')    AS outcome,
+               d.scanned_at
+        FROM adb_precheck_deals d, json_each(d.phones_json) p
+        WHERE d.deleted_at IS NULL
+          AND json_extract(p.value, '$.normalized') IS NOT NULL
+          AND ${dddFromJsonPhone} = ?
+        ORDER BY d.scanned_at DESC
         LIMIT ? OFFSET ?
       `).all(ddd, pageSize, offset)
       const total = (db.prepare(`
-        SELECT COUNT(*) AS c FROM adb_precheck_deals
-        WHERE deleted_at IS NULL
-          AND primary_valid_phone IS NOT NULL AND substr(CASE WHEN length(primary_valid_phone) >= 12 AND substr(primary_valid_phone, 1, 2) = '55' THEN substr(primary_valid_phone, 3) ELSE primary_valid_phone END, 1, 2) = ?
+        SELECT COUNT(*) AS c
+        FROM adb_precheck_deals d, json_each(d.phones_json) p
+        WHERE d.deleted_at IS NULL
+          AND json_extract(p.value, '$.normalized') IS NOT NULL
+          AND ${dddFromJsonPhone} = ?
       `).get(ddd) as { c: number }).c
       return {
         columns: [
           { key: 'deal_id', label: 'Deal ID', type: 'number' },
           { key: 'pasta', label: 'Pasta', type: 'string' },
-          { key: 'contato_tipo', label: 'Tipo', type: 'string' },
+          { key: 'phone_column', label: 'Coluna', type: 'string' },
           { key: 'phone', label: 'Telefone', type: 'phone' },
+          { key: 'outcome', label: 'Outcome', type: 'string' },
           { key: 'scanned_at', label: 'Scaneado em', type: 'date' },
         ],
         rows: rows as Array<Record<string, unknown>>,
