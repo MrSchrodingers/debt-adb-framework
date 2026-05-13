@@ -90,24 +90,28 @@ describe('adb-precheck.pipedrive-mapped geo view', () => {
     `).run()
     const now = new Date().toISOString()
     const ins = db.prepare(`INSERT INTO adb_precheck_deals (primary_valid_phone, scanned_at, deleted_at) VALUES (?, ?, ?)`)
-    ins.run('11987654321', now, null)
-    ins.run('11987654322', now, null)
-    ins.run('21987654323', now, null)
-    ins.run('11987654324', now, now)   // tombstoned
-    ins.run(null,           now, null) // null phone
+    ins.run('11987654321', now, null)    // 11 digits (no country code)
+    ins.run('11987654322', now, null)    // 11 digits
+    ins.run('21987654323', now, null)    // 11 digits
+    ins.run('5511987654328', now, null)  // 13 digits with country code
+    ins.run('11987654324', now, now)     // tombstoned
+    ins.run(null,           now, null)   // null phone
     registry = new GeoViewRegistry()
     for (const v of buildAdbPrecheckGeoViews(db)) registry.register('adb-precheck', v)
   })
 
-  it('aggregates live deals (deleted_at NULL) by DDD using chars 1-2', async () => {
+  it('handles 11-digit and 13-digit phone formats (strips 55 prefix)', async () => {
     const view = registry.get('adb-precheck.pipedrive-mapped')!
     const r = await view.aggregate({ window: '7d', filters: {} })
-    expect(r.buckets).toEqual({ '11': 2, '21': 1 })
+    // 3 phones with 11 digits → DDD chars 1-2 → 11,11,21
+    // 1 phone with 13 digits + 55 → strip 55 → DDD chars 1-2 → 11
+    expect(r.buckets).toEqual({ '11': 3, '21': 1 })
   })
 
   it('excludes tombstoned deals', async () => {
     const view = registry.get('adb-precheck.pipedrive-mapped')!
     const r = await view.aggregate({ window: '7d', filters: {} })
-    expect(r.buckets['11']).toBe(2)
+    // 1 tombstoned (deleted_at !== null) excluded — would have been DDD 11
+    expect(r.buckets['11']).toBe(3)
   })
 })

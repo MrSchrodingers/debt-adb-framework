@@ -1137,7 +1137,7 @@ export function buildAdbPrecheckGeoViews(db: Database.Database): GeoViewDefiniti
     aggregate: async (params) => {
       const since = windowToIso(params.window)
       const rows = db.prepare(`
-        SELECT substr(primary_valid_phone, 1, 2) AS ddd, COUNT(*) AS count
+        SELECT substr(CASE WHEN length(primary_valid_phone) >= 12 AND substr(primary_valid_phone, 1, 2) = '55' THEN substr(primary_valid_phone, 3) ELSE primary_valid_phone END, 1, 2) AS ddd, COUNT(*) AS count
         FROM adb_precheck_deals
         WHERE deleted_at IS NULL AND scanned_at >= ?
           AND primary_valid_phone IS NOT NULL
@@ -1156,7 +1156,7 @@ export function buildAdbPrecheckGeoViews(db: Database.Database): GeoViewDefiniti
         FROM adb_precheck_deals
         WHERE deleted_at IS NULL AND scanned_at >= ?
           AND primary_valid_phone IS NOT NULL
-          AND substr(primary_valid_phone, 1, 2) = ?
+          AND substr(CASE WHEN length(primary_valid_phone) >= 12 AND substr(primary_valid_phone, 1, 2) = '55' THEN substr(primary_valid_phone, 3) ELSE primary_valid_phone END, 1, 2) = ?
         ORDER BY scanned_at DESC
         LIMIT ? OFFSET ?
       `).all(since, ddd, pageSize, offset)
