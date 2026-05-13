@@ -1163,7 +1163,7 @@ export function buildAdbPrecheckGeoViews(db: Database.Database): GeoViewDefiniti
       const total = (db.prepare(`
         SELECT COUNT(*) AS c FROM adb_precheck_deals
         WHERE deleted_at IS NULL AND scanned_at >= ?
-          AND primary_valid_phone IS NOT NULL AND substr(primary_valid_phone,1,2)=?
+          AND primary_valid_phone IS NOT NULL AND substr(CASE WHEN length(primary_valid_phone) >= 12 AND substr(primary_valid_phone, 1, 2) = '55' THEN substr(primary_valid_phone, 3) ELSE primary_valid_phone END, 1, 2) = ?
       `).get(since, ddd) as { c: number }).c
       return {
         columns: [
