@@ -101,8 +101,32 @@ function paletteToColorFn(p: GeoPalette): (t: number) => string {
   return interpolateViridis
 }
 
+/**
+ * Parse d3-scale-chromatic's color output. Newer versions return hex
+ * (#rrggbb), some interpolators / older versions return rgb(r,g,b).
+ * Support both — falling through to magenta makes any future format
+ * change obvious instead of silently rendering everything as black.
+ */
 function parseRgb(input: string): [number, number, number] {
-  const m = input.match(/rgb\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)\s*\)/)
-  if (!m) return [0, 0, 0]
-  return [parseInt(m[1]!, 10), parseInt(m[2]!, 10), parseInt(m[3]!, 10)]
+  // Hex form: "#rrggbb"
+  const hex = input.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i)
+  if (hex) {
+    return [parseInt(hex[1]!, 16), parseInt(hex[2]!, 16), parseInt(hex[3]!, 16)]
+  }
+  // Shorthand hex: "#rgb"
+  const hex3 = input.match(/^#([0-9a-f])([0-9a-f])([0-9a-f])$/i)
+  if (hex3) {
+    return [
+      parseInt(hex3[1]! + hex3[1]!, 16),
+      parseInt(hex3[2]! + hex3[2]!, 16),
+      parseInt(hex3[3]! + hex3[3]!, 16),
+    ]
+  }
+  // rgb()/rgba() form
+  const rgb = input.match(/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/)
+  if (rgb) {
+    return [parseInt(rgb[1]!, 10), parseInt(rgb[2]!, 10), parseInt(rgb[3]!, 10)]
+  }
+  // Loud fallback (magenta) — never silently render as black again.
+  return [255, 0, 255]
 }
