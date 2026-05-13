@@ -1034,7 +1034,7 @@ export function buildAdbPrecheckGeoViews(db: Database.Database): GeoViewDefiniti
   const noMatch: GeoViewDefinition = {
     id: 'adb-precheck.no-match',
     label: 'Não existentes',
-    description: 'DDDs com mais números rejeitados por inexistência (hygiene jobs)',
+    description: 'DDDs com mais números que NÃO existem no WhatsApp (validação direta)',
     group: 'adb-precheck',
     palette: 'sequential',
     filters: [{ ...windowFilter, options: [...windowFilter.options] }],
@@ -1042,9 +1042,8 @@ export function buildAdbPrecheckGeoViews(db: Database.Database): GeoViewDefiniti
       const since = windowToIso(params.window)
       const rows = db.prepare(`
         SELECT substr(phone_normalized, 3, 2) AS ddd, COUNT(*) AS count
-        FROM hygiene_job_items
-        WHERE status = 'invalid' AND updated_at >= ?
-          AND phone_normalized IS NOT NULL
+        FROM wa_contact_checks
+        WHERE result = 'not_exists' AND checked_at >= ?
         GROUP BY ddd
       `).all(since) as Array<{ ddd: string; count: number }>
       const buckets: Record<string, number> = {}
@@ -1056,24 +1055,22 @@ export function buildAdbPrecheckGeoViews(db: Database.Database): GeoViewDefiniti
       const pageSize = params.pageSize ?? 50
       const offset = ((params.page ?? 1) - 1) * pageSize
       const rows = db.prepare(`
-        SELECT id, job_id, phone_normalized AS phone, updated_at
-        FROM hygiene_job_items
-        WHERE status = 'invalid' AND updated_at >= ?
-          AND phone_normalized IS NOT NULL
+        SELECT id, phone_normalized AS phone, result, checked_at
+        FROM wa_contact_checks
+        WHERE result = 'not_exists' AND checked_at >= ?
           AND substr(phone_normalized, 3, 2) = ?
-        ORDER BY updated_at DESC
+        ORDER BY checked_at DESC
         LIMIT ? OFFSET ?
       `).all(since, ddd, pageSize, offset)
       const total = (db.prepare(`
-        SELECT COUNT(*) AS c FROM hygiene_job_items
-        WHERE status='invalid' AND updated_at >= ?
-          AND phone_normalized IS NOT NULL AND substr(phone_normalized,3,2)=?
+        SELECT COUNT(*) AS c FROM wa_contact_checks
+        WHERE result='not_exists' AND checked_at >= ?
+          AND substr(phone_normalized,3,2)=?
       `).get(since, ddd) as { c: number }).c
       return {
         columns: [
-          { key: 'job_id', label: 'Job', type: 'string' },
           { key: 'phone', label: 'Telefone', type: 'phone' },
-          { key: 'updated_at', label: 'Data', type: 'date' },
+          { key: 'checked_at', label: 'Verificado em', type: 'date' },
         ],
         rows: rows as Array<Record<string, unknown>>,
         total, page: params.page ?? 1, pageSize,
@@ -1130,42 +1127,42 @@ export function buildAdbPrecheckGeoViews(db: Database.Database): GeoViewDefiniti
   const pipedriveMappedView: GeoViewDefinition = {
     id: 'adb-precheck.pipedrive-mapped',
     label: 'Mapeados no Pipedrive',
-    description: 'DDDs com deals reconciliados (live, sem tombstone)',
+    description: 'Distribuição global dos deals reconciliados (live, sem tombstone) — janela temporal não se aplica',
     group: 'adb-precheck',
     palette: 'sequential',
-    filters: [{ ...windowFilter, options: [...windowFilter.options] }],
-    aggregate: async (params) => {
-      const since = windowToIso(params.window)
+    // No window filter — this view is intentionally global. Pipeboard
+    // reconciliation is a cumulative state, not a time-bucketed metric.
+    filters: [],
+    aggregate: async () => {
       const rows = db.prepare(`
         SELECT substr(CASE WHEN length(primary_valid_phone) >= 12 AND substr(primary_valid_phone, 1, 2) = '55' THEN substr(primary_valid_phone, 3) ELSE primary_valid_phone END, 1, 2) AS ddd, COUNT(*) AS count
         FROM adb_precheck_deals
-        WHERE deleted_at IS NULL AND scanned_at >= ?
+        WHERE deleted_at IS NULL
           AND primary_valid_phone IS NOT NULL
         GROUP BY ddd
-      `).all(since) as Array<{ ddd: string; count: number }>
+      `).all() as Array<{ ddd: string; count: number }>
       const buckets: Record<string, number> = {}
       for (const r of rows) if (r.ddd) buckets[r.ddd] = r.count
       return { buckets, total: rows.reduce((s, r) => s + r.count, 0), generatedAt: new Date().toISOString() }
     },
     drill: async (ddd, params) => {
-      const since = windowToIso(params.window)
       const pageSize = params.pageSize ?? 50
       const offset = ((params.page ?? 1) - 1) * pageSize
       const rows = db.prepare(`
         SELECT pasta, deal_id, contato_tipo, contato_id,
                primary_valid_phone AS phone, scanned_at
         FROM adb_precheck_deals
-        WHERE deleted_at IS NULL AND scanned_at >= ?
+        WHERE deleted_at IS NULL
           AND primary_valid_phone IS NOT NULL
           AND substr(CASE WHEN length(primary_valid_phone) >= 12 AND substr(primary_valid_phone, 1, 2) = '55' THEN substr(primary_valid_phone, 3) ELSE primary_valid_phone END, 1, 2) = ?
         ORDER BY scanned_at DESC
         LIMIT ? OFFSET ?
-      `).all(since, ddd, pageSize, offset)
+      `).all(ddd, pageSize, offset)
       const total = (db.prepare(`
         SELECT COUNT(*) AS c FROM adb_precheck_deals
-        WHERE deleted_at IS NULL AND scanned_at >= ?
+        WHERE deleted_at IS NULL
           AND primary_valid_phone IS NOT NULL AND substr(CASE WHEN length(primary_valid_phone) >= 12 AND substr(primary_valid_phone, 1, 2) = '55' THEN substr(primary_valid_phone, 3) ELSE primary_valid_phone END, 1, 2) = ?
-      `).get(since, ddd) as { c: number }).c
+      `).get(ddd) as { c: number }).c
       return {
         columns: [
           { key: 'deal_id', label: 'Deal ID', type: 'number' },

@@ -1,6 +1,6 @@
 import { DeckGL } from '@deck.gl/react'
 import { GeoJsonLayer } from '@deck.gl/layers'
-import { interpolateViridis, interpolateRdYlGn, interpolatePuOr } from 'd3-scale-chromatic'
+import { interpolateInferno, interpolateRdYlGn, interpolatePuOr } from 'd3-scale-chromatic'
 import { useMemo } from 'react'
 import type { DddTopology, GeoPalette } from './geo.types.js'
 
@@ -98,7 +98,9 @@ export function BrazilMapDDD(props: BrazilMapDDDProps) {
 function paletteToColorFn(p: GeoPalette): (t: number) => string {
   if (p === 'rate') return interpolateRdYlGn
   if (p === 'diverging') return interpolatePuOr
-  return interpolateViridis
+  // 'sequential' uses Inferno — black → red → yellow gradient that pops on
+  // dark backgrounds without the muddy purple tail of Viridis.
+  return interpolateInferno
 }
 
 /**

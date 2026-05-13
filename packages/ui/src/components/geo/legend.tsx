@@ -1,4 +1,4 @@
-import { interpolateViridis, interpolateRdYlGn, interpolatePuOr } from 'd3-scale-chromatic'
+import { interpolateInferno, interpolateRdYlGn, interpolatePuOr } from 'd3-scale-chromatic'
 import type { GeoPalette } from './geo.types.js'
 
 export interface LegendProps {
@@ -13,7 +13,7 @@ export function Legend({ max, palette, median }: LegendProps) {
   const colorFn =
     palette === 'rate' ? interpolateRdYlGn :
     palette === 'diverging' ? interpolatePuOr :
-    interpolateViridis
+    interpolateInferno
   const stops = Array.from({ length: 12 }, (_, i) => colorFn(i / 11))
   const gradient = `linear-gradient(90deg, ${stops.join(', ')})`
   return (

@@ -10,23 +10,22 @@ describe('adb-precheck.no-match geo view', () => {
   beforeEach(() => {
     db = new Database(':memory:')
     db.prepare(`
-      CREATE TABLE hygiene_job_items (
-        id INTEGER PRIMARY KEY, job_id TEXT, phone_normalized TEXT,
-        status TEXT, updated_at TEXT
+      CREATE TABLE wa_contact_checks (
+        id TEXT PRIMARY KEY, phone_normalized TEXT NOT NULL,
+        result TEXT NOT NULL, checked_at TEXT NOT NULL
       )
     `).run()
     const now = new Date().toISOString()
-    const ins = db.prepare(`INSERT INTO hygiene_job_items VALUES (?, ?, ?, ?, ?)`)
-    ins.run(1, 'j1', '551187654321', 'invalid', now)
-    ins.run(2, 'j1', '551187654322', 'invalid', now)
-    ins.run(3, 'j1', '552187654323', 'invalid', now)
-    ins.run(4, 'j1', '551187654324', 'valid',   now)
-    ins.run(5, 'j1', null,           'invalid', now)
+    const ins = db.prepare(`INSERT INTO wa_contact_checks VALUES (?, ?, ?, ?)`)
+    ins.run('c1', '551187654321', 'not_exists', now)
+    ins.run('c2', '551187654322', 'not_exists', now)
+    ins.run('c3', '552187654323', 'not_exists', now)
+    ins.run('c4', '551187654324', 'exists',     now)  // ignored (different cohort)
     registry = new GeoViewRegistry()
     for (const v of buildAdbPrecheckGeoViews(db)) registry.register('adb-precheck', v)
   })
 
-  it('aggregates status=invalid by DDD, skipping null phones', async () => {
+  it('aggregates result=not_exists by DDD', async () => {
     const view = registry.get('adb-precheck.no-match')!
     const r = await view.aggregate({ window: '7d', filters: {} })
     expect(r.buckets).toEqual({ '11': 2, '21': 1 })
