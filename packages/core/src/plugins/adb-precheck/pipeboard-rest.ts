@@ -3,6 +3,7 @@ import { precheckPipeboardRequestTotal } from '../../config/metrics.js'
 import type { DealKey, ProvConsultaRow, PrecheckScanParams } from './types.js'
 import {
   NotSupportedByRestBackendError,
+  PHONE_COLUMNS,
   type AppliedPhone,
   type DealInvalidationRequest,
   type DealInvalidationResponse,
@@ -15,6 +16,7 @@ import {
   type IPipeboardClient,
   type InvalidPhoneRecord,
 } from './pipeboard-client.js'
+import { extractDdd as extractDddFromRawPhone } from '../../util/ddd.js'
 
 type RestOp = 'invalidate' | 'localize' | 'deals' | 'healthz' | 'lookup'
 
@@ -62,6 +64,10 @@ export class PipeboardRest implements IPipeboardClient {
   private readonly timeoutMs: number
   private readonly fetchImpl: typeof globalThis.fetch
   private readonly defaultFonte: NonNullable<PipeboardRestOpts['defaultFonte']>
+
+  /** In-process cache for the DDD distribution. Refreshed every 5min. */
+  private dddCache: { buckets: Record<string, number>; fetchedAt: number } | null = null
+  private dddFetchInFlight: Promise<Record<string, number>> | null = null
 
   constructor(opts: PipeboardRestOpts) {
     if (!opts.apiKey) throw new Error('PipeboardRest requires apiKey')
@@ -326,6 +332,47 @@ export class PipeboardRest implements IPipeboardClient {
   }
   async writeLocalizado(_key: DealKey, _phone: string, _source: string): Promise<void> {
     throw new NotSupportedByRestBackendError('writeLocalizado')
+  }
+
+  /**
+   * Aggregate phone counts by Brazilian DDD across the whole Pipeboard
+   * pool. Pipeboard REST doesn't expose a dedicated aggregation endpoint,
+   * so we iterate the deal pages client-side and count locally.
+   *
+   * Caches the result for 5 minutes — pool shape doesn't change fast.
+   * In-flight calls are coalesced so concurrent view loads share one fetch.
+   */
+  async aggregatePhoneDddDistribution(): Promise<Record<string, number>> {
+    const CACHE_TTL_MS = 5 * 60_000
+    const now = Date.now()
+    if (this.dddCache && now - this.dddCache.fetchedAt < CACHE_TTL_MS) {
+      return this.dddCache.buckets
+    }
+    if (this.dddFetchInFlight) return this.dddFetchInFlight
+    this.dddFetchInFlight = this.fetchDddDistribution()
+      .then((buckets) => {
+        this.dddCache = { buckets, fetchedAt: Date.now() }
+        return buckets
+      })
+      .finally(() => {
+        this.dddFetchInFlight = null
+      })
+    return this.dddFetchInFlight
+  }
+
+  private async fetchDddDistribution(): Promise<Record<string, number>> {
+    const buckets: Record<string, number> = {}
+    for await (const page of this.iterateDeals({}, 500)) {
+      for (const row of page) {
+        for (const col of PHONE_COLUMNS) {
+          const value = (row as unknown as Record<string, unknown>)[col]
+          if (typeof value !== 'string' || value.length === 0) continue
+          const ddd = extractDddFromRawPhone(value)
+          if (ddd) buckets[ddd] = (buckets[ddd] ?? 0) + 1
+        }
+      }
+    }
+    return buckets
   }
 
   // --- Internal helpers ------------------------------------------------

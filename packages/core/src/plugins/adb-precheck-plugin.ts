@@ -419,6 +419,16 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     for (const view of buildAdbPrecheckGeoViews(this.db, this.pg)) {
       ctx.registerGeoView(view)
     }
+    // Pre-warm the Pipeboard DDD aggregation cache so the first geo-tab
+    // load doesn't block waiting for the full pool to iterate. Fire-and-
+    // forget — failures degrade gracefully (view falls back to local).
+    if (typeof this.pg.aggregatePhoneDddDistribution === 'function') {
+      void this.pg.aggregatePhoneDddDistribution().catch((err) => {
+        ctx.logger.warn('Geo: Pipeboard DDD prewarm failed', {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      })
+    }
 
     // Plugin-scoped Pipedrive operator API. Routes mount under
     // /api/v1/plugins/adb-precheck/pipedrive/* (the loader prefixes the
