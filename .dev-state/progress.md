@@ -215,3 +215,18 @@ DEVICE_SERIAL=9b01005930533036340030832250ac  (POCO Serenity)
   fields. 276 tests (45 new). Simplify: fixed 9 findings (listener leak, dead code, generic routes,
   guarded callbacks, pino logger, single query stats, union types). E2E: plugin enqueue → ADB send
   to 5543991938235 → delivered (screenshot proof). 7 commits.
+- 2026-05-13: Geolocalização (plugin-first) shipped. Tab "Geolocalização" no sidebar dispara mapa do
+  BR (deck.gl GeoJsonLayer choropleth, base map=null) com heatmap por DDD + drill modal.
+  **Constraint plugin-first respeitada**: core fornece registry/topology/endpoints genéricos; plugins
+  contribuem views via `ctx.registerGeoView(...)` — core sem plugins retorna `{views:[]}`+EmptyState UI.
+  4 views no MVP: `oralsin.sends` + `adb-precheck.{no-match, valid, pipedrive-mapped}`.
+  Backend: GeoViewRegistry (LRU 60s, timeout 5s/8s), 3 endpoints REST genéricos, 3 índices DDD
+  expressionais. Frontend lazy-loaded (215KB gz chunk separado).
+  Audit findings: schemas confirmados antes do TDD; em prod, smoke surfou bug onde pipedrive-mapped
+  bucketava tudo em DDD '55' — primary_valid_phone tem 11 OU 13 dígitos; SQL agora strip 55 com CASE
+  condicional. Segundo bug: composite PK em adb_precheck_deals (sem col `id`) → drill 503 → fixado.
+  Tests: 1893/1893 (10 novos no geo). 20 commits, deploy em Kali via SSH (HEAD `71405370`).
+  Topology source: gist guilhermeprokisch (67 DDDs, license ainda open — follow-up).
+  Aba "global" cross-plugin deferida: implementável como plugin separado sem mudar contract.
+  Specs: `docs/superpowers/specs/2026-05-14-geolocation-plugin-contract-design.md`
+  Plan: `docs/superpowers/plans/2026-05-14-geolocation-plugin-contract-plan.md`
