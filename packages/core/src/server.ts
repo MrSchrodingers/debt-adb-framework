@@ -43,8 +43,15 @@ import {
   alertDispatchResumed,
 } from './alerts/notifier.js'
 import { OralsinPlugin } from './plugins/oralsin-plugin.js'
-import { DebtSdrPlugin } from '@dispatch/plugin-debt-sdr'
 import { readFileSync, existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
+
+// Lazy require for @dispatch/plugin-debt-sdr to avoid TS circular type
+// resolution at build time. Core's tsc would otherwise pull the plugin's
+// d.ts files into its own program graph and collide on declaration emit
+// (TS5055). The plugin only loads at runtime when DISPATCH_PLUGINS
+// includes 'debt-sdr', so deferring the require has no startup cost.
+const dispatchRequire = createRequire(import.meta.url)
 import { AdbPrecheckPlugin } from './plugins/adb-precheck-plugin.js'
 import { resolvePipeboardBackend } from './plugins/adb-precheck/index.js'
 import { AdbProbeStrategy, WahaCheckStrategy, CacheOnlyStrategy } from './check-strategies/index.js'
@@ -795,12 +802,14 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       const rawConfig = JSON.parse(readFileSync(configPath, 'utf8')) as unknown
       const webhookUrl = process.env.PLUGIN_DEBT_SDR_WEBHOOK_URL ||
         'http://localhost:7890/api/v1/plugins/debt-sdr/_loopback'
-      // Plugin compiles against @dispatch/core's published types (dist/),
-      // while server.ts reads source types — TS treats them as nominally
-      // distinct due to private fields, but the structural shape is
-      // identical and pnpm symlinks resolve to a single instance at
-      // runtime. Cast is sound; revisit if we add TS project references.
-      return new DebtSdrPlugin(webhookUrl, rawConfig, db) as unknown as DispatchPlugin
+      // Lazy require — see top-of-file note. Cast through unknown because
+      // the plugin's PluginContext type (compiled against core's dist) is
+      // structurally identical to but nominally distinct from core's
+      // source type (private fields on shared interfaces).
+      const mod = dispatchRequire('@dispatch/plugin-debt-sdr') as {
+        DebtSdrPlugin: new (webhookUrl: string, rawConfig: unknown, db: Database.Database) => unknown
+      }
+      return new mod.DebtSdrPlugin(webhookUrl, rawConfig, db) as DispatchPlugin
     },
     'adb-precheck': () => {
       // Backend selection — config-schema already validated the matching
