@@ -32,3 +32,7 @@ data/
 /infra/logs/
 
 scripts/__pycache__/
+
+# debt-sdr plugin: production config has tenant tokens / sender phones,
+# never commit. Operators copy config.example.json → config.json.
+packages/plugins/debt-sdr/config.json

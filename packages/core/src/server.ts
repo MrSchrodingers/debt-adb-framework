@@ -43,6 +43,8 @@ import {
   alertDispatchResumed,
 } from './alerts/notifier.js'
 import { OralsinPlugin } from './plugins/oralsin-plugin.js'
+import { DebtSdrPlugin } from '@dispatch/plugin-debt-sdr'
+import { readFileSync, existsSync } from 'node:fs'
 import { AdbPrecheckPlugin } from './plugins/adb-precheck-plugin.js'
 import { resolvePipeboardBackend } from './plugins/adb-precheck/index.js'
 import { AdbProbeStrategy, WahaCheckStrategy, CacheOnlyStrategy } from './check-strategies/index.js'
@@ -778,6 +780,28 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   const pluginNames = (process.env.DISPATCH_PLUGINS || '').split(',').map(s => s.trim()).filter(Boolean)
   const pluginMap: Record<string, () => DispatchPlugin> = {
     oralsin: () => new OralsinPlugin(process.env.PLUGIN_ORALSIN_WEBHOOK_URL || 'http://localhost:8000/api/webhooks/dispatch/', db),
+    'debt-sdr': () => {
+      // SDR config is operator-managed JSON (multi-tenant, sensitive). Default
+      // to the in-repo config.json (gitignored — copy from config.example.json).
+      // Override via PLUGIN_DEBT_SDR_CONFIG_PATH for non-default deployments.
+      const configPath = process.env.PLUGIN_DEBT_SDR_CONFIG_PATH ||
+        '/var/www/debt-adb-framework/packages/plugins/debt-sdr/config.json'
+      if (!existsSync(configPath)) {
+        throw new Error(
+          `debt-sdr requires config at ${configPath} ` +
+            `(set PLUGIN_DEBT_SDR_CONFIG_PATH or copy config.example.json)`,
+        )
+      }
+      const rawConfig = JSON.parse(readFileSync(configPath, 'utf8')) as unknown
+      const webhookUrl = process.env.PLUGIN_DEBT_SDR_WEBHOOK_URL ||
+        'http://localhost:7890/api/v1/plugins/debt-sdr/_loopback'
+      // Plugin compiles against @dispatch/core's published types (dist/),
+      // while server.ts reads source types — TS treats them as nominally
+      // distinct due to private fields, but the structural shape is
+      // identical and pnpm symlinks resolve to a single instance at
+      // runtime. Cast is sound; revisit if we add TS project references.
+      return new DebtSdrPlugin(webhookUrl, rawConfig, db) as unknown as DispatchPlugin
+    },
     'adb-precheck': () => {
       // Backend selection — config-schema already validated the matching
       // credentials exist for whichever backend was chosen. Here we

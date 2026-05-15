@@ -1,0 +1,85 @@
+{
+  "_comment": "debt-sdr config — copy to config.json and fill placeholders. Never commit config.json (it's gitignored).",
+  "tenants": [
+    {
+      "name": "oralsin-sdr",
+      "label": "Oralsin",
+      "pipeboard_tenant": "oralsin",
+      "pipedrive": {
+        "domain": "REPLACE_WITH_ORALSIN_PIPEDRIVE_DOMAIN",
+        "api_token_env": "PIPEDRIVE_TOKEN_ORALSIN_SDR",
+        "pull": {
+          "stage_id": 5,
+          "poll_interval_minutes": 15,
+          "batch_size": 50,
+          "max_age_days": 30,
+          "phone_field_key": "phone"
+        },
+        "writeback": {
+          "stage_qualified_id": 6,
+          "stage_disqualified_id": 7,
+          "stage_needs_human_id": 8,
+          "stage_no_response_id": 9,
+          "activity_subject_template": "SDR: {{outcome}}"
+        }
+      },
+      "devices": ["REPLACE_WITH_POCO_C71_2_SERIAL"],
+      "senders": [
+        { "phone": "55439900000XX", "app": "com.whatsapp" },
+        { "phone": "55439900000XY", "app": "com.whatsapp.w4b" }
+      ],
+      "sequence_id": "oralsin-cold-v1",
+      "throttle": {
+        "per_sender_daily_max": 40,
+        "min_interval_minutes": 8,
+        "operating_hours": { "start": "09:00", "end": "18:00" },
+        "tz": "America/Sao_Paulo"
+      },
+      "identity_gate": {
+        "enabled": true,
+        "nudge_after_hours": 48,
+        "abort_after_hours": 96
+      }
+    },
+    {
+      "name": "sicoob-sdr",
+      "label": "Sicoob",
+      "pipeboard_tenant": "tenant_sicoob",
+      "pipedrive": {
+        "domain": "REPLACE_WITH_SICOOB_PIPEDRIVE_DOMAIN",
+        "api_token_env": "PIPEDRIVE_TOKEN_SICOOB_SDR",
+        "pull": {
+          "stage_id": 5,
+          "poll_interval_minutes": 15,
+          "batch_size": 50,
+          "max_age_days": 30,
+          "phone_field_key": "phone"
+        },
+        "writeback": {
+          "stage_qualified_id": 6,
+          "stage_disqualified_id": 7,
+          "stage_needs_human_id": 8,
+          "stage_no_response_id": 9,
+          "activity_subject_template": "SDR: {{outcome}}"
+        }
+      },
+      "devices": ["REPLACE_WITH_SAMSUNG_A03_SERIAL"],
+      "senders": [
+        { "phone": "55439900000ZX", "app": "com.whatsapp" },
+        { "phone": "55439900000ZY", "app": "com.whatsapp.w4b" }
+      ],
+      "sequence_id": "sicoob-cold-v1",
+      "throttle": {
+        "per_sender_daily_max": 30,
+        "min_interval_minutes": 8,
+        "operating_hours": { "start": "09:00", "end": "18:00" },
+        "tz": "America/Sao_Paulo"
+      },
+      "identity_gate": {
+        "enabled": true,
+        "nudge_after_hours": 48,
+        "abort_after_hours": 96
+      }
+    }
+  ]
+}
