@@ -15,9 +15,15 @@ export interface SenderMappingRecord {
   paused: number
   paused_at: string | null
   paused_reason: string | null
+  tenant: string | null
   created_at: string
   updated_at: string
 }
+
+export type SetSenderTenantResult =
+  | { ok: true }
+  | { ok: false; reason: 'phone_not_found' }
+  | { ok: false; reason: 'conflicting_tenant'; current_tenant: string }
 
 export interface CreateSenderMappingParams {
   phoneNumber: string
@@ -87,6 +93,15 @@ export class SenderMapping {
       this.db.exec('ALTER TABLE sender_mapping ADD COLUMN paused_at TEXT')
       this.db.exec('ALTER TABLE sender_mapping ADD COLUMN paused_reason TEXT')
     }
+
+    // G1 (debt-sdr): tenant ownership column. Nullable for legacy senders.
+    if (!cols.some(c => c.name === 'tenant')) {
+      this.db.prepare('ALTER TABLE sender_mapping ADD COLUMN tenant TEXT').run()
+    }
+    this.db.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_sender_mapping_tenant
+        ON sender_mapping(tenant) WHERE tenant IS NOT NULL
+    `).run()
   }
 
   create(params: CreateSenderMappingParams): SenderMappingRecord {
@@ -200,6 +215,42 @@ export class SenderMapping {
       'SELECT paused FROM sender_mapping WHERE phone_number = ?',
     ).get(phone) as { paused: number } | undefined
     return row?.paused === 1
+  }
+
+  /**
+   * G1 (debt-sdr): set tenant ownership for a sender phone.
+   *
+   * Idempotent for the same tenant. Rejects a different tenant on a phone
+   * already owned by another tenant (caller must release first). Phones
+   * with no tenant become tenant-owned; the row is identified by
+   * normalized phone_number (UNIQUE), not active flag, so deactivated
+   * rows still carry their tenant claim.
+   */
+  setSenderTenant(phone: string, tenant: string): SetSenderTenantResult {
+    const normalized = this.normalizePhone(phone)
+    const row = this.db
+      .prepare('SELECT tenant FROM sender_mapping WHERE phone_number = ?')
+      .get(normalized) as { tenant: string | null } | undefined
+    if (!row) return { ok: false, reason: 'phone_not_found' }
+    if (row.tenant !== null && row.tenant !== tenant) {
+      return { ok: false, reason: 'conflicting_tenant', current_tenant: row.tenant }
+    }
+    if (row.tenant === tenant) return { ok: true }
+    this.db
+      .prepare(
+        `UPDATE sender_mapping
+            SET tenant = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE phone_number = ?`,
+      )
+      .run(tenant, normalized)
+    return { ok: true }
+  }
+
+  /** G1: list all active senders owned by a tenant. */
+  listByTenant(tenant: string): SenderMappingRecord[] {
+    return this.db
+      .prepare('SELECT * FROM sender_mapping WHERE tenant = ? AND active = 1 ORDER BY created_at ASC')
+      .all(tenant) as SenderMappingRecord[]
   }
 
   /**

@@ -360,6 +360,66 @@ describe('SenderMapping', () => {
     })
   })
 
+  // ── G1 (debt-sdr): tenant ownership ─────────────────────────────────────
+
+  describe('setSenderTenant', () => {
+    it('upserts tenant for a phone with no tenant', () => {
+      mapping.create({ phoneNumber: '554399000001', deviceSerial: 'devX' })
+      const r = mapping.setSenderTenant('554399000001', 'oralsin-sdr')
+      expect(r.ok).toBe(true)
+      expect(mapping.getByPhone('554399000001')!.tenant).toBe('oralsin-sdr')
+    })
+
+    it('is idempotent for the same tenant', () => {
+      mapping.create({ phoneNumber: '554399000002', deviceSerial: 'devX' })
+      mapping.setSenderTenant('554399000002', 'oralsin-sdr')
+      const r = mapping.setSenderTenant('554399000002', 'oralsin-sdr')
+      expect(r.ok).toBe(true)
+    })
+
+    it('rejects a different tenant for the same phone', () => {
+      mapping.create({ phoneNumber: '554399000003', deviceSerial: 'devX' })
+      mapping.setSenderTenant('554399000003', 'oralsin-sdr')
+      const r = mapping.setSenderTenant('554399000003', 'sicoob-sdr')
+      expect(r.ok).toBe(false)
+      if (!r.ok) {
+        expect(r.reason).toBe('conflicting_tenant')
+        if (r.reason === 'conflicting_tenant') {
+          expect(r.current_tenant).toBe('oralsin-sdr')
+        }
+      }
+    })
+
+    it('returns phone_not_found for unknown phone', () => {
+      const r = mapping.setSenderTenant('559999999999', 'oralsin-sdr')
+      expect(r.ok).toBe(false)
+      if (!r.ok) expect(r.reason).toBe('phone_not_found')
+    })
+
+    it('listByTenant returns only matching senders', () => {
+      mapping.create({ phoneNumber: '554399000010', deviceSerial: 'd1' })
+      mapping.create({ phoneNumber: '554399000011', deviceSerial: 'd2' })
+      mapping.setSenderTenant('554399000010', 'oralsin-sdr')
+      const list = mapping.listByTenant('oralsin-sdr')
+      expect(list.map(s => s.phone_number)).toEqual(['554399000010'])
+    })
+
+    it('returns the new tenant in getByPhone result', () => {
+      mapping.create({ phoneNumber: '554399000020', deviceSerial: 'devX' })
+      mapping.setSenderTenant('554399000020', 'sicoob-sdr')
+      const rec = mapping.getByPhone('554399000020')
+      expect(rec).not.toBeNull()
+      expect(rec!.tenant).toBe('sicoob-sdr')
+    })
+
+    it('creates idx_sender_mapping_tenant index', () => {
+      const indexes = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='sender_mapping'")
+        .all() as { name: string }[]
+      expect(indexes.map(i => i.name)).toContain('idx_sender_mapping_tenant')
+    })
+  })
+
   describe('resolveSenderChain', () => {
     it('returns first sender with active mapping', () => {
       mapping.create({
