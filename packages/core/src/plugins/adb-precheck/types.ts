@@ -120,6 +120,12 @@ export interface PrecheckScanParams {
   limit?: number
   /** Only deals whose phones are older than this many days since last check. */
   recheck_after_days?: number
+  /**
+   * Which tenant this scan runs against. Determines writeback policy and read
+   * client (PipeboardRest for adb, PipeboardRawRest for sicoob/oralsin).
+   * Defaults to 'adb' for back-compat.
+   */
+  tenant?: 'adb' | 'sicoob' | 'oralsin'
   /** Filter by pasta prefix. */
   pasta_prefix?: string
   /** Filter by pipeline_nome. */
