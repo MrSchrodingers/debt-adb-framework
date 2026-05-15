@@ -101,6 +101,24 @@ const STATEMENTS = [
     updated_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_writeback_pending ON sdr_pending_writebacks(next_attempt_at, abandoned_at) WHERE abandoned_at IS NULL`,
+
+  // C26: operator alerts queue — surfaced via admin route (Task 39).
+  `CREATE TABLE IF NOT EXISTS sdr_operator_alerts (
+    id TEXT PRIMARY KEY,
+    tenant TEXT NOT NULL,
+    lead_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    response_text TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    llm_reason TEXT,
+    raised_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    resolved_at TEXT,
+    resolution TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_alerts_unresolved ON sdr_operator_alerts(raised_at) WHERE resolved_at IS NULL`,
+  // Idempotency: one alert per (lead, message, reason) — repeated
+  // classifier calls on the same response don't spam the queue.
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_dedupe ON sdr_operator_alerts(lead_id, message_id, reason)`,
 ] as const
 
 export function initSdrSchema(db: Database.Database): void {
@@ -115,4 +133,5 @@ export const SDR_TABLES = [
   'sdr_contact_identity',
   'sdr_classifier_log',
   'sdr_pending_writebacks',
+  'sdr_operator_alerts',
 ] as const
