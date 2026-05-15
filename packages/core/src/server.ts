@@ -53,7 +53,7 @@ import { createRequire } from 'node:module'
 // includes 'debt-sdr', so deferring the require has no startup cost.
 const dispatchRequire = createRequire(import.meta.url)
 import { AdbPrecheckPlugin } from './plugins/adb-precheck-plugin.js'
-import { resolvePipeboardBackend } from './plugins/adb-precheck/index.js'
+import { resolvePipeboardBackend, TenantRegistry } from './plugins/adb-precheck/index.js'
 import { AdbProbeStrategy, WahaCheckStrategy, CacheOnlyStrategy } from './check-strategies/index.js'
 import { ContactValidator } from './validator/contact-validator.js'
 import type { DispatchEventName } from './events/index.js'
@@ -801,6 +801,9 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   // Load plugins from config
   const pluginNames = (process.env.DISPATCH_PLUGINS || '').split(',').map(s => s.trim()).filter(Boolean)
+  // Instantiated once at boot; shared across the adb-precheck factory closure so
+  // TenantRegistry.fromEnv() is not called on every /tenants request.
+  const tenantRegistry = TenantRegistry.fromEnv(process.env)
   const pluginMap: Record<string, () => DispatchPlugin> = {
     oralsin: () => new OralsinPlugin(process.env.PLUGIN_ORALSIN_WEBHOOK_URL || 'http://localhost:8000/api/webhooks/dispatch/', db),
     'debt-sdr': () => {
@@ -873,6 +876,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
           // lifetime of the job and resumes in finally.
           pauseState,
           hygienizationOperator: 'adb-precheck:hygienization',
+          tenantRegistry,
         },
         db,
         contactRegistry,
