@@ -317,7 +317,7 @@ describe('PipedriveActivityStore — findCurrentPastaNote', () => {
       http_status: 201, error_msg: null, attempts: 1,
     })
 
-    const found = store.findCurrentPastaNote('P-1')
+    const found = store.findCurrentPastaNote('P-1', 'adb')
     expect(found).not.toBeNull()
     expect(found!.pipedrive_response_id).toBe(999)
     expect(found!.row_id).toBe(id1)
@@ -329,7 +329,7 @@ describe('PipedriveActivityStore — findCurrentPastaNote', () => {
     db.pragma('journal_mode = WAL')
     const store = new PipedriveActivityStore(db)
     store.initialize()
-    expect(store.findCurrentPastaNote('P-1')).toBeNull()
+    expect(store.findCurrentPastaNote('P-1', 'adb')).toBeNull()
   })
 
   it('skips orphaned rows', () => {
@@ -344,7 +344,7 @@ describe('PipedriveActivityStore — findCurrentPastaNote', () => {
     })
     store.updateResult(id, { status: 'success', pipedrive_response_id: 999, http_status: 201, error_msg: null, attempts: 1 })
     store.markOrphaned(id, 'PUT 404')
-    expect(store.findCurrentPastaNote('P-1')).toBeNull()
+    expect(store.findCurrentPastaNote('P-1', 'adb')).toBeNull()
   })
 
   it('returns the most recent row when multiple successes exist', () => {
@@ -371,7 +371,7 @@ describe('PipedriveActivityStore — findCurrentPastaNote', () => {
     })
     store.updateResult(id2, { status: 'success', pipedrive_response_id: 200, http_status: 200, error_msg: null, attempts: 1 })
 
-    const found = store.findCurrentPastaNote('P-1')
+    const found = store.findCurrentPastaNote('P-1', 'adb')
     expect(found!.pipedrive_response_id).toBe(200)
     expect(found!.row_id).toBe(id2)
   })
@@ -387,7 +387,7 @@ describe('PipedriveActivityStore — findCurrentPastaNote', () => {
       pipedrive_endpoint: '/activities', pipedrive_payload_json: '{}',
     })
     store.updateResult(id, { status: 'success', pipedrive_response_id: 999, http_status: 201, error_msg: null, attempts: 1 })
-    expect(store.findCurrentPastaNote('P-1')).toBeNull()
+    expect(store.findCurrentPastaNote('P-1', 'adb')).toBeNull()
   })
 })
 
@@ -670,5 +670,65 @@ describe('PipedriveActivityStore — tenant dedup (T23)', () => {
     const row = store.findByDedupKey('adb', 'k-default')
     expect(row?.id).toBe(id)
     expect(row?.tenant).toBe('adb')
+  })
+})
+
+describe('PipedriveActivityStore — tenant isolation on pasta queries', () => {
+  it('hasRecentSuccess does NOT match across tenants', () => {
+    const db = new Database(':memory:')
+    const s = new PipedriveActivityStore(db)
+    s.initialize()
+    // Insert a SUCCESS row for adb with pasta='1857'
+    s.insertPending({
+      scenario: 'pasta_summary',
+      deal_id: 1,
+      pasta: '1857',
+      phone_normalized: null,
+      job_id: 'j_adb',
+      pipedrive_endpoint: '/notes',
+      pipedrive_payload_json: '{}',
+      manual: false,
+      triggered_by: 'test',
+      tenant: 'adb',
+      dedup_key: 'pasta_summary|1857|j_adb',
+    })
+    db.prepare(
+      `UPDATE pipedrive_activities SET pipedrive_response_status = 'success', completed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE tenant = 'adb' AND pasta = '1857'`,
+    ).run()
+
+    const sinceIso = new Date(Date.now() - 86_400_000).toISOString()
+    // adb sees its own success
+    expect(
+      s.hasRecentSuccess({ tenant: 'adb', scenario: 'pasta_summary', deal_id: 1, pasta: '1857', phone_normalized: null, sinceIso }),
+    ).toBe(true)
+    // sicoob does NOT see adb's success
+    expect(
+      s.hasRecentSuccess({ tenant: 'sicoob', scenario: 'pasta_summary', deal_id: 1, pasta: '1857', phone_normalized: null, sinceIso }),
+    ).toBe(false)
+  })
+
+  it('findCurrentPastaNote does NOT match across tenants', () => {
+    const db = new Database(':memory:')
+    const s = new PipedriveActivityStore(db)
+    s.initialize()
+    s.insertPending({
+      scenario: 'pasta_summary',
+      deal_id: 1,
+      pasta: '1857',
+      phone_normalized: null,
+      job_id: 'j_adb',
+      pipedrive_endpoint: '/notes',
+      pipedrive_payload_json: '{}',
+      manual: false,
+      triggered_by: 'test',
+      tenant: 'adb',
+      dedup_key: 'pasta_summary|1857|j_adb',
+    })
+    db.prepare(
+      `UPDATE pipedrive_activities SET pipedrive_response_status = 'success', pipedrive_response_id = 9999, completed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE tenant = 'adb' AND pasta = '1857'`,
+    ).run()
+
+    expect(s.findCurrentPastaNote('1857', 'adb')?.pipedrive_response_id).toBe(9999)
+    expect(s.findCurrentPastaNote('1857', 'sicoob')).toBeNull()
   })
 })

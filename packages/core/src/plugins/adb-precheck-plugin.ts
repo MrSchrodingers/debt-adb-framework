@@ -1287,12 +1287,12 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       tenant?: string
     }
     // T22: tenant resolution mirrors handleStartScan — default 'adb',
-    // 400 on unknown.
-    const rawTenant = body.tenant?.toLowerCase()
-    const tenantId: TenantId =
-      rawTenant === 'sicoob' || rawTenant === 'oralsin' || rawTenant === 'adb'
-        ? (rawTenant as TenantId)
-        : 'adb'
+    // 400 on unknown tenant name (no silent fallback).
+    const rawTenantStr = body.tenant?.toLowerCase()
+    if (rawTenantStr !== undefined && rawTenantStr !== 'adb' && rawTenantStr !== 'sicoob' && rawTenantStr !== 'oralsin') {
+      return r.code(400).send({ error: 'unknown_tenant', tenant: body.tenant })
+    }
+    const tenantId: TenantId = (rawTenantStr ?? 'adb') as TenantId
     if (body.tenant !== undefined && !this.scannerByTenant.has(tenantId)) {
       return r.code(400).send({ error: 'tenant_not_configured', tenant: body.tenant })
     }
@@ -1346,6 +1346,9 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
    */
   private async handleNoteHistory(req: unknown, reply: unknown): Promise<unknown> {
     const { pasta } = (req as { params: { pasta: string } }).params
+    const q = (req as { query?: { tenant?: string } } | undefined)?.query
+    const rawTenant = q?.tenant?.toLowerCase()
+    const tenantId: TenantId = rawTenant === 'sicoob' || rawTenant === 'oralsin' ? rawTenant : 'adb'
     const r = reply as {
       status: (c: number) => { send: (x: unknown) => unknown }
       send: (x: unknown) => unknown
@@ -1354,7 +1357,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       return r.status(503).send({ error: 'pipedrive_disabled' })
     }
     const revisions = this.pipedriveActivityStore.listPastaNoteRevisions(pasta)
-    const current = this.pipedriveActivityStore.findCurrentPastaNote(pasta)
+    const current = this.pipedriveActivityStore.findCurrentPastaNote(pasta, tenantId)
     return r.send({
       pasta,
       current_pipedrive_id: current?.pipedrive_response_id ?? null,

@@ -278,6 +278,7 @@ export class PipedriveActivityStore {
    * publisher's in-memory Set cannot enforce cross-scan idempotency).
    */
   hasRecentSuccess(params: {
+    tenant: string
     scenario: string
     deal_id: number
     pasta: string | null
@@ -288,7 +289,8 @@ export class PipedriveActivityStore {
       .prepare(`
         SELECT 1
         FROM pipedrive_activities
-        WHERE scenario = ?
+        WHERE tenant = ?
+          AND scenario = ?
           AND deal_id = ?
           AND COALESCE(pasta, '') = COALESCE(?, '')
           AND COALESCE(phone_normalized, '') = COALESCE(?, '')
@@ -297,6 +299,7 @@ export class PipedriveActivityStore {
         LIMIT 1
       `)
       .get(
+        params.tenant,
         params.scenario,
         params.deal_id,
         params.pasta,
@@ -315,19 +318,20 @@ export class PipedriveActivityStore {
    * Returns null when no successful note has been published yet, OR when the
    * previous note was orphaned (e.g. deleted upstream by an operator).
    */
-  findCurrentPastaNote(pasta: string): { row_id: string; pipedrive_response_id: number; created_at: string } | null {
+  findCurrentPastaNote(pasta: string, tenant: string): { row_id: string; pipedrive_response_id: number; created_at: string } | null {
     const row = this.db
       .prepare(`
         SELECT id AS row_id, pipedrive_response_id, created_at
         FROM pipedrive_activities
-        WHERE scenario = 'pasta_summary'
+        WHERE tenant = ?
+          AND scenario = 'pasta_summary'
           AND pasta = ?
           AND pipedrive_response_status = 'success'
           AND pipedrive_response_id IS NOT NULL
         ORDER BY created_at DESC, id DESC
         LIMIT 1
       `)
-      .get(pasta) as
+      .get(tenant, pasta) as
       | { row_id: string; pipedrive_response_id: number; created_at: string }
       | undefined
     return row ?? null

@@ -112,7 +112,7 @@ export class PipedrivePublisher {
     // to PUT instead of creating a duplicate note. Only applies when the store
     // is available (test instantiations without a store fall back to POST).
     if (this.store && intent.pasta) {
-      const target = this.store.findCurrentPastaNote(intent.pasta)
+      const target = this.store.findCurrentPastaNote(intent.pasta, this.tenant)
       if (target && builtIntent.kind === 'note') {
         builtIntent.update_target_id = String(target.pipedrive_response_id)
       }
@@ -156,6 +156,7 @@ export class PipedrivePublisher {
       if (this.store) {
         const sinceIso = new Date(Date.now() - this.idempotencyWindowMs).toISOString()
         const existing = this.store.hasRecentSuccess({
+          tenant: this.tenant,
           scenario: meta.scenario,
           deal_id: meta.deal_id,
           pasta: meta.pasta ?? null,
@@ -206,7 +207,7 @@ export class PipedrivePublisher {
 
   private findRevisesRowId(pipedriveId: string, pasta: string): string | undefined {
     if (!this.store) return undefined
-    const target = this.store.findCurrentPastaNote(pasta)
+    const target = this.store.findCurrentPastaNote(pasta, this.tenant)
     return target && String(target.pipedrive_response_id) === pipedriveId
       ? target.row_id
       : undefined
