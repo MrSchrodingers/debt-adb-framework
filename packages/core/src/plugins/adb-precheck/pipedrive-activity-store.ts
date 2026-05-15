@@ -135,6 +135,24 @@ export class PipedriveActivityStore {
       CREATE INDEX IF NOT EXISTS idx_pipedrive_revises
         ON pipedrive_activities(revises_row_id) WHERE revises_row_id IS NOT NULL
     `)
+
+    // Multi-tenant migration - default 'adb' preserves existing rows.
+    // NOTE: plan called for UNIQUE INDEX on (tenant, dedup_key) but `dedup_key`
+    // is not a column on `pipedrive_activities` — it lives only on the
+    // PipedriveIntent in-memory shape (see types.ts:302). Index deferred to
+    // a later task that adds the column proper. The tenant column alone is
+    // sufficient for the multi-tenant routing this task targets.
+    this.idempotentAlter(
+      'pipedrive_activities',
+      'tenant',
+      "ALTER TABLE pipedrive_activities ADD COLUMN tenant TEXT NOT NULL DEFAULT 'adb'",
+    )
+  }
+
+  private idempotentAlter(table: string, column: string, ddl: string): void {
+    const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+    if (cols.some((c) => c.name === column)) return
+    this.db.prepare(ddl).run()
   }
 
   insertPending(data: PipedriveActivityInsert): string {

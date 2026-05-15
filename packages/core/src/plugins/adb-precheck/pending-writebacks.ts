@@ -98,6 +98,20 @@ export class PendingWritebacks {
 
   initialize(): void {
     this.db.exec(SCHEMA_DDL)
+    // Multi-tenant migration - default 'adb' preserves existing rows.
+    this.idempotentAlter(
+      'pending_writebacks',
+      'tenant',
+      "ALTER TABLE pending_writebacks ADD COLUMN tenant TEXT NOT NULL DEFAULT 'adb'",
+    )
+  }
+
+  private idempotentAlter(table: string, column: string, ddl: string): void {
+    const cols = this.db
+      .prepare(`PRAGMA table_info(${table})`)
+      .all() as Array<{ name: string }>
+    if (cols.some((c) => c.name === column)) return
+    this.db.prepare(ddl).run()
   }
 
   /**
