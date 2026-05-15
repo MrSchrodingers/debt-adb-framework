@@ -262,7 +262,7 @@ export class SendEngine {
         // Wait for share intent to process and dismiss any app chooser dialogs
         await this.delay(3000)
         dialogsDismissed = await this.waitForChatReady(deviceSerial, 5, appPackage)
-        await this.tapSendButton(deviceSerial)
+        await this.tapSendButton(deviceSerial, appPackage)
         this.record(message.id, 'send_tapped', { method: 'media_share' })
       } else {
         // Text-only flow — pick chat-open method via content-aware strategy.
@@ -301,7 +301,7 @@ export class SendEngine {
         this.record(message.id, 'message_composed', { method, bodyLength: message.body.length })
 
         await this.delay(300)
-        await this.tapSendButton(deviceSerial)
+        await this.tapSendButton(deviceSerial, appPackage)
         this.record(message.id, 'send_tapped', {})
       }
 
@@ -868,22 +868,46 @@ export class SendEngine {
     return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   }
 
-  private async tapSendButton(deviceSerial: string): Promise<void> {
+  private async tapSendButton(deviceSerial: string, appPackage = 'com.whatsapp'): Promise<void> {
     const xml = await this.dumpUi(deviceSerial)
 
-    // WhatsApp Business (com.whatsapp.w4b) shares resource ID namespace with com.whatsapp
-    const match = xml.match(
-      /resource-id="com\.whatsapp:id\/send"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/,
+    // Try namespace-aware match first. WhatsApp Business uses
+    // `com.whatsapp.w4b:id/send`; the legacy comment that claimed both
+    // apps shared the namespace was wrong and silently broke w4b sends —
+    // the keyevent-66 fallback below only inserts a newline into the
+    // chat input, so the message never delivers.
+    const escapedPkg = appPackage.replace(/\./g, '\\.')
+    const namespacedMatch = xml.match(
+      new RegExp(
+        `resource-id="${escapedPkg}:id/send"[^>]*bounds="\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]"`,
+      ),
     )
+    const legacyMatch = namespacedMatch
+      ? null
+      : xml.match(/resource-id="com\.whatsapp:id\/send"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/)
+    // Final fallback: content-desc="Enviar" (or English "Send") on a
+    // clickable ImageButton. Namespace-agnostic, survives layout renames.
+    const contentDescMatch = namespacedMatch || legacyMatch
+      ? null
+      : xml.match(
+          /<node[^>]*content-desc="(?:Enviar|Send)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/,
+        )
+
+    const match = namespacedMatch ?? legacyMatch ?? contentDescMatch
 
     if (match) {
       const [, x1, y1, x2, y2] = match.map(Number)
       const cx = Math.round((x1 + x2) / 2)
       const cy = Math.round((y1 + y2) / 2)
       await this.sendeventTap(deviceSerial, cx, cy)
-    } else {
-      await this.adb.shell(deviceSerial, 'input keyevent 66')
+      return
     }
+
+    // Last-resort fallback: KEYCODE_ENTER. Historically this was wired
+    // expecting WhatsApp's IME to map enter→send, but in practice it
+    // only inserts a newline into the chat input. Keep it as a no-op-ish
+    // safety net but log so operators see the regression signal.
+    await this.adb.shell(deviceSerial, 'input keyevent 66')
   }
 
   /**
