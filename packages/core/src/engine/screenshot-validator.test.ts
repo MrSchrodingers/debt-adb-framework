@@ -5,7 +5,7 @@ describe('ScreenshotValidator', () => {
   const validator = new ScreenshotValidator()
 
   describe('validate()', () => {
-    it('validates healthy chat state with chat input present', () => {
+    it('validates healthy chat state with chat input + last message indicator', () => {
       const xml = `<hierarchy>
         <node resource-id="com.whatsapp:id/entry" bounds="[50,1400][850,1500]" />
         <node resource-id="com.whatsapp:id/send" bounds="[900,1600][1000,1700]" />
@@ -18,7 +18,7 @@ describe('ScreenshotValidator', () => {
       expect(result.chatInputFound).toBe(true)
       expect(result.dialogDetected).toBe(false)
       expect(result.lastMessageVisible).toBe(true)
-      expect(result.reason).toBe('Chat appears healthy')
+      expect(result.reason).toContain('tick/message indicator')
     })
 
     it('detects missing chat input — may be stuck on dialog or wrong screen', () => {
@@ -95,9 +95,10 @@ describe('ScreenshotValidator', () => {
       expect(result.reason).toContain('Chat input not found')
     })
 
-    it('recognizes alternative chat input resource ID (text_entry_view)', () => {
+    it('recognizes alternative chat input resource ID (text_entry_view) + tick = valid', () => {
       const xml = `<hierarchy>
         <node resource-id="com.whatsapp:id/text_entry_view" bounds="[50,1400][850,1500]" />
+        <node resource-id="com.whatsapp:id/double_tick" />
       </hierarchy>`
 
       const result = validator.validate(xml)
@@ -130,17 +131,18 @@ describe('ScreenshotValidator', () => {
       expect(result.lastMessageVisible).toBe(true)
     })
 
-    it('reports valid=true even without visible message (input present, no dialog)', () => {
-      // Message may have scrolled out of view — chat input presence is sufficient
+    it('reports valid=false when chat input present but NO delivery signal (no tick, no body match)', () => {
+      // Tightened post-2026-05-15: input alone is not enough; we need
+      // positive proof of delivery (body in conversation OR tick).
       const xml = `<hierarchy>
         <node resource-id="com.whatsapp:id/entry" bounds="[50,1400][850,1500]" />
       </hierarchy>`
 
       const result = validator.validate(xml)
 
-      expect(result.valid).toBe(true)
+      expect(result.valid).toBe(false)
       expect(result.lastMessageVisible).toBe(false)
-      expect(result.reason).toBe('Chat appears healthy')
+      expect(result.reason).toContain('No delivery signal')
     })
 
     it('dialog detection is case-insensitive', () => {
@@ -168,52 +170,89 @@ describe('ScreenshotValidator', () => {
     it('recognises chat input on com.whatsapp.w4b namespace (Business)', () => {
       const xml = `<hierarchy>
         <node resource-id="com.whatsapp.w4b:id/entry" text="" bounds="[50,1400][850,1500]" />
+        <node resource-id="com.whatsapp.w4b:id/message_text" text="prior msg" />
       </hierarchy>`
 
       const result = validator.validate(xml, 'com.whatsapp.w4b')
 
       expect(result.chatInputFound).toBe(true)
-      expect(result.valid).toBe(true)
-      expect(result.reason).toBe('Chat appears healthy')
-    })
-
-    it('treats chat input with non-empty text as NOT delivered (body still in field)', () => {
-      // Real prod dump from Samsung A03 w4b 2026-05-15 14:55: tap on send
-      // failed and the body stayed in the input. validator must surface this.
-      const xml = `<hierarchy>
-        <node resource-id="com.whatsapp.w4b:id/entry" text="Teste W4B fix3 14:54:52" bounds="[50,1400][850,1500]" />
-      </hierarchy>`
-
-      const result = validator.validate(xml, 'com.whatsapp.w4b')
-
-      expect(result.chatInputFound).toBe(true)
-      expect(result.valid).toBe(false)
-      expect(result.reason).toContain('still has body text')
-    })
-
-    it('empty-text chat input on default namespace = healthy', () => {
-      // Backwards-compat: existing com.whatsapp callers without appPackage
-      // still see the historical behaviour.
-      const xml = `<hierarchy>
-        <node resource-id="com.whatsapp:id/entry" text="" bounds="[50,1400][850,1500]" />
-      </hierarchy>`
-
-      const result = validator.validate(xml)
-
-      expect(result.chatInputFound).toBe(true)
+      expect(result.lastMessageVisible).toBe(true)
       expect(result.valid).toBe(true)
     })
 
-    it('com.whatsapp namespace input with non-empty text = NOT delivered', () => {
+    it('STRONG positive: messageBody visible in conversation bubble = valid', () => {
+      // Real shape from a03 w4b dump 2026-05-15. The body text appears in a
+      // message_text node (bubble) AND lingers in the input field. The
+      // validator MUST accept this as delivered.
       const xml = `<hierarchy>
-        <node resource-id="com.whatsapp:id/entry" text="Mensagem nao enviada" />
+        <node resource-id="com.whatsapp.w4b:id/conversation_text_row" />
+        <node resource-id="com.whatsapp.w4b:id/message_text" text="FIX5-W4B 15:24:02" />
+        <node resource-id="com.whatsapp.w4b:id/entry" text="FIX5-W4B 15:24:02" />
       </hierarchy>`
 
-      const result = validator.validate(xml)
+      const result = validator.validate(xml, 'com.whatsapp.w4b', 'FIX5-W4B 15:24:02')
 
-      expect(result.chatInputFound).toBe(true)
+      expect(result.bodyMessageVisible).toBe(true)
+      expect(result.chatInputHasBodyText).toBe(true)
+      expect(result.valid).toBe(true)
+      expect(result.reason).toContain('delivery confirmed')
+    })
+
+    it('FAIL: body NOT in conversation AND input lingers + no tick = not delivered', () => {
+      // The body was typed into the input but tapSendButton missed: no
+      // bubble in the conversation, no tick. Permanently failed.
+      const xml = `<hierarchy>
+        <node resource-id="com.whatsapp.w4b:id/entry" text="NOT_SENT_TEST" bounds="[50,1400][850,1500]" />
+      </hierarchy>`
+
+      const result = validator.validate(xml, 'com.whatsapp.w4b', 'NOT_SENT_TEST')
+
+      expect(result.bodyMessageVisible).toBe(false)
+      expect(result.lastMessageVisible).toBe(false)
       expect(result.valid).toBe(false)
-      expect(result.reason).toContain('still has body text')
+      expect(result.reason).toContain('No delivery signal')
+    })
+
+    it('FALLBACK: no body match but tick + chat input visible = valid', () => {
+      // Caller passed body but it had emojis / line breaks that escape match.
+      // Falls back to lastMessageVisible signal.
+      const xml = `<hierarchy>
+        <node resource-id="com.whatsapp.w4b:id/entry" text="" />
+        <node resource-id="com.whatsapp.w4b:id/single_tick" />
+      </hierarchy>`
+
+      const result = validator.validate(xml, 'com.whatsapp.w4b', '👋 Olá!')
+
+      expect(result.bodyMessageVisible).toBe(false)
+      expect(result.lastMessageVisible).toBe(true)
+      expect(result.valid).toBe(true)
+      expect(result.reason).toContain('tick/message indicator')
+    })
+
+    it('Dialog blocks send even when body matches in conversation', () => {
+      const xml = `<hierarchy>
+        <node resource-id="com.whatsapp.w4b:id/message_text" text="OK BODY" />
+        <node resource-id="com.whatsapp.w4b:id/entry" text="OK BODY" />
+        <node text="Erro ao enviar" />
+      </hierarchy>`
+
+      const result = validator.validate(xml, 'com.whatsapp.w4b', 'OK BODY')
+
+      expect(result.dialogDetected).toBe(true)
+      expect(result.valid).toBe(false)
+      expect(result.reason).toContain('Dialog detected')
+    })
+
+    it('com.whatsapp default namespace: body in bubble + chat input cleared = valid', () => {
+      const xml = `<hierarchy>
+        <node resource-id="com.whatsapp:id/message_text" text="Olá mundo" />
+        <node resource-id="com.whatsapp:id/entry" text="" />
+      </hierarchy>`
+
+      const result = validator.validate(xml, 'com.whatsapp', 'Olá mundo')
+
+      expect(result.bodyMessageVisible).toBe(true)
+      expect(result.valid).toBe(true)
     })
   })
 })

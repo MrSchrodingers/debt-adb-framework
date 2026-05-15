@@ -10,6 +10,7 @@ import type { MediaSender } from './media-sender.js'
 import { ScreenshotValidator } from './screenshot-validator.js'
 import { getTracer } from '../telemetry/tracer.js'
 import { SpanStatusCode } from '@opentelemetry/api'
+import { sendValidationResultTotal, sendValidationLatencyMs } from '../config/metrics.js'
 
 /** Packages allowed in am start/force-stop commands. Reject everything else. */
 const ALLOWED_PACKAGES = new Set(['com.whatsapp', 'com.whatsapp.w4b'])
@@ -321,28 +322,48 @@ export class SendEngine {
       let validationDecidedFailure = false
       let validationReason = ''
       try {
+        const validationStart = Date.now()
         const postSendXml = await this.dumpUi(deviceSerial)
         const validator = new ScreenshotValidator()
-        const validation = validator.validate(postSendXml, appPackage)
+        const validation = validator.validate(postSendXml, appPackage, message.body)
+        const validationLatencyMs = Date.now() - validationStart
+        sendValidationLatencyMs.observe({ app_package: appPackage }, validationLatencyMs)
+
+        const result: string = validation.dialogDetected
+          ? 'dialog_block'
+          : validation.bodyMessageVisible
+            ? 'body_match'
+            : validation.lastMessageVisible && validation.chatInputFound
+              ? 'tick_visible'
+              : !validation.chatInputFound
+                ? 'no_chat_input'
+                : 'no_signal'
+        sendValidationResultTotal.inc({ result, app_package: appPackage })
+
         this.record(message.id, 'post_send_validation', {
           valid: validation.valid,
           reason: validation.reason,
-          chatInputFound: validation.chatInputFound,
-          dialogDetected: validation.dialogDetected,
-          chatInputHasBodyText: validation.chatInputHasBodyText ?? false,
+          result,
+          latencyMs: validationLatencyMs,
+          bodyMessageVisible: validation.bodyMessageVisible,
           lastMessageVisible: validation.lastMessageVisible,
+          chatInputFound: validation.chatInputFound,
+          chatInputHasBodyText: validation.chatInputHasBodyText,
+          dialogDetected: validation.dialogDetected,
         })
         if (!validation.valid) {
           validationDecidedFailure = true
           validationReason = validation.reason
         }
       } catch (err) {
-        // Validation is best-effort — don't fail the send if UI dump fails.
-        // Keep the legacy "treat as sent" behaviour on infra errors so we
-        // don't lose visibility on otherwise-successful sends.
+        // Validation infra failure — treat as soft positive (mark sent) so a
+        // UI-dump hiccup doesn't lose visibility on otherwise-successful
+        // sends. Counted separately for ops insight.
+        sendValidationResultTotal.inc({ result: 'infra_fail', app_package: appPackage })
         this.record(message.id, 'post_send_validation', {
           valid: false,
           reason: `UI dump failed: ${err instanceof Error ? err.message : String(err)}`,
+          result: 'infra_fail',
         })
       }
 

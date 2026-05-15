@@ -16,10 +16,17 @@ function createMockAdb(): AdbBridge {
   } as unknown as AdbBridge
 }
 
-/** XML with chat input ready + send button */
+/**
+ * XML with chat input ready + send button + delivered indicator.
+ * The double_tick + message_text nodes simulate the post-send healthy state
+ * required by ScreenshotValidator after the 2026-05-15 tightening:
+ * valid=true now requires positive proof of delivery (tick or body match).
+ */
 const CHAT_READY_XML = `<hierarchy>
   <node resource-id="com.whatsapp:id/entry" bounds="[50,1400][850,1500]" />
   <node resource-id="com.whatsapp:id/send" bounds="[900,1600][1000,1700]" />
+  <node resource-id="com.whatsapp:id/message_text" text="prior" />
+  <node resource-id="com.whatsapp:id/double_tick" />
 </hierarchy>`
 
 /** XML for WhatsApp home screen with search icon (used by openViaSearch) */

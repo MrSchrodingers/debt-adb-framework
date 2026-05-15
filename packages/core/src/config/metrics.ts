@@ -266,6 +266,31 @@ export const sdrLlmCostUsdTotal = new Counter({
   registers: [metricsRegistry],
 })
 
+// ── Send post-tap validation (2026-05-15 incident) ──────────────────────
+//
+// Tracks how the ScreenshotValidator concludes after each tap on the send
+// button. `result` labels:
+//   - body_match    → body text confirmed in conversation (strongest)
+//   - tick_visible  → tick/message_text indicator visible (medium)
+//   - no_signal     → chat input present but neither body nor tick visible
+//   - dialog_block  → error/permission dialog still on screen
+//   - no_chat_input → chat input element missing entirely
+//   - infra_fail    → UI dump itself failed; defaulted to soft-positive
+export const sendValidationResultTotal = new Counter({
+  name: 'dispatch_send_validation_result_total',
+  help: 'Post-tap delivery validation outcomes',
+  labelNames: ['result', 'app_package'] as const,
+  registers: [metricsRegistry],
+})
+
+export const sendValidationLatencyMs = new Histogram({
+  name: 'dispatch_send_validation_latency_ms',
+  help: 'Latency of the post-tap UI dump + validation step',
+  labelNames: ['app_package'] as const,
+  buckets: [100, 250, 500, 1000, 2000, 5000, 10000],
+  registers: [metricsRegistry],
+})
+
 export async function getMetricsText(): Promise<string> {
   return metricsRegistry.metrics()
 }
