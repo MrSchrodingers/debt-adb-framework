@@ -78,6 +78,19 @@ const scanParamsSchema = z
      * tenant registry — unknown tenants get a 400 from the handler.
      */
     tenant: z.enum(['adb', 'sicoob', 'oralsin']).optional(),
+    /**
+     * Override the Pipeboard pipeline scoped for this scan only. When
+     * supplied, an ad-hoc PipeboardRawRest + PrecheckScanner is built
+     * for the lifetime of this job so the cached maps are not polluted.
+     * Only meaningful for raw-mode tenants (sicoob / oralsin) — the adb
+     * tenant does not filter by pipeline_id. Must be a positive integer.
+     */
+    pipeline_id: z.number().int().positive().optional(),
+    /**
+     * Override the Pipeboard stage scoped for this scan only. Pairs
+     * with `pipeline_id`. Ignored for prov-mode tenants.
+     */
+    stage_id: z.number().int().positive().optional(),
   })
   .strict()
 
@@ -1049,7 +1062,78 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     if (!this.scannerByTenant.has(tenantId)) {
       return r.status(400).send({ error: 'tenant_not_configured', tenant: tenantId })
     }
-    const scanner = this.scannerByTenant.get(tenantId)!
+
+    // T25: resolve pipeline_id / stage_id overrides. For raw-mode tenants the
+    // caller may pass these to target a different pipeline or stage than the
+    // env-configured defaults. When they differ from the cached config we build
+    // an ad-hoc PipeboardRawRest + PrecheckScanner for THIS scan only so the
+    // shared maps are never mutated mid-flight.
+    const tc = (this.tenantRegistry ?? TenantRegistry.fromEnv()).get(tenantId)
+    const pipelineId = rawParams.pipeline_id ?? tc.defaultPipelineId
+    const stageId = rawParams.stage_id ?? tc.defaultStageId
+
+    if (tc.mode === 'raw' && !pipelineId) {
+      return r.status(400).send({
+        error: 'pipeline_id_required_for_raw_tenant',
+        tenant: tc.id,
+        hint: `Set PLUGIN_ADB_PRECHECK_PIPELINE_ID_${tc.id.toUpperCase()} env var or pass pipeline_id in the scan body.`,
+      })
+    }
+
+    let scanScanner: PrecheckScanner = this.scannerByTenant.get(tenantId)!
+
+    if (
+      tc.mode === 'raw' &&
+      (pipelineId !== tc.defaultPipelineId || stageId !== tc.defaultStageId)
+    ) {
+      // Ad-hoc client + scanner: scoped to this request only. All deps
+      // are re-used from the plugin instance so no init overhead is paid.
+      const scanClient = new PipeboardRawRest({
+        baseUrl: tc.restBaseUrl,
+        apiKey: tc.restApiKey,
+        pipelineId: pipelineId!,
+        stageId,
+        timeoutMs: tc.restTimeoutMs,
+      })
+      const logger = this.ctx!.logger
+      scanScanner = new PrecheckScanner({
+        pg: scanClient,
+        store: this.store,
+        validator: this.validator,
+        logger,
+        shouldCancel: (jobId) => this.store.isCancelRequested(jobId),
+        deviceSerial: this.defaultDeviceSerial,
+        wahaSession: this.defaultWahaSession,
+        resolveProfileForSender: (device, phone) => {
+          const digits = phone.replace(/\D/g, '')
+          if (!digits) return null
+          const row = this.db
+            .prepare(
+              `SELECT profile_id FROM whatsapp_accounts
+                WHERE device_serial = ?
+                  AND package_name = 'com.whatsapp'
+                  AND phone_number IS NOT NULL
+                  AND (phone_number = ? OR phone_number LIKE ? OR ? LIKE '%' || phone_number)
+                ORDER BY profile_id ASC LIMIT 1`,
+            )
+            .get(device, digits, `%${digits}`, digits) as { profile_id: number } | undefined
+          return row?.profile_id ?? null
+        },
+        onJobFinished: (jobId) => this.deliverJobCompletedCallback(jobId),
+        onInvalidPhone: this.onInvalidPhoneCb,
+        pipedrive: this.pipedriveByTenant.get(tc.id) ?? undefined,
+        pipedriveCacheTtlDays: this.pipedriveCacheTtlDays,
+        skipPipedriveDealActivity: this.pipeboardBackend === 'rest',
+        pendingWritebacks: this.pendingWritebacks ?? undefined,
+        pauseState: undefined, // raw tenants don't own the global pause breaker
+        hygienizationOperator: this.hygienizationOperator,
+        locks: this.pastaLocks ?? undefined,
+        adbShell: this.adb,
+        appPackage: 'com.whatsapp',
+        tenant: tc.id,
+        tenantMode: tc.mode,
+      })
+    }
 
     const job = this.store.createJob(params, external_ref, {
       pipedriveEnabled,
@@ -1058,7 +1142,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     })
     if (job.status === 'queued') {
       // Fire-and-forget; progress visible via GET /scan/:id
-      void scanner.runJob(job.id, params).catch(() => {
+      void scanScanner.runJob(job.id, params).catch(() => {
         // scanner already logged + marked failed
       })
     }
