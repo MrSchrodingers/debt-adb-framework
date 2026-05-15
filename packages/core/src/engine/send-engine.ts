@@ -218,7 +218,7 @@ export class SendEngine {
 
         // Wait for share intent to process and dismiss any app chooser dialogs
         await this.delay(3000)
-        dialogsDismissed = await this.waitForChatReady(deviceSerial)
+        dialogsDismissed = await this.waitForChatReady(deviceSerial, 5, appPackage)
         await this.tapSendButton(deviceSerial)
         this.record(message.id, 'send_tapped', { method: 'media_share' })
       } else {
@@ -245,7 +245,7 @@ export class SendEngine {
           )
           await this.delay(isFirstInBatch ? 4000 : 2000)
           await this.detectNoWhatsAppPopup(deviceSerial, phoneDigits)
-          dialogsDismissed = await this.waitForChatReady(deviceSerial)
+          dialogsDismissed = await this.waitForChatReady(deviceSerial, 5, appPackage)
         } else if (method === 'search') {
           await this.openViaSearch(deviceSerial, phoneDigits, message.body, appPackage)
         } else if (method === 'typing') {
@@ -568,7 +568,7 @@ export class SendEngine {
   }
 
   /** Returns number of dialogs dismissed before chat became ready */
-  private async waitForChatReady(deviceSerial: string, maxRetries = 5): Promise<number> {
+  private async waitForChatReady(deviceSerial: string, maxRetries = 5, appPackage = 'com.whatsapp'): Promise<number> {
     let dismissedCount = 0
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       const xml = await this.dumpUi(deviceSerial)
@@ -582,9 +582,14 @@ export class SendEngine {
         continue
       }
 
-      // Verify chat input field is ready
-      // WhatsApp Business (com.whatsapp.w4b) shares resource ID namespace with com.whatsapp
+      // Verify chat input field is ready. Resource-id namespace usually
+      // mirrors the Android package, but the Business app (w4b) ships
+      // some views with the legacy `com.whatsapp:id/...` prefix. Accept
+      // both as a "chat input ready" signal to avoid bouncing through
+      // recovery on those views.
       if (
+        xml.includes(`${appPackage}:id/entry`) ||
+        xml.includes(`${appPackage}:id/text_entry_view`) ||
         xml.includes('com.whatsapp:id/entry') ||
         xml.includes('com.whatsapp:id/text_entry_view')
       ) {
@@ -607,7 +612,7 @@ export class SendEngine {
    */
   private async openViaSearch(deviceSerial: string, phone: string, body: string, appPackage = 'com.whatsapp'): Promise<void> {
     let xml = await this.dumpUi(deviceSerial)
-    let searchIcon = this.findSearchElement(xml)
+    let searchIcon = this.findSearchElement(xml, appPackage)
 
     // Recovery: if search not found, force HomeActivity and retry
     if (!searchIcon) {
@@ -617,7 +622,7 @@ export class SendEngine {
       await this.dismissDialogs(deviceSerial, recoveryXml)
       await this.delay(1000)
       xml = await this.dumpUi(deviceSerial)
-      searchIcon = this.findSearchElement(xml)
+      searchIcon = this.findSearchElement(xml, appPackage)
       if (!searchIcon) {
         throw new Error('Search element not found after recovery — WhatsApp home screen not reachable')
       }
@@ -636,7 +641,7 @@ export class SendEngine {
     // Dump UI again to find the first search result
     const searchResultXml = await this.dumpUi(deviceSerial)
     const firstResult = this.findElementBounds(searchResultXml, {
-      resourceId: 'com.whatsapp:id/conversations_row_contact_name',
+      resourceId: `${appPackage}:id/conversations_row_contact_name`,
     })
     if (!firstResult) {
       throw new Error(`Search result not found for query "${searchQuery}" — contact may not exist in WhatsApp`)
@@ -680,7 +685,7 @@ export class SendEngine {
     // Escape regex special chars from contact name to prevent injection into RegExp
     const escapedName = this.escapeRegex(contactName)
     const contactRow = this.findElementBounds(xml, {
-      resourceId: 'com.whatsapp:id/conversations_row_contact_name',
+      resourceId: `${appPackage}:id/conversations_row_contact_name`,
       text: new RegExp(`^${escapedName}$`, 'i'),
     })
 
@@ -693,7 +698,7 @@ export class SendEngine {
     // Tap the contact row
     await this.sendeventTap(deviceSerial, contactRow.cx, contactRow.cy)
     await this.delay(2000)
-    await this.waitForChatReady(deviceSerial)
+    await this.waitForChatReady(deviceSerial, 5, appPackage)
     await this.clearInputField(deviceSerial)
     await this.typeMessage(deviceSerial, body)
   }
@@ -704,7 +709,7 @@ export class SendEngine {
       `am start -a android.intent.action.VIEW -d "https://wa.me/${phone}" -p ${appPackage}`,
     )
     await this.delay(2000)
-    await this.waitForChatReady(deviceSerial)
+    await this.waitForChatReady(deviceSerial, 5, appPackage)
     await this.clearInputField(deviceSerial)
     await this.typeMessage(deviceSerial, body)
   }
@@ -763,26 +768,26 @@ export class SendEngine {
    * - Legacy: menuitem_search icon
    * - Fallback: content-desc matching Search/Pesquisar
    */
-  private findSearchElement(xml: string): { cx: number; cy: number } | null {
+  private findSearchElement(xml: string, appPackage = 'com.whatsapp'): { cx: number; cy: number } | null {
     // New WA layout: integrated search bar (tap anywhere on the bar)
     const searchBar = this.findElementBounds(xml, {
-      resourceId: 'com.whatsapp:id/my_search_bar',
+      resourceId: `${appPackage}:id/my_search_bar`,
     })
     if (searchBar) return searchBar
 
     // New WA layout: search icon inside the bar
     const searchIcon = this.findElementBounds(xml, {
-      resourceId: 'com.whatsapp:id/search_icon',
+      resourceId: `${appPackage}:id/search_icon`,
     })
     if (searchIcon) return searchIcon
 
     // Legacy WA layout: menuitem_search
     const menuSearch = this.findElementBounds(xml, {
-      resourceId: 'com.whatsapp:id/menuitem_search',
+      resourceId: `${appPackage}:id/menuitem_search`,
     })
     if (menuSearch) return menuSearch
 
-    // Fallback: content-desc matching search-related text
+    // Fallback: content-desc matching search-related text (namespace-agnostic).
     return this.findElementBounds(xml, {
       contentDesc: /^(Search|Pesquisar|Pergunte.*pesquise)$/i,
     })

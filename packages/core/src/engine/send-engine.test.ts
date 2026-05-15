@@ -1069,4 +1069,95 @@ describe('SendEngine', () => {
       expect(updated.screenshotSkipReason).toContain('no space left on device')
     })
   })
+
+  // ──────────────────────────────────────────────────────────────────────
+  // WhatsApp Business (com.whatsapp.w4b) namespace support — bug found
+  // 2026-05-15 in prod. Resource-id matchers were hardcoded to
+  // `com.whatsapp:id/...`, so dumps from the Business app
+  // (`com.whatsapp.w4b:id/...`) all missed and the engine bounced
+  // through openViaSearch's recovery loop until permanently_failed.
+  // ──────────────────────────────────────────────────────────────────────
+
+  describe('appPackage-aware resource-id matchers (w4b support)', () => {
+    const WA_HOME_XML_W4B = `<hierarchy>
+  <node resource-id="com.whatsapp.w4b:id/menuitem_search" content-desc="" text="" bounds="[580,60][680,160]" />
+  <node resource-id="com.whatsapp.w4b:id/conversations_row_contact_name" text="João Silva" bounds="[100,200][600,260]" />
+  <node resource-id="com.whatsapp.w4b:id/conversations_row_contact_name" text="Maria Santos" bounds="[100,280][600,340]" />
+</hierarchy>`
+
+    const W4B_SEARCH_RESULTS = `<hierarchy>
+  <node resource-id="com.whatsapp.w4b:id/search_src_text" text="91938235" bounds="[50,60][700,120]" />
+  <node resource-id="com.whatsapp.w4b:id/conversations_row_contact_name" text="Contato 8235" bounds="[100,200][600,260]" />
+</hierarchy>`
+
+    const W4B_CHAT_READY = `<hierarchy>
+  <node resource-id="com.whatsapp.w4b:id/entry" bounds="[10,1000][700,1080]" />
+</hierarchy>`
+
+    it('findSearchElement locates search bar on w4b XML when appPackage="com.whatsapp.w4b"', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = (engine as any).findSearchElement(WA_HOME_XML_W4B, 'com.whatsapp.w4b')
+      // bounds [580,60][680,160] → center (630, 110)
+      expect(result).toEqual({ cx: 630, cy: 110 })
+    })
+
+    it('findSearchElement default (com.whatsapp) does NOT match w4b resource-ids', () => {
+      // Backwards-compat: callers that still pass no appPackage see the
+      // historical behaviour. With content-desc stripped from the fixture,
+      // the default namespace matcher must miss entirely.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = (engine as any).findSearchElement(WA_HOME_XML_W4B)
+      expect(result).toBeNull()
+    })
+
+    it('waitForChatReady recognises chat input field on w4b namespace', async () => {
+      const searchEngine = new SendEngine(mockAdb, queue, emitter)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.spyOn(searchEngine as any, 'delay').mockResolvedValue(undefined)
+      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
+      shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('uiautomator dump')) return ''
+        if (cmd.includes('cat /sdcard/dispatch-ui.xml')) return W4B_CHAT_READY
+        return ''
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const dismissed = await (searchEngine as any).waitForChatReady('device-1', 5, 'com.whatsapp.w4b')
+      expect(dismissed).toBe(0)
+    })
+
+    it('openViaSearch on w4b namespace completes without bouncing through recovery', async () => {
+      const searchEngine = new SendEngine(mockAdb, queue, emitter)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.spyOn(searchEngine as any, 'delay').mockResolvedValue(undefined)
+
+      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
+      let dumpCount = 0
+      shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('pidof')) return '12345'
+        if (cmd.includes('uiautomator dump')) return ''
+        if (cmd.includes('cat /sdcard/dispatch-ui.xml')) {
+          dumpCount++
+          if (dumpCount === 1) return WA_HOME_XML_W4B
+          if (dumpCount === 2) return W4B_SEARCH_RESULTS
+          return W4B_CHAT_READY
+        }
+        return ''
+      })
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (searchEngine as any).openViaSearch(
+        'device-1',
+        '5543991938235',
+        'w4b test',
+        'com.whatsapp.w4b',
+      )
+
+      const calls = (shellMock.mock.calls as unknown[][]).map((c) => c[1] as string)
+      const tapCalls = calls.filter((cmd) => cmd.startsWith('input tap '))
+      // Search bar center [580,60][680,160] → (630, 110)
+      // First result center [100,200][600,260] → (350, 230)
+      expect(tapCalls[0]).toBe('input tap 630 110')
+      expect(tapCalls[1]).toBe('input tap 350 230')
+    })
+  })
 })
