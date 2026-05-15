@@ -1,7 +1,32 @@
 # Development Progress — DEBT ADB Framework
 
-> **Last updated**: 2026-05-06T18:30:00-03:00
-> **Current phase**: ADB-PRECHECK ROBUSTNESS — IMPLEMENTATION COMPLETE (Phases A-E + Phase Gate)
+> **Last updated**: 2026-05-15T02:50:00-03:00
+> **Current phase**: DEBT-SDR PLUGIN — Phase A+B+C+D COMPLETE (38/50 tasks, 76%) — Phase E pending
+>
+> ## DEBT-SDR PLUGIN STATUS
+>
+> - **Spec**: `docs/superpowers/specs/2026-05-14-debt-sdr-plugin-design.md`
+> - **Plan**: `docs/superpowers/plans/2026-05-14-debt-sdr-plugin-plan.md` (50 tasks, 5 phases)
+> - **Branch**: `main` (HEAD `bcea8af2`)
+> - **Tests**: 1944 core + 228 plugin = 2172 passing, 0 regressions
+> - **Kali prod**: deployed (HEAD bcea8af2), `dispatch-core.service` active, schema migrations OK, plugin OFF by default
+> - **Handoff**: `.handoff/session-20260515-0249-debt-sdr.json`
+>
+> ### Completed phases
+> - **Phase A (Tasks 1-10) ✅** — sender_mapping.tenant + DeviceTenantAssignment + messages.tenant_hint + dequeue tenant filter + PluginContext G3 API + response webhook G5 + server wire + feature flags + runbook
+> - **Phase B (Tasks 11-17) ✅** — plugin scaffold + Zod config validator + SDR migrations 6 tables + init flow + destroy + server boot registration + smoke
+> - **Phase C (Tasks 18-26) ✅** — regex classifier (6 categories) + provider-neutral LlmClient + StubLlmClient + cascade orchestrator + audit log + identity gate templates + IdentityGate FSM + OperatorAlerts
+> - **Phase D (Tasks 27-38) ✅** — TenantPipedriveClient + lead extractor + LeadPuller + sequences (oralsin/sicoob cold-v1) + ThrottleGate + Sequencer FSM + ResponseHandler + PendingWritebacks + wire crons (OFF by default via DISPATCH_SDR_CRONS_ENABLED)
+>
+> ### Phase E (Tasks 39-50) pending
+> Task 39 admin/operator routes, Task 40 Prometheus metrics, Task 41 race condition tests A1-A10, Task 42 integration tests, Task 43 E2E scaffold (TEST_PHONE only, no send), Task 44 full pass, Task 45 operator runbook, Tasks 46-50 deploy + smoke + progress + gates.
+>
+> ### Constraints active
+> - **No Anthropic yet** — provider TBD (maybe Gemini). StubLlmClient default.
+> - **No mass send** — DISPATCH_SDR_CRONS_ENABLED=false by default. Test phone 5543991938235 only.
+> - **Commits without co-author footer.**
+>
+> ## EARLIER: ADB-PRECHECK ROBUSTNESS — IMPLEMENTATION COMPLETE (Phases A-E + Phase Gate)
 > **Last delivery**: Pure UI state classifier (8 states, 9 fixtures), 3-level retry pipeline
 >   (in-probe recover, end-of-scan, manual sweep), in-place Pipedrive note upsert via PUT,
 >   SQLite-backed pasta locks with monotonic fence tokens, quota-bounded XML snapshot

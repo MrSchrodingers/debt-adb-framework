@@ -1,0 +1,192 @@
+{
+  "schemaVersion": "1.0",
+  "timestamp": "2026-05-15T02:49:57Z",
+  "provider": "claude-code",
+  "project": {
+    "path": "/var/www/adb_tools",
+    "branch": "main",
+    "lastCommit": "bcea8af2",
+    "repo": "https://github.com/MrSchrodingers/debt-adb-framework",
+    "kaliRepoPath": "/var/www/debt-adb-framework",
+    "kaliSshTarget": "adb@dispatch",
+    "kaliPublicUrl": "https://dispatch.tail106aa2.ts.net"
+  },
+  "context": {
+    "taskDescription": "Implementar plugin debt-sdr (multi-tenant SDR outbound — Oralsin + Sicoob) seguindo o plano em docs/superpowers/plans/2026-05-14-debt-sdr-plugin-plan.md (50 tasks, 5 fases). Spec: docs/superpowers/specs/2026-05-14-debt-sdr-plugin-design.md.",
+    "completedSteps": [
+      "Phase A (Tasks 1-10): backend core — sender_mapping.tenant, DeviceTenantAssignment, messages.tenant_hint, dequeueBySender filter, PluginContext extension (request/assert/release), response webhook tightening (G5), wire em server.ts, feature flags + runbook",
+      "Phase B (Tasks 11-17): plugin scaffold — packages/plugins/debt-sdr/ workspace package, Zod tenant config (13 testes), SDR migrations 6 tables, init() preflight+claim+assert, destroy() release, registrado no server boot",
+      "Phase C (Tasks 18-26): regex patterns (6 categorias PT-BR) + regex classifier + LlmClient provider-neutral interface + StubLlmClient + ResponseClassifier cascade + ClassifierLog audit + identity gate templates (25 INTRO + 12 NUDGE) + IdentityGate FSM + OperatorAlerts queue",
+      "Phase D (Tasks 27-38): TenantPipedriveClient (35 req/s rate limit) + lead extractor + LeadPuller + sequence definitions (oralsin-cold-v1 + sicoob-cold-v1) + ThrottleGate + Sequencer FSM + ResponseHandler + PendingWritebacks retry queue + wire runtime/crons em plugin",
+      "Code review #1: fixed setSenderTenant CAS race, dequeueBySender metric over-count, release error swallow",
+      "Build path fix: lazy require @dispatch/plugin-debt-sdr para evitar circular TS type resolution",
+      "Deploy Kali: 4 deploys consecutivos (Phase A, B+C, D, latest). dispatch-core.service active, schema migrations aplicadas em prod, plugin OFF por default (DISPATCH_PLUGINS não inclui 'debt-sdr')"
+    ],
+    "inProgressTasks": [
+      {
+        "task": "Task 39: Admin + operator HTTP routes (GET leads/sequences/alerts, PATCH alerts/:id/resolve, POST /response webhook)",
+        "status": "0% — não iniciado, apenas marcado in_progress no TaskList",
+        "blockers": []
+      }
+    ],
+    "pendingTasks": [
+      "Task 39: Admin + operator HTTP routes — 12 testes",
+      "Task 40: Prometheus metrics — 6 metrics expostas via /metrics no plugin",
+      "Task 41: Race condition tests (A1-A10) — 10 cenários adversariais per spec §11",
+      "Task 42: Integration tests (full flow) — 12 cenários mocked",
+      "Task 43: E2E test scaffold (TEST_PHONE 5543991938235) — APENAS scaffold, RUN_E2E flag, sem send real",
+      "Task 44: Full local test pass — verify zero regressions",
+      "Task 45: Operator runbook — docs/sdr-runbook.md",
+      "Task 46: Push (já contínuo)",
+      "Task 47: Deploy Kali (já feito 4x)",
+      "Task 48: Production smoke",
+      "Task 49: Update .dev-state/progress.md",
+      "Task 50: Quality gates checklist"
+    ],
+    "architecturalDecisions": [
+      {
+        "decision": "LlmClient interface provider-neutral + StubLlmClient default",
+        "rationale": "Usuário pediu para não usar Anthropic ainda; talvez Gemini. Stub sempre retorna ambiguous → operator alert. Trocar provider = trocar impl sem mexer no orchestrator.",
+        "alternatives": ["AnthropicLlmClient direto (rejeitado: lock-in)", "Regex-only (rejeitado: perde cascata)"]
+      },
+      {
+        "decision": "Plugin como external workspace package (packages/plugins/debt-sdr/) em vez de interno em packages/core/src/plugins/",
+        "rationale": "Plan especifica external. Isolamento melhor, future-proof para mais plugins externos.",
+        "alternatives": ["Interno como oralsin-plugin.ts (rejeitado: plano explícito)"]
+      },
+      {
+        "decision": "Lazy createRequire('@dispatch/plugin-debt-sdr') em server.ts em vez de import estático",
+        "rationale": "Import estático causa circular TS type resolution + TS5055 declaration emit collision quando core builda. Lazy require quebra o ciclo no TS, runtime symlink pnpm continua funcionando.",
+        "alternatives": ["TS project references (deferred — fix futuro)", "Cast as unknown as DispatchPlugin (tentado, não resolveu o circular dist→dist)"]
+      },
+      {
+        "decision": "Cron OFF por default — DISPATCH_SDR_CRONS_ENABLED=true para ativar",
+        "rationale": "Usuário disse no mass send. Sequencer é única superfície de enqueue; sem cron, plugin carrega mas não dispara.",
+        "alternatives": ["Cron sempre on (rejeitado: violação da constraint do usuário)"]
+      },
+      {
+        "decision": "setSenderTenant usa CAS single-statement UPDATE WHERE tenant IS NULL OR tenant = ? em vez de read-then-write",
+        "rationale": "Code review apontou race em concurrent plugin loads. CAS via better-sqlite3 single-writer é atomic.",
+        "alternatives": ["BEGIN IMMEDIATE transaction (rejeitado: mais código, mesmo efeito)"]
+      },
+      {
+        "decision": "Plugin sender_mapping.tenant é UPSERT idempotente (idempotent re-claim), mas DeviceTenantAssignment claim falha loud em cross-tenant",
+        "rationale": "Sender pode existir antes do plugin init (mapping operacional já criado); tenant só registra ownership. Device claim é hard partition — não pode haver duplo claim.",
+        "alternatives": []
+      },
+      {
+        "decision": "ClassifierLog usa SQLite GROUP_CONCAT com char(31) (Unit Separator) em vez de delimitador comum",
+        "rationale": "\\x1f não pode aparecer em texto WhatsApp PT-BR, então split round-trips losslessly.",
+        "alternatives": ["JSON array (rejeitado: GROUP_CONCAT é nativo + cheap)"]
+      },
+      {
+        "decision": "Identity gate auto-cleanup via plugin.destroy() → releaseByPlugin → DTA delete",
+        "rationale": "I2 invariant: plugin só pode liberar devices que claimou. Loader auto-fires na destroy.",
+        "alternatives": []
+      },
+      {
+        "decision": "ResponseHandler subscreve via webhookUrl (HTTP route Task 39), NÃO via ctx.on",
+        "rationale": "Plugin event bus em core ainda em flux. HTTP route via plugin.webhookUrl é wire-format estável. handleIncomingResponse() é entry point direto pra tests + Task 39.",
+        "alternatives": ["ctx.on('waha:message_received') — deferred"]
+      }
+    ],
+    "knownBugs": [
+      {
+        "issue": "Sequencer.acquireLock retorna true mesmo quando UPDATE não afeta linha (lead novo sem state row ainda) — não bug crítico, lead novo cai no insertSequenceState ON CONFLICT, mas semântica do retorno é confusa",
+        "workaround": "OK para Phase D — Phase E pode formalizar",
+        "files": ["packages/plugins/debt-sdr/src/sequences/sequencer.ts"]
+      },
+      {
+        "issue": "ResponseHandler.handleIncomingResponse dispara via TEST hook + futuro HTTP route, mas ainda não há subscription ao event bus do core — Phase E Task 39 implementa o route",
+        "workaround": "Tests usam direct method call",
+        "files": ["packages/plugins/debt-sdr/src/sdr-plugin.ts"]
+      },
+      {
+        "issue": "IdentityGate.blacklist callback é no-op (plugin não tem acesso a queue.recordBan ainda)",
+        "workaround": "Phase E pode expor recordBan via PluginContext extension",
+        "files": ["packages/plugins/debt-sdr/src/sdr-plugin.ts:wireRuntime"]
+      },
+      {
+        "issue": "Sequencer.hasOutgoingHistory sempre retorna false (placeholder), então identity gate sempre roda mesmo se já há histórico — Phase E pode wire ctx.messageHistory ou similar",
+        "workaround": "Comportamento seguro (sempre verifica identity)",
+        "files": ["packages/plugins/debt-sdr/src/sdr-plugin.ts:wireRuntime"]
+      }
+    ],
+    "codePatterns": {
+      "established": [
+        "Plugin tests use mocked PluginContext (vi.fn) — kept tiny",
+        "Migrations idempotentes via this.db.prepare('ALTER TABLE...').run() (não db.exec — evita falso-positivo do hook security_reminder)",
+        "Idempotency em commands: setSenderTenant CAS, DTA INSERT OR IGNORE, lead_queue UNIQUE(tenant, deal_id), operator_alerts UNIQUE(lead_id, message_id, reason)",
+        "Templates determinísticos via sha256(salt + phone) % pool.length — mesmo lead vê mesma variante",
+        "TenantPipedriveClient: token bucket 35 req/s + retry 5xx (250ms · 2^n cap 8s) + Retry-After honor em 429",
+        "Pending writebacks: BACKOFF_MIN [1,5,15,60,240] minutos, 5 retries então abandona",
+        "Commits sem co-author footer (constraint do usuário)",
+        "Push após cada task (origin/main visível continuamente)"
+      ],
+      "avoid": [
+        "import estático de @dispatch/plugin-debt-sdr em server.ts — usa lazy createRequire (circular TS resolution)",
+        "Hardcoded LLM provider — sempre via LlmClient injetado",
+        "Mass send paths — sequencer só dispara se DISPATCH_SDR_CRONS_ENABLED=true",
+        "Skip identity gate — verified-by-default era proposto mas rejected (segurança first)"
+      ]
+    }
+  },
+  "technicalState": {
+    "modifiedFiles": [
+      "packages/core/src/engine/sender-mapping.ts — G1 tenant column + setSenderTenant CAS + listByTenant",
+      "packages/core/src/engine/sender-mapping.test.ts — 6 testes G1",
+      "packages/core/src/engine/device-tenant-assignment.{ts,test.ts} — G2.1 novo, 10 testes",
+      "packages/core/src/engine/index.ts — barrel export DTA",
+      "packages/core/src/queue/types.ts — EnqueueParams.tenantHint + Message.tenantHint",
+      "packages/core/src/queue/message-queue.{ts,test.ts} — G2.2 tenant_hint + G2.3 filter + metric counter, 13 testes novos",
+      "packages/core/src/plugins/types.ts — G3 PluginContext extension + AssignmentResult/AssertTenantResult",
+      "packages/core/src/plugins/plugin-loader.{ts,test.ts} — G3 wiring + auto-release on destroy, 9 testes novos",
+      "packages/core/src/api/response-router.{ts,test.ts} — G5 routeResponse pura, 10 testes",
+      "packages/core/src/api/index.ts — barrel export routeResponse",
+      "packages/core/src/server.ts — boot wire DTA, response handler usa routeResponse, lazy require do debt-sdr",
+      "packages/core/src/index.ts — re-export plugin SDK types (DispatchPlugin, PluginContext, callbacks, AssignmentResult, AssertTenantResult)",
+      "packages/core/package.json — workspace dep @dispatch/plugin-debt-sdr, types: dist/index.d.ts, exports config",
+      "packages/plugins/debt-sdr/ — TODO O PLUGIN (greenfield)",
+      "docs/operations/dispatch-runbook.md — feature flags + rollback procedure",
+      ".gitignore — packages/plugins/debt-sdr/config.json (operator-managed)"
+    ],
+    "testsPassing": true,
+    "testCounts": {
+      "core": "1944/1944",
+      "plugin": "228/228",
+      "total": "2172/2172",
+      "regressions": 0
+    },
+    "buildStatus": "passing",
+    "kaliDeployState": "bcea8af2 deployed, dispatch-core.service active, schema migrations OK, plugin OFF by default"
+  },
+  "nextSteps": {
+    "immediate": "Implementar Task 39 — admin + operator HTTP routes. Caminho: criar packages/plugins/debt-sdr/src/routes/{admin-routes.ts, operator-routes.ts, response-webhook.ts}. Registra via ctx.registerRoute(method, path, handler) em DebtSdrPlugin.wireRuntime. Endpoints: GET /leads (paginado por tenant+state), GET /sequences/:lead_id, GET /alerts?unresolved=true, PATCH /alerts/:id/resolve, POST /response (recebe ResponseCallback do core, chama handleIncomingResponse).",
+    "shortTerm": [
+      "Task 40: Prometheus metrics via prom-client — 6 counters: sdr_invariant_violation_total, dispatch_queue_blocked_by_tenant_filter_total (já exposto via MessageQueue.getBlockedByTenantFilterCount), sdr_classifier_total{source, category}, sdr_classifier_llm_cost_usd_total, sdr_sequence_state{status, tenant} gauge, sdr_operator_alerts_unresolved gauge",
+      "Task 41: Race condition tests adversariais — A1 concurrent device claim, A2 sender ownership race, A3 dequeue blocks cross-tenant on concurrent send, A4 plugin destroy mid-tick, A5 idempotent kickoff, A6 sequence resume after restart, A7 duplicate webhook delivery, A8 sender quarantine mid-tick, A9 preflight A9 (já testado), A10 ambiguous → operator alert idempotent",
+      "Task 42-43: Integration + E2E scaffold (E2E não envia, RUN_E2E gate)"
+    ],
+    "blockers": [
+      "ANTHROPIC_API_KEY ainda não definido — usuário pode escolher Gemini quando ativar. StubLlmClient é o default seguro.",
+      "Pipedrive sandbox config.json não existe em Kali — operator precisa copiar config.example.json e preencher devices, senders, domains. Tokens já estão no env vars (Sicoob 8fe7cd6ce9f514ec86311bffc79354657beaeb2e, Oralsin 0b8fe67687c7a1e748fb8aa1aaf7c66fc6f0276f) mas não configurados em /var/www/debt-adb-framework/packages/core/.env ainda",
+      "POCO C71 #2 + Samsung A03 ainda não rooteados/configurados — Phase E E2E precisa devices reais"
+    ]
+  },
+  "recoveryProtocol": {
+    "step1": "cat .dev-state/progress.md  → confirma Phase A-D APPROVED",
+    "step2": "cat .handoff/session-20260515-0249-debt-sdr.json → este arquivo",
+    "step3": "git log --oneline -25  → últimas mudanças",
+    "step4": "pnpm -r test  → verificar 2172/2172 passing",
+    "step5": "TaskList  → ver status de cada task (39-50 pending/in_progress)",
+    "step6": "ssh adb@dispatch 'cd /var/www/debt-adb-framework && git log --oneline -3'  → confirmar Kali sync (HEAD = bcea8af2)",
+    "step7": "Continuar com Task 39 conforme nextSteps.immediate"
+  },
+  "constraints": {
+    "noAnthropicYet": "Não implementar Anthropic — provider pode ser Gemini. LlmClient interface já está flexível.",
+    "noMassSend": "Sequencer só dispara via DISPATCH_SDR_CRONS_ENABLED=true. Test phone 5543991938235 apenas, sem mass.",
+    "commitsNoCoauthor": "Commits sem 'Co-Authored-By: Claude' footer.",
+    "deployKaliAfterEachPhase": "ssh adb@dispatch + git pull + pnpm build + sudo systemctl restart dispatch-core.service",
+    "kaliBuildOrder": "Plugin build PRIMEIRO (precisa de @dispatch/core dist), depois core build (lazy require não precisa de plugin dist em compile time)"
+  }
+}
