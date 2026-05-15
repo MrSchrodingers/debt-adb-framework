@@ -1169,6 +1169,59 @@ describe('SendEngine', () => {
       expect(dismissed).toBe(0)
     })
 
+    it('tapSendButton uses w4b namespace resource-id when present', async () => {
+      const searchEngine = new SendEngine(mockAdb, queue, emitter)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.spyOn(searchEngine as any, 'delay').mockResolvedValue(undefined)
+
+      const W4B_CONVO_WITH_SEND = `<hierarchy>
+  <node resource-id="com.whatsapp.w4b:id/entry" text="msg" />
+  <node resource-id="com.whatsapp.w4b:id/send" class="android.widget.ImageButton" content-desc="Enviar" bounds="[613,1397][709,1459]" />
+</hierarchy>`
+
+      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
+      shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('uiautomator dump')) return ''
+        if (cmd.includes('cat /sdcard/dispatch-ui.xml')) return W4B_CONVO_WITH_SEND
+        return ''
+      })
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (searchEngine as any).tapSendButton('device-1', 'com.whatsapp.w4b')
+
+      const calls = (shellMock.mock.calls as unknown[][]).map((c) => c[1] as string)
+      // bounds center: (613+709)/2=661, (1397+1459)/2=1428.
+      // sendeventTap falls back to `input tap` when touchscreen not detected.
+      expect(calls.some((cmd) => cmd === 'input tap 661 1428')).toBe(true)
+      // Critical: legacy keyevent-66 fallback (only inserts newline) MUST NOT fire.
+      expect(calls.some((cmd) => cmd === 'input keyevent 66')).toBe(false)
+    })
+
+    it('tapSendButton content-desc fallback works on unknown namespace', async () => {
+      const searchEngine = new SendEngine(mockAdb, queue, emitter)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.spyOn(searchEngine as any, 'delay').mockResolvedValue(undefined)
+
+      const FUTURE_LAYOUT = `<hierarchy>
+  <node resource-id="com.whatsapp.future:id/something_else" content-desc="Enviar" bounds="[100,200][300,400]" />
+</hierarchy>`
+
+      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
+      shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('uiautomator dump')) return ''
+        if (cmd.includes('cat /sdcard/dispatch-ui.xml')) return FUTURE_LAYOUT
+        return ''
+      })
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (searchEngine as any).tapSendButton('device-1', 'com.whatsapp.w4b')
+
+      const calls = (shellMock.mock.calls as unknown[][]).map((c) => c[1] as string)
+      // bounds center: (100+300)/2=200, (200+400)/2=300
+      expect(calls.some((cmd) => cmd === 'input tap 200 300')).toBe(true)
+      expect(calls.some((cmd) => cmd === 'input keyevent 66')).toBe(false)
+    })
+
     it('openViaSearch on w4b namespace completes without bouncing through recovery', async () => {
       const searchEngine = new SendEngine(mockAdb, queue, emitter)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
