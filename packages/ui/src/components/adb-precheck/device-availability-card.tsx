@@ -14,7 +14,32 @@ interface DeviceAvailability {
 export interface DeviceEnrichment {
   serial: string
   status?: string
-  accounts: Array<{ phoneNumber: string; packageName: string; profileId: number }>
+  brand?: string
+  model?: string
+  /** WAHA-mapped accounts (may be empty). NOT required for ADB precheck —
+   *  the probe uses `am start wa.me/{phone}` which only needs WhatsApp
+   *  installed + running, never a logged-in session. */
+  accounts: Array<{ phoneNumber: string | null; packageName: string; profileId: number }>
+}
+
+const MODEL_FRIENDLY: Record<string, string> = {
+  '25028PC03G': 'POCO C71',
+  'SM-A032M': 'Samsung Galaxy A03',
+}
+
+function deviceLabel(info: DeviceEnrichment | undefined, fallbackSerial: string): string {
+  if (!info) return shortSerial(fallbackSerial)
+  const friendly = info.model ? MODEL_FRIENDLY[info.model] : undefined
+  if (friendly) return friendly
+  if (info.brand && info.model) return `${info.brand} ${info.model}`
+  if (info.model) return info.model
+  return shortSerial(fallbackSerial)
+}
+
+function primaryAccountPhone(info: DeviceEnrichment | undefined): string | null {
+  if (!info?.accounts) return null
+  const withPhone = info.accounts.find((a) => a.phoneNumber)
+  return withPhone?.phoneNumber ?? null
 }
 
 const TENANT_TONE: Record<string, string> = {
@@ -99,8 +124,8 @@ export function DeviceAvailabilityCard({
         const isSelected = selected === d.serial
         const tone = d.tenant ? TENANT_TONE[d.tenant] ?? 'text-rose-300' : 'text-rose-300'
         const info = enrichBySerial.get(d.serial)
-        const primaryPhone = info?.accounts?.[0]?.phoneNumber
-        const secondaryCount = (info?.accounts?.length ?? 0) - 1
+        const label = deviceLabel(info, d.serial)
+        const phone = primaryAccountPhone(info)
         const offline = info?.status && info.status !== 'online'
         const since = relativeSince(d.since)
 
@@ -123,9 +148,7 @@ export function DeviceAvailabilityCard({
                 ? `Ocupado por ${d.tenant} (job ${d.job_id}) há ${since}`
                 : offline
                   ? `Device offline (${info?.status})`
-                  : primaryPhone
-                    ? `${primaryPhone} · ${d.serial}`
-                    : d.serial
+                  : `${label} · serial ${d.serial}${phone ? ` · ${phone}` : ''}`
             }
           >
             <div className="flex items-center gap-2 min-w-0 flex-1 text-left">
@@ -135,22 +158,21 @@ export function DeviceAvailabilityCard({
                 <Smartphone className="h-3.5 w-3.5 text-zinc-400 flex-shrink-0" />
               )}
               <div className="flex flex-col min-w-0">
-                <span className="text-zinc-100 truncate">
-                  {primaryPhone ? formatPhone(primaryPhone) : 'sem número mapeado'}
-                  {secondaryCount > 0 ? (
-                    <span className="text-zinc-500 ml-1">(+{secondaryCount})</span>
-                  ) : null}
-                </span>
+                <span className="text-zinc-100 truncate">{label}</span>
                 <span className="font-mono text-[10px] text-zinc-500 truncate">
                   {shortSerial(d.serial)}
+                  {phone ? <span className="ml-2 font-sans text-zinc-400">{formatPhone(phone)}</span> : null}
                   {offline ? ` · ${info?.status}` : ''}
                 </span>
               </div>
             </div>
             {d.available && !offline ? (
-              <span className="flex items-center gap-1 text-emerald-300 flex-shrink-0">
-                <CheckCircle2 className="h-3.5 w-3.5" />
-                Livre
+              <span className="flex flex-col items-end gap-0.5 text-emerald-300 flex-shrink-0">
+                <span className="flex items-center gap-1">
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  Pronto
+                </span>
+                <span className="text-[10px] opacity-60">probe ADB</span>
               </span>
             ) : !d.available ? (
               <span className={`flex flex-col items-end gap-0.5 ${tone} flex-shrink-0`}>

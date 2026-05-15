@@ -774,7 +774,8 @@ function CoverageMetric({
 // ── New Scan ───────────────────────────────────────────────────────────────
 
 interface DeviceAccount {
-  phoneNumber: string
+  /** Pode ser null — WAHA-mapping nao e necessario pra ADB precheck. */
+  phoneNumber: string | null
   packageName: string
   profileId: number
 }
@@ -782,6 +783,8 @@ interface DeviceAccount {
 interface DeviceOption {
   serial: string
   status?: string
+  brand?: string
+  model?: string
   /** Mapped accounts (phoneNumber !== null). Primary account is the first one. */
   accounts: DeviceAccount[]
 }
@@ -811,7 +814,7 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
       try {
         const r = await fetch(`${CORE_URL}/api/v1/monitor/devices`, { headers: authHeaders() })
         if (!r.ok) return
-        const list = (await r.json()) as Array<{ serial: string; status?: string }>
+        const list = (await r.json()) as Array<{ serial: string; status?: string; brand?: string; model?: string }>
         const opts: DeviceOption[] = await Promise.all(
           list.map(async (d) => {
             try {
@@ -819,30 +822,29 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
                 `${CORE_URL}/api/v1/monitor/devices/${encodeURIComponent(d.serial)}/accounts`,
                 { headers: authHeaders() },
               )
-              if (!a.ok) return { serial: d.serial, status: d.status, accounts: [] }
+              if (!a.ok) return { serial: d.serial, status: d.status, brand: d.brand, model: d.model, accounts: [] }
               const raw = (await a.json()) as Array<{
                 phoneNumber: string | null
                 packageName: string
                 profileId: number
                 stale?: boolean
               }>
-              // Only keep entries with a real number AND fresh data —
-              // empty phoneNumber = WA present but unmapped; stale =
-              // older than 7 days, likely outdated since the previous
-              // scan. Either way, we can't route a probe through them.
+              // ADB precheck nao depende de numero WAHA mapeado — o probe
+              // usa `am start wa.me/{phone}` que so precisa do WhatsApp
+              // instalado+rodando, nao de uma sessao logada. Logo, aqui
+              // mantemos entries mesmo sem phoneNumber (apenas filtramos
+              // stale > 7 dias). O <select> de sender (opcional) ignora
+              // accounts sem phoneNumber automaticamente.
               const accounts: DeviceAccount[] = raw
-                .filter(
-                  (x): x is { phoneNumber: string; packageName: string; profileId: number; stale?: boolean } =>
-                    Boolean(x.phoneNumber) && !x.stale,
-                )
+                .filter((x) => !x.stale)
                 .map((x) => ({
                   phoneNumber: x.phoneNumber,
                   packageName: x.packageName,
                   profileId: x.profileId,
                 }))
-              return { serial: d.serial, status: d.status, accounts }
+              return { serial: d.serial, status: d.status, brand: d.brand, model: d.model, accounts }
             } catch {
-              return { serial: d.serial, status: d.status, accounts: [] }
+              return { serial: d.serial, status: d.status, brand: d.brand, model: d.model, accounts: [] }
             }
           }),
         )
@@ -867,7 +869,11 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
   }, [deviceSerial, devices, wahaSession])
 
   const selectedDevice = devices.find((d) => d.serial === deviceSerial) ?? null
-  const availableAccounts = selectedDevice?.accounts ?? []
+  // WAHA-session select ignora accounts sem phoneNumber — sem numero logado
+  // o sender via WAHA nao roda, mas o probe ADB (puro) ainda funciona.
+  const availableAccounts = (selectedDevice?.accounts ?? []).filter(
+    (a): a is DeviceAccount & { phoneNumber: string } => Boolean(a.phoneNumber),
+  )
   // Per-job Pipedrive opt-in. Default ON — operators can flip it OFF for
   // dry-run scans that should not pollute the CRM.
   const [pipedriveEnabled, setPipedriveEnabled] = useState(true)
@@ -993,11 +999,11 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
       </Section>
 
       <Section
-        title="Device de probe"
+        title="Device de probe (ADB puro)"
         description={
           devicesLoading
             ? 'Carregando dispositivos conectados…'
-            : `Clique no telefone que executa a verificação ADB. ${devices.length} conectado${devices.length === 1 ? '' : 's'}. Atualiza busy/free a cada 5s. Vazio = default do plugin.`
+            : `Clique no aparelho que executa o probe ADB (am start wa.me/{phone} → UI dump → classifier). ${devices.length} conectado${devices.length === 1 ? '' : 's'}. WhatsApp instalado+rodando basta — nao precisa de numero logado / sessao WAHA. Status atualiza a cada 5s. Vazio = default do plugin.`
         }
       >
         <DeviceAvailabilityCard
@@ -1005,21 +1011,16 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
           onSelect={setDeviceSerial}
           enrichment={devices}
         />
-        {deviceSerial ? (
+        {deviceSerial && availableAccounts.length > 0 ? (
           <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
             <Field
-              label="Número do sender (WAHA session)"
-              hint={
-                availableAccounts.length === 0
-                  ? 'nenhum número mapeado neste device'
-                  : `${availableAccounts.length} mapeado${availableAccounts.length > 1 ? 's' : ''} · vazio = default do plugin`
-              }
+              label="Sender WAHA (opcional — só relevante se quiser correlacionar com sessão específica)"
+              hint={`${availableAccounts.length} sessão${availableAccounts.length > 1 ? 'ões' : ''} mapeada${availableAccounts.length > 1 ? 's' : ''} · vazio = default do plugin · não bloqueia ADB probe`}
             >
               <select
                 value={wahaSession}
                 onChange={(e) => setWahaSession(e.target.value)}
-                disabled={availableAccounts.length === 0}
-                className={`${inputCls} disabled:opacity-60`}
+                className={`${inputCls}`}
               >
                 <option value="">— usar default do plugin —</option>
                 {availableAccounts.map((a) => (
