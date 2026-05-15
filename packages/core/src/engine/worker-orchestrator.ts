@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import type { MessageQueue } from '../queue/index.js'
 import type { SendEngine } from './send-engine.js'
+import { PostSendValidationError } from './send-engine.js'
 import type { AdbBridge } from '../adb/index.js'
 import type { DispatchEmitter } from '../events/index.js'
 import type { SenderMapping } from './sender-mapping.js'
@@ -179,6 +180,30 @@ export class WorkerOrchestrator {
           attempts: message.attempts + 1,
           senderNumber: message.senderNumber ?? undefined,
         })
+        return false
+      }
+
+      // Post-send validation failure: the UI dump showed the body is still
+      // sitting in the chat input field (or a dialog blocked send). Treat
+      // as a real ADB failure but SKIP the WAHA fallback — if the validation
+      // was a false negative, WAHA would deliver a duplicate.
+      if (adbErr instanceof PostSendValidationError) {
+        const totalAttempts = message.attempts + 1
+        logger.warn(
+          { messageId: message.id, validationReason: adbErr.validationReason, attempts: totalAttempts, maxRetries: message.maxRetries },
+          'Worker: post_send_validation failed — skipping WAHA fallback, will retry via ADB',
+        )
+        if (totalAttempts >= message.maxRetries) {
+          queue.markPermanentlyFailed(message.id, totalAttempts)
+          emitter.emit('message:failed', {
+            id: message.id,
+            error: `post_send_validation failed after ${message.maxRetries} attempts: ${adbErr.validationReason}`,
+            attempts: totalAttempts,
+            senderNumber: message.senderNumber ?? undefined,
+          })
+        } else {
+          queue.requeueForRetry(message.id)
+        }
         return false
       }
 
