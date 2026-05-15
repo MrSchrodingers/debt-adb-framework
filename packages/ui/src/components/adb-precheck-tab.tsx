@@ -326,12 +326,19 @@ function OverviewPanel({ onStartScan }: { onStartScan: () => void }) {
     ? Math.round((stats.deals_with_valid / stats.deals_scanned) * 100)
     : null
 
-  if (stats.deals_scanned === 0) {
+  // Raw tenants (sicoob/oralsin) can show pool + estimated phones derived
+  // from /precheck-raw/deals/aggregate even before the first scan — those
+  // numbers come straight from Pipeboard, no Dispatch state required.
+  // Only show the empty-state when scanned=0 AND no pool data is available
+  // (true for adb pre-first-scan or when router is unreachable).
+  const hasPoolPreview = (global?.pool?.deals_total ?? null) !== null && (global?.pool?.deals_total ?? 0) > 0
+  if (stats.deals_scanned === 0 && !hasPoolPreview) {
+    const tenantLabel = tenant?.label ?? 'ADB/Debt'
     return (
       <EmptyState
         icon={FolderSearch}
         title="Nenhuma consulta scanned ainda"
-        description="Rode seu primeiro scan para validar telefones WhatsApp contra o pool de leads do tenant_adb."
+        description={`Rode seu primeiro scan para validar telefones WhatsApp contra o pool de leads do ${tenantLabel}.`}
         action={
           <AccentButton accent={ACCENT} onClick={onStartScan} icon={Play}>
             Iniciar primeiro scan
