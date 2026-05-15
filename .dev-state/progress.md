@@ -1,15 +1,15 @@
 # Development Progress — DEBT ADB Framework
 
-> **Last updated**: 2026-05-15T11:43:00-03:00
-> **Current phase**: DEBT-SDR PLUGIN — Phase A+B+C+D+E COMPLETE (45/50 tasks, 90%) — only deploy steps remaining
+> **Last updated**: 2026-05-15T11:53:00-03:00
+> **Current phase**: DEBT-SDR PLUGIN — Phase A+B+C+D+E COMPLETE (50/50 tasks, 100%) — production deploy done, plugin OFF
 >
 > ## DEBT-SDR PLUGIN STATUS
 >
 > - **Spec**: `docs/superpowers/specs/2026-05-14-debt-sdr-plugin-design.md`
 > - **Plan**: `docs/superpowers/plans/2026-05-14-debt-sdr-plugin-plan.md` (50 tasks, 5 phases)
-> - **Branch**: `main` (HEAD `49336638`)
+> - **Branch**: `main` (HEAD `9c651666`)
 > - **Tests**: 1944 core + 271 plugin (+4 skipped E2E) = 2215 passing, 0 regressions
-> - **Kali prod**: deployed (HEAD bcea8af2 from Phase D), `dispatch-core.service` active, schema migrations OK, plugin OFF by default. Phase E deploy pending Tasks 47/48.
+> - **Kali prod**: deployed HEAD `9c65166`, `dispatch-core.service` active (PID 64671, 126MB), all 7 SDR metrics visible at /metrics, plugin OFF (`DISPATCH_PLUGINS` does not include `debt-sdr`)
 > - **Runbook**: `docs/operations/sdr-runbook.md`
 > - **Handoff**: `.handoff/session-20260515-0249-debt-sdr.json`
 >
@@ -18,10 +18,12 @@
 > - **Phase B (Tasks 11-17) ✅** — plugin scaffold + Zod config validator + SDR migrations 6 tables + init flow + destroy + server boot registration + smoke
 > - **Phase C (Tasks 18-26) ✅** — regex classifier (6 categories) + provider-neutral LlmClient + StubLlmClient + cascade orchestrator + audit log + identity gate templates + IdentityGate FSM + OperatorAlerts
 > - **Phase D (Tasks 27-38) ✅** — TenantPipedriveClient + lead extractor + LeadPuller + sequences (oralsin/sicoob cold-v1) + ThrottleGate + Sequencer FSM + ResponseHandler + PendingWritebacks + wire crons (OFF by default via DISPATCH_SDR_CRONS_ENABLED)
-> - **Phase E (Tasks 39-46) ✅** — admin+operator routes (11 endpoints, 17 tests) + Prometheus metrics (7 instruments on core registry) + race-condition tests A1-A10 + 12 integration tests + E2E scaffold (RUN_E2E gated) + full local pass + sdr-runbook.md
+> - **Phase E (Tasks 39-50) ✅** — admin+operator routes (11 endpoints, 17 tests) + Prometheus metrics (7 instruments on core registry) + race-condition tests A1-A10 + 12 integration tests + E2E scaffold (RUN_E2E gated) + full local pass + sdr-runbook.md + Kali deploy + production smoke + progress.md + quality gates
 >
-> ### Phase E remaining (Tasks 47-48, 50)
-> Task 47 deploy Kali, Task 48 production smoke, Task 50 quality-gates checklist.
+> ### Production smoke results (2026-05-15T11:53)
+> - `GET /api/v1/health` → `{"status":"ok"}` (via 127.0.0.1 and via https://dispatch.tail106aa2.ts.net)
+> - `GET /metrics` (X-API-Key auth) → all 7 SDR metrics present with HELP+TYPE: `sdr_invariant_violation_total`, `dispatch_queue_blocked_by_tenant_filter_total`, `dispatch_response_dropped_tenant_mismatch_total`, `sdr_classifier_total`, `sdr_classifier_latency_ms`, `sdr_sequence_leads`, `sdr_classifier_llm_cost_usd_total`
+> - `dispatch-core.service` active, oralsin + adb-precheck loaded; `debt-sdr` not in `DISPATCH_PLUGINS` (intentional — plugin OFF until operator opts in per runbook)
 >
 > ### Constraints active
 > - **No Anthropic yet** — provider TBD (maybe Gemini). StubLlmClient default.
