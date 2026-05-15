@@ -484,4 +484,54 @@ describe('MessageQueue', () => {
       }
     })
   })
+
+  // ── G2.2 (debt-sdr): tenant_hint ────────────────────────────────────────
+
+  describe('messages.tenant_hint', () => {
+    it('stores null tenant_hint by default (legacy enqueue)', () => {
+      const msg = queue.enqueue({ to: '554399000001', body: 'x', idempotencyKey: 'th-k1' })
+      expect(msg.tenantHint).toBeNull()
+    })
+
+    it('stores tenant_hint when provided', () => {
+      const msg = queue.enqueue({
+        to: '554399000002',
+        body: 'x',
+        idempotencyKey: 'th-k2',
+        tenantHint: 'oralsin-sdr',
+      })
+      expect(msg.tenantHint).toBe('oralsin-sdr')
+    })
+
+    it('returns tenant_hint in getById', () => {
+      const enqueued = queue.enqueue({
+        to: '554399000003',
+        body: 'x',
+        idempotencyKey: 'th-k3',
+        tenantHint: 'sicoob-sdr',
+      })
+      const found = queue.getById(enqueued.id)
+      expect(found!.tenantHint).toBe('sicoob-sdr')
+    })
+
+    it('enqueueBatch stores tenant_hint per item', () => {
+      const result = queue.enqueueBatch([
+        { to: '554399000010', body: 'a', idempotencyKey: 'th-b1', tenantHint: 'oralsin-sdr' },
+        { to: '554399000011', body: 'b', idempotencyKey: 'th-b2', tenantHint: 'sicoob-sdr' },
+        { to: '554399000012', body: 'c', idempotencyKey: 'th-b3' },
+      ])
+      expect(result.enqueued.map(m => m.tenantHint)).toEqual([
+        'oralsin-sdr',
+        'sicoob-sdr',
+        null,
+      ])
+    })
+
+    it('creates idx_messages_tenant_hint index', () => {
+      const indexes = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='messages'")
+        .all() as { name: string }[]
+      expect(indexes.map(i => i.name)).toContain('idx_messages_tenant_hint')
+    })
+  })
 })

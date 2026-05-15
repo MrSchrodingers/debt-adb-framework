@@ -15,6 +15,8 @@ export interface EnqueueParams {
   mediaType?: string
   mediaCaption?: string
   contactName?: string
+  /** G2.2 (debt-sdr): tenant ownership for queue routing. */
+  tenantHint?: string
 }
 
 export interface Message {
@@ -47,6 +49,7 @@ export interface Message {
   mediaUrl: string | null
   mediaType: string | null
   mediaCaption: string | null
+  tenantHint: string | null
 }
 
 export type MessageStatus =

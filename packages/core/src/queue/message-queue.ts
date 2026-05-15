@@ -146,6 +146,16 @@ export class MessageQueue {
       'CREATE INDEX IF NOT EXISTS idx_messages_screenshot_status ON messages(screenshot_status)',
     )
 
+    // G2.2 (debt-sdr): tenant_hint column for queue routing.
+    if (!msgColNames.has('tenant_hint')) {
+      this.db.prepare('ALTER TABLE messages ADD COLUMN tenant_hint TEXT').run()
+    }
+    this.db.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_messages_tenant_hint
+        ON messages(tenant_hint, status, created_at)
+        WHERE tenant_hint IS NOT NULL
+    `).run()
+
     // Task 5.4: extend blacklist with hit counter + last_hit_at
     const blCols = this.db.prepare('PRAGMA table_info(blacklist)').all() as { name: string }[]
     const blColNames = new Set(blCols.map(c => c.name))
@@ -225,8 +235,8 @@ export class MessageQueue {
         const row = this.db.prepare(`
           INSERT INTO messages (id, to_number, body, idempotency_key, priority, sender_number,
                                 plugin_name, correlation_id, senders_config, context, max_retries,
-                                media_url, media_type, media_caption)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                media_url, media_type, media_caption, tenant_hint)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           RETURNING *
         `).get(
           id,
@@ -243,6 +253,7 @@ export class MessageQueue {
           params.mediaUrl ?? null,
           params.mediaType ?? null,
           params.mediaCaption ?? null,
+          params.tenantHint ?? null,
         ) as Record<string, unknown>
         const message = this.rowToMessage(row)
         span.setAttribute('message.id', message.id)
@@ -277,8 +288,8 @@ export class MessageQueue {
         const insert = this.db.prepare(`
           INSERT OR IGNORE INTO messages (id, to_number, body, idempotency_key, priority, sender_number,
                                 plugin_name, correlation_id, senders_config, context, max_retries,
-                                media_url, media_type, media_caption)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                media_url, media_type, media_caption, tenant_hint)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         const select = this.db.prepare('SELECT * FROM messages WHERE id = ?')
         const saveContactStmt = this.db.prepare(
@@ -312,6 +323,7 @@ export class MessageQueue {
               params.mediaUrl ?? null,
               params.mediaType ?? null,
               params.mediaCaption ?? null,
+              params.tenantHint ?? null,
             )
 
             if (result.changes === 0) {
@@ -683,6 +695,7 @@ export class MessageQueue {
       mediaUrl: (row.media_url as string) ?? null,
       mediaType: (row.media_type as string) ?? null,
       mediaCaption: (row.media_caption as string) ?? null,
+      tenantHint: (row.tenant_hint as string) ?? null,
     }
   }
 
