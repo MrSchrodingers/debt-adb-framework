@@ -11,6 +11,7 @@ import { MetricsDashboard } from './components/metrics-dashboard'
 import { StatsBar } from './components/stats-bar'
 import { GlobalThrottleBar } from './components/global-throttle-bar'
 import { Sidebar } from './components/sidebar'
+import { PreferencesMenu } from './components/preferences-menu'
 import { LiveScreen } from './components/live-screen'
 import { ShellTerminal } from './components/shell-terminal'
 import { DeviceInfo } from './components/device-info'
@@ -290,8 +291,9 @@ export function App() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
             </svg>
           </button>
-          <h1 className="text-lg font-bold">Dispatch</h1>
+          <h1 className="text-lg font-bold flex-1">Dispatch</h1>
           <div className={`h-2 w-2 rounded-full ${connected ? 'bg-emerald-500' : 'bg-red-500'}`} />
+          <PreferencesMenu />
         </div>
 
         {/* Desktop header */}
@@ -306,6 +308,7 @@ export function App() {
               <span className="text-xs text-zinc-500">{connected ? 'Live' : 'Offline'}</span>
             </div>
             <span className="text-xs text-zinc-600 font-mono">{CORE_URL.replace('http://', '')}</span>
+            <PreferencesMenu />
           </div>
         </header>
 

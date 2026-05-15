@@ -2,7 +2,6 @@ import { Smartphone, Send, Users, Radio, BarChart3, FileText, X, AlertTriangle, 
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../auth/auth-context'
 import { BrandMark } from './brand-mark'
-import { PreferencesMenu } from './preferences-menu'
 
 type TabId = 'devices' | 'queue' | 'senders' | 'sessions' | 'metricas' | 'auditoria' | 'plugins' | 'contatos' | 'admin' | 'mirror' | 'fleet' | 'geo'
 
@@ -50,8 +49,8 @@ export function Sidebar({
         />
       )}
 
-      {/* Desktop sidebar — always visible, in flow */}
-      <aside className="hidden lg:flex lg:flex-col lg:w-56 lg:flex-shrink-0 bg-zinc-900/95 border-r border-zinc-800 h-screen sticky top-0">
+      {/* Desktop sidebar — always visible, fits viewport with internal scroll on nav only */}
+      <aside className="hidden lg:flex lg:flex-col lg:w-56 lg:flex-shrink-0 bg-zinc-900/95 border-r border-zinc-800 h-screen sticky top-0 overflow-hidden">
         <SidebarContent
           activeTab={activeTab}
           onTabChange={onTabChange}
@@ -125,8 +124,8 @@ function SidebarContent({
         )}
       </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 p-2 space-y-1">
+      {/* Navigation — internal scroll só aqui quando viewport curta */}
+      <nav className="flex-1 overflow-y-auto p-2 space-y-1 min-h-0">
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon
           const isActive = activeTab === item.id
@@ -134,7 +133,7 @@ function SidebarContent({
             <button
               key={item.id}
               onClick={() => onTabChange(item.id)}
-              className={`w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition min-h-[44px] ${
+              className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
                 isActive
                   ? 'bg-zinc-800 text-zinc-100'
                   : 'text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200'
@@ -149,15 +148,15 @@ function SidebarContent({
 
       {/* Alert badge */}
       {alertCount > 0 && (
-        <div className="mx-4 mb-2 flex items-center gap-2 rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2">
-          <AlertTriangle className="h-4 w-4 text-red-400" />
-          <span className="text-xs font-medium text-red-400">
+        <div className="mx-3 mb-2 flex items-center gap-2 rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-1.5 flex-shrink-0">
+          <AlertTriangle className="h-3.5 w-3.5 text-red-400 flex-shrink-0" />
+          <span className="text-xs font-medium text-red-400 truncate">
             {alertCount} {alertCount !== 1 ? t('alerts.alertPlural') : t('alerts.alert')}
           </span>
         </div>
       )}
 
-      {/* Footer — device count + logout + preferences */}
+      {/* Footer — compacto: device count + username + logout */}
       <SidebarFooter deviceCount={deviceCount} />
     </>
   )
@@ -167,25 +166,25 @@ function SidebarFooter({ deviceCount }: { deviceCount: number }) {
   const { mode, username, logout } = useAuth()
   const { t } = useTranslation()
   return (
-    <div className="border-t border-white/5 px-4 py-3 space-y-2">
-      <div className="flex items-center justify-between">
-        <span className="font-mono text-[0.65rem] uppercase tracking-[0.2em] text-white/40">
+    <div className="border-t border-white/5 px-3 py-2 flex-shrink-0 flex items-center justify-between gap-2">
+      <div className="flex flex-col min-w-0 flex-1">
+        <span className="font-mono text-[0.6rem] uppercase tracking-[0.18em] text-white/40 truncate">
           {deviceCount} device{deviceCount !== 1 ? 's' : ''}
         </span>
         {username && (
-          <span className="font-mono text-[0.65rem] text-brand-300/70 truncate max-w-[80px]">
+          <span className="font-mono text-[0.6rem] text-brand-300/70 truncate">
             {username}
           </span>
         )}
-        <PreferencesMenu />
       </div>
       {mode === 'closed' && (
         <button
           onClick={logout}
-          className="flex w-full items-center justify-center gap-2 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-xs font-medium text-white/60 transition hover:border-red-500/30 hover:bg-red-500/10 hover:text-red-200"
+          title={t('nav.logout')}
+          aria-label={t('nav.logout')}
+          className="flex-shrink-0 flex items-center justify-center rounded-lg border border-white/5 bg-white/[0.02] p-2 text-white/60 transition hover:border-red-500/30 hover:bg-red-500/10 hover:text-red-200"
         >
-          <LogOut className="h-3.5 w-3.5" />
-          {t('nav.logout')}
+          <LogOut className="h-4 w-4" />
         </button>
       )}
     </div>
