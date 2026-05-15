@@ -6,6 +6,8 @@ export interface SnapshotInput {
   state: string
   phone: string
   timestamp?: Date
+  /** Sub-directory namespace. Defaults to `'adb'` for back-compat. */
+  tenant?: string
 }
 
 export interface SnapshotWriterOpts {
@@ -27,7 +29,8 @@ export interface SnapshotWriterOpts {
  * process lifetime, not across the lifetime of the deployment.
  *
  * Filename convention: `<HHMMSS>_<phone-last4>_<state>_<dump-length>.xml`
- * inside a per-day folder `<baseDir>/<YYYY-MM-DD>/`.
+ * inside a per-day folder `<baseDir>/<tenant>/<YYYY-MM-DD>/`.
+ * `tenant` defaults to `'adb'` for backward-compatibility.
  */
 export class ProbeSnapshotWriter {
   private readonly dailyCounts = new Map<string, number>()    // YYYY-MM-DD → count
@@ -39,6 +42,7 @@ export class ProbeSnapshotWriter {
     const ts = input.timestamp ?? new Date()
     const day = ts.toISOString().slice(0, 10)
     const minute = ts.toISOString().slice(0, 16)
+    const tenant = input.tenant ?? 'adb'
 
     const dailySoFar = this.dailyCounts.get(day) ?? 0
     if (dailySoFar >= this.opts.dailyQuota) return null
@@ -46,7 +50,7 @@ export class ProbeSnapshotWriter {
     const minuteSoFar = this.minuteCounts.get(minute) ?? 0
     if (minuteSoFar >= this.opts.perMinuteCap) return null
 
-    const dir = join(this.opts.baseDir, day)
+    const dir = join(this.opts.baseDir, tenant, day)
     mkdirSync(dir, { recursive: true })
 
     const hhmmss = ts.toISOString().slice(11, 19).replace(/:/g, '')

@@ -105,6 +105,13 @@ export interface PrecheckJob {
    * (e.g. by the retry-errors-sweep). NULL for operator-initiated jobs.
    */
   parent_job_id: string | null
+  /**
+   * Tenant slug owning this job — 'adb' (default), 'sicoob', 'oralsin'.
+   * Persisted as a NOT NULL column with default 'adb' for back-compat
+   * with rows created before the multi-tenant migration. Optional on
+   * the TS type because legacy in-memory fixtures may omit it.
+   */
+  tenant?: string
 }
 
 /** Params for a new scan run. */
@@ -113,6 +120,12 @@ export interface PrecheckScanParams {
   limit?: number
   /** Only deals whose phones are older than this many days since last check. */
   recheck_after_days?: number
+  /**
+   * Which tenant this scan runs against. Determines writeback policy and read
+   * client (PipeboardRest for adb, PipeboardRawRest for sicoob/oralsin).
+   * Defaults to 'adb' for back-compat.
+   */
+  tenant?: 'adb' | 'sicoob' | 'oralsin'
   /** Filter by pasta prefix. */
   pasta_prefix?: string
   /** Filter by pipeline_nome. */

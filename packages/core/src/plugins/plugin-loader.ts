@@ -62,8 +62,16 @@ export class PluginLoader {
      * Per-device lock shared with WorkerOrchestrator. When supplied,
      * plugins receive it via PluginContext.deviceMutex so their ADB
      * intents do not race the worker's typing/send sequence.
+     *
+     * The interface mirrors PluginContext.deviceMutex (T7): plugins can
+     * inspect holder context to surface device availability without
+     * needing to take the lock themselves.
      */
-    private deviceMutex?: { acquire(deviceSerial: string): Promise<() => void> },
+    private deviceMutex?: {
+      acquire(deviceSerial: string, ctx?: { tenant: string; jobId: string }): Promise<() => void>
+      isHeld(deviceSerial: string): boolean
+      describeHolder(deviceSerial: string): { tenant: string; jobId: string; since: string } | null
+    },
     services?: PluginServicesRegistry,
     /**
      * Optional registry for plugin-contributed geographic views (Geolocalização tab).
@@ -78,6 +86,12 @@ export class PluginLoader {
      * plugin on unload/destroy.
      */
     private dta?: DeviceTenantAssignment,
+    /**
+     * T7: list of currently-connected devices, surfaced to plugins via
+     * `ctx.listConnectedDevices()` for /devices/availability. Optional —
+     * undefined in tests; handlers must degrade gracefully.
+     */
+    private listConnectedDevices?: () => Promise<Array<{ serial: string }>>,
   ) {
     this.services = services ?? new InMemoryServicesRegistry()
     this.loggerFactory = logger ?? {
@@ -389,6 +403,8 @@ export class PluginLoader {
       },
 
       deviceMutex: this.deviceMutex,
+
+      listConnectedDevices: this.listConnectedDevices,
 
       services: this.services,
 

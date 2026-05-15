@@ -25,6 +25,19 @@ export interface PipedriveActivityInsert {
   triggered_by?: string | null
   revises_row_id?: string
   http_verb?: 'POST' | 'PUT'
+  /**
+   * T23: tenant ownership for cross-tenant dedup. Defaults to 'adb' when omitted
+   * (preserves pre-T22 single-tenant behaviour byte-for-byte). The
+   * `(tenant, dedup_key)` UNIQUE INDEX enforces cross-restart idempotency.
+   */
+  tenant?: string
+  /**
+   * T23: persisted dedup key — same value the publisher uses for its in-memory
+   * Set. Optional for back-compat with pre-T23 rows (which carry NULL); the
+   * UNIQUE INDEX is partial (`WHERE dedup_key IS NOT NULL`) so historical
+   * rows do not collide.
+   */
+  dedup_key?: string
 }
 
 export interface PipedriveActivityRow {
@@ -45,6 +58,8 @@ export interface PipedriveActivityRow {
   completed_at: string | null
   manual: number
   triggered_by: string | null
+  tenant: string
+  dedup_key: string | null
 }
 
 export interface PipedriveListFilters {
@@ -135,6 +150,37 @@ export class PipedriveActivityStore {
       CREATE INDEX IF NOT EXISTS idx_pipedrive_revises
         ON pipedrive_activities(revises_row_id) WHERE revises_row_id IS NOT NULL
     `)
+
+    // Multi-tenant migration — default 'adb' preserves existing rows.
+    this.idempotentAlter(
+      'pipedrive_activities',
+      'tenant',
+      "ALTER TABLE pipedrive_activities ADD COLUMN tenant TEXT NOT NULL DEFAULT 'adb'",
+    )
+    // T23: dedup_key persists the in-memory dedup token so the UNIQUE INDEX
+    // below can enforce cross-restart idempotency. Nullable for back-compat
+    // with pre-T23 rows (which carry NULL).
+    this.idempotentAlter(
+      'pipedrive_activities',
+      'dedup_key',
+      'ALTER TABLE pipedrive_activities ADD COLUMN dedup_key TEXT',
+    )
+    // T23: partial UNIQUE INDEX on (tenant, dedup_key) — the partial predicate
+    // (`WHERE dedup_key IS NOT NULL`) lets pre-T23 rows coexist while
+    // guaranteeing every new (tenant, dedup_key) pair is published at most
+    // once, even across process restarts.
+    this.db
+      .prepare(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_pipedrive_activities_dedup_tenant '
+          + 'ON pipedrive_activities(tenant, dedup_key) WHERE dedup_key IS NOT NULL',
+      )
+      .run()
+  }
+
+  private idempotentAlter(table: string, column: string, ddl: string): void {
+    const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+    if (cols.some((c) => c.name === column)) return
+    this.db.prepare(ddl).run()
   }
 
   insertPending(data: PipedriveActivityInsert): string {
@@ -145,8 +191,9 @@ export class PipedriveActivityStore {
            id, scenario, deal_id, pasta, phone_normalized, job_id,
            pipedrive_endpoint, pipedrive_payload_json,
            pipedrive_response_status, attempts,
-           manual, triggered_by, revises_row_id, http_verb
-         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+           manual, triggered_by, revises_row_id, http_verb,
+           tenant, dedup_key
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         id,
@@ -163,8 +210,32 @@ export class PipedriveActivityStore {
         data.triggered_by ?? null,
         data.revises_row_id ?? null,
         data.http_verb ?? 'POST',
+        data.tenant ?? 'adb',
+        data.dedup_key ?? null,
       )
     return id
+  }
+
+  /**
+   * T23: look up a row by (tenant, dedup_key). Used by the publisher to bypass
+   * the in-memory `seenDedupKeys` Set after a process restart — if the row is
+   * already on disk for this tenant, the publish was already attempted (or
+   * succeeded) and must be skipped.
+   *
+   * Returns the most recently created row for the pair (the partial UNIQUE
+   * INDEX guarantees at most one row, but ORDER BY makes the contract
+   * defensive against legacy null-dedup_key rows surviving).
+   */
+  findByDedupKey(tenant: string, dedupKey: string): PipedriveActivityRow | null {
+    return (
+      (this.db
+        .prepare(
+          'SELECT * FROM pipedrive_activities '
+            + 'WHERE tenant = ? AND dedup_key = ? '
+            + 'ORDER BY created_at DESC LIMIT 1',
+        )
+        .get(tenant, dedupKey) as PipedriveActivityRow | undefined) ?? null
+    )
   }
 
   updateResult(
@@ -207,6 +278,7 @@ export class PipedriveActivityStore {
    * publisher's in-memory Set cannot enforce cross-scan idempotency).
    */
   hasRecentSuccess(params: {
+    tenant: string
     scenario: string
     deal_id: number
     pasta: string | null
@@ -217,7 +289,8 @@ export class PipedriveActivityStore {
       .prepare(`
         SELECT 1
         FROM pipedrive_activities
-        WHERE scenario = ?
+        WHERE tenant = ?
+          AND scenario = ?
           AND deal_id = ?
           AND COALESCE(pasta, '') = COALESCE(?, '')
           AND COALESCE(phone_normalized, '') = COALESCE(?, '')
@@ -226,6 +299,7 @@ export class PipedriveActivityStore {
         LIMIT 1
       `)
       .get(
+        params.tenant,
         params.scenario,
         params.deal_id,
         params.pasta,
@@ -244,19 +318,20 @@ export class PipedriveActivityStore {
    * Returns null when no successful note has been published yet, OR when the
    * previous note was orphaned (e.g. deleted upstream by an operator).
    */
-  findCurrentPastaNote(pasta: string): { row_id: string; pipedrive_response_id: number; created_at: string } | null {
+  findCurrentPastaNote(pasta: string, tenant: string): { row_id: string; pipedrive_response_id: number; created_at: string } | null {
     const row = this.db
       .prepare(`
         SELECT id AS row_id, pipedrive_response_id, created_at
         FROM pipedrive_activities
-        WHERE scenario = 'pasta_summary'
+        WHERE tenant = ?
+          AND scenario = 'pasta_summary'
           AND pasta = ?
           AND pipedrive_response_status = 'success'
           AND pipedrive_response_id IS NOT NULL
         ORDER BY created_at DESC, id DESC
         LIMIT 1
       `)
-      .get(pasta) as
+      .get(tenant, pasta) as
       | { row_id: string; pipedrive_response_id: number; created_at: string }
       | undefined
     return row ?? null

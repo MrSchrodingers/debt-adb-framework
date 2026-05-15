@@ -36,9 +36,21 @@ import {
   SubTabBar,
 } from './plugin-ui'
 import { PipedriveView } from './adb-precheck/pipedrive-view'
+import { TenantProvider, useTenant, type TenantSummary } from './adb-precheck/tenant-context'
+import { TenantSelector } from './adb-precheck/tenant-selector'
+import { PipelineStagePicker } from './adb-precheck/pipeline-stage-picker'
 
 const PLUGIN_BASE = `${CORE_URL}/api/v1/plugins/adb-precheck`
 const ACCENT = 'sky' as const
+
+// Helper: appends ?tenant=<id> (or &tenant=<id>) to any plugin URL when a
+// non-null tenant is selected. Global mode (tenant === null) omits the
+// param so the backend falls back to its legacy default ('adb').
+function appendTenant(url: string, tenant: TenantSummary | null): string {
+  if (!tenant) return url
+  const sep = url.includes('?') ? '&' : '?'
+  return `${url}${sep}tenant=${encodeURIComponent(tenant.id)}`
+}
 
 type SubTab = 'overview' | 'scan' | 'deals' | 'jobs' | 'pipedrive'
 type PluginStatus = 'active' | 'inactive' | 'checking' | 'error'
@@ -163,6 +175,15 @@ interface PhoneResult {
 // ── Root component ─────────────────────────────────────────────────────────
 
 export function AdbPrecheckTab() {
+  return (
+    <TenantProvider>
+      <AdbPrecheckTabInner />
+    </TenantProvider>
+  )
+}
+
+function AdbPrecheckTabInner() {
+  const { tenant } = useTenant()
   const [activeSubTab, setActiveSubTab] = useState<SubTab>('overview')
   const [status, setStatus] = useState<PluginStatus>('checking')
   const [activeJobs, setActiveJobs] = useState(0)
@@ -170,13 +191,13 @@ export function AdbPrecheckTab() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const h = await fetch(`${PLUGIN_BASE}/health`, { headers: authHeaders() })
+      const h = await fetch(appendTenant(`${PLUGIN_BASE}/health`, tenant), { headers: authHeaders() })
       if (!h.ok) { setStatus(h.status === 404 ? 'inactive' : 'error'); return }
       const body = await h.json() as { ok?: boolean }
       setStatus(body.ok ? 'active' : 'error')
       const [jobs, stats] = await Promise.all([
-        fetch(`${PLUGIN_BASE}/jobs?limit=30`, { headers: authHeaders() }).then((r) => r.ok ? r.json() : []),
-        fetch(`${PLUGIN_BASE}/stats`, { headers: authHeaders() }).then((r) => r.ok ? r.json() : null),
+        fetch(appendTenant(`${PLUGIN_BASE}/jobs?limit=30`, tenant), { headers: authHeaders() }).then((r) => r.ok ? r.json() : []),
+        fetch(appendTenant(`${PLUGIN_BASE}/stats`, tenant), { headers: authHeaders() }).then((r) => r.ok ? r.json() : null),
       ])
       const arr = Array.isArray(jobs) ? jobs as PrecheckJob[] : []
       setActiveJobs(arr.filter((j) => j.status === 'running' || j.status === 'queued').length)
@@ -184,7 +205,7 @@ export function AdbPrecheckTab() {
     } catch {
       setStatus('error')
     }
-  }, [])
+  }, [tenant])
 
   useEffect(() => {
     fetchStatus()
@@ -202,9 +223,12 @@ export function AdbPrecheckTab() {
         accent={ACCENT}
         version="0.1.0"
         actions={
-          <AccentButton accent={ACCENT} variant="ghost" onClick={fetchStatus} icon={RefreshCw}>
-            Atualizar
-          </AccentButton>
+          <div className="flex items-center gap-2">
+            <TenantSelector />
+            <AccentButton accent={ACCENT} variant="ghost" onClick={fetchStatus} icon={RefreshCw}>
+              Atualizar
+            </AccentButton>
+          </div>
         }
       />
 
@@ -237,6 +261,7 @@ export function AdbPrecheckTab() {
 // ── Overview ───────────────────────────────────────────────────────────────
 
 function OverviewPanel({ onStartScan }: { onStartScan: () => void }) {
+  const { tenant } = useTenant()
   const [stats, setStats] = useState<AggregateStats | null>(null)
   const [global, setGlobal] = useState<GlobalStats | null>(null)
   const [latestJobs, setLatestJobs] = useState<PrecheckJob[]>([])
@@ -250,15 +275,15 @@ function OverviewPanel({ onStartScan }: { onStartScan: () => void }) {
   const load = useCallback(async () => {
     try {
       const [s, g, j] = await Promise.all([
-        fetch(`${PLUGIN_BASE}/stats`, { headers: authHeaders() }).then(r => r.ok ? r.json() : Promise.reject(new Error(`stats HTTP ${r.status}`))),
-        fetch(`${PLUGIN_BASE}/stats/global`, { headers: authHeaders() }).then(r => r.ok ? r.json() : null),
-        fetch(`${PLUGIN_BASE}/jobs?limit=5`, { headers: authHeaders() }).then(r => r.ok ? r.json() : []),
+        fetch(appendTenant(`${PLUGIN_BASE}/stats`, tenant), { headers: authHeaders() }).then(r => r.ok ? r.json() : Promise.reject(new Error(`stats HTTP ${r.status}`))),
+        fetch(appendTenant(`${PLUGIN_BASE}/stats/global`, tenant), { headers: authHeaders() }).then(r => r.ok ? r.json() : null),
+        fetch(appendTenant(`${PLUGIN_BASE}/jobs?limit=5`, tenant), { headers: authHeaders() }).then(r => r.ok ? r.json() : []),
       ])
       setStats(s); setGlobal(g as GlobalStats | null); setLatestJobs(Array.isArray(j) ? j : []); setErr(null)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     }
-  }, [])
+  }, [tenant])
 
   useEffect(() => {
     load()
@@ -270,10 +295,12 @@ function OverviewPanel({ onStartScan }: { onStartScan: () => void }) {
     setSweepSubmitting(true); setSweepError(null)
     try {
       const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
-      const r = await fetch(`${PLUGIN_BASE}/retry-errors`, {
+      const sweepBody: Record<string, unknown> = { since_iso: since, max_deals: 200 }
+      if (tenant) sweepBody.tenant = tenant.id
+      const r = await fetch(appendTenant(`${PLUGIN_BASE}/retry-errors`, tenant), {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ since_iso: since, max_deals: 200 }),
+        body: JSON.stringify(sweepBody),
       })
       if (r.status === 409) {
         setSweepError('Pasta já em scan. Tente novamente em alguns minutos.')
@@ -443,12 +470,13 @@ function SweepConfirmModal({
 }
 
 function LocksPanel() {
+  const { tenant } = useTenant()
   const [locks, setLocks] = useState<ActiveLock[]>([])
   const [loading, setLoading] = useState(true)
 
   const fetchLocks = useCallback(async () => {
     try {
-      const r = await fetch(`${PLUGIN_BASE}/admin/locks`, { headers: authHeaders() })
+      const r = await fetch(appendTenant(`${PLUGIN_BASE}/admin/locks`, tenant), { headers: authHeaders() })
       if (!r.ok) return
       const data = await r.json() as { locks?: ActiveLock[] }
       setLocks(Array.isArray(data.locks) ? data.locks : [])
@@ -457,7 +485,7 @@ function LocksPanel() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [tenant])
 
   useEffect(() => {
     void fetchLocks()
@@ -739,6 +767,7 @@ interface DeviceOption {
 }
 
 function NewScanPanel({ onDone }: { onDone: () => void }) {
+  const { tenant } = useTenant()
   const [limit, setLimit] = useState('100')
   const [pastaPrefix, setPastaPrefix] = useState('')
   const [pipelineNome, setPipelineNome] = useState('')
@@ -747,6 +776,10 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
   const [wahaSession, setWahaSession] = useState('')
   const [devices, setDevices] = useState<DeviceOption[]>([])
   const [devicesLoading, setDevicesLoading] = useState(false)
+  // T33 — Pipeline/Stage overrides (raw mode only). Undefined falls back to tenant defaults
+  // server-side; setting either lets operators target a non-default pipeline/stage at scan time.
+  const [pipelineId, setPipelineId] = useState<number | undefined>(undefined)
+  const [stageId, setStageId] = useState<number | undefined>(undefined)
 
   // Load connected devices + their mapped WA accounts in one shot so
   // the WAHA-session picker can react instantly when the operator
@@ -829,24 +862,46 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
 
   const hasWriteback = writebackInvalid
 
+  const isRaw = tenant?.mode === 'raw'
+
   const submit = async () => {
     setSubmitting(true); setErr(null)
     try {
-      const body = {
+      const body: Record<string, unknown> = {
         limit: Number(limit) || undefined,
         pasta_prefix: pastaPrefix || undefined,
         pipeline_nome: pipelineNome || undefined,
         writeback_invalid: writebackInvalid,
         pipedrive_enabled: pipedriveEnabled,
-        hygienization_mode: hygienizationMode,
+        // T34 — raw tenants must NOT send hygienization_mode even if state is stale;
+        // backend rejects it for raw, but UI also enforces to avoid operator confusion.
+        hygienization_mode: isRaw ? false : hygienizationMode,
         device_serial: deviceSerial || undefined,
         waha_session: wahaSession || undefined,
       }
-      const r = await fetch(`${PLUGIN_BASE}/scan`, {
+      // When tenant is selected (non-null), include it in the POST body;
+      // when null (Global mode), omit so backend defaults to 'adb'.
+      // T33 — raw mode also propagates pipeline_id/stage_id overrides.
+      if (tenant) {
+        body.tenant = tenant.id
+        if (pipelineId !== undefined) body.pipeline_id = pipelineId
+        if (stageId !== undefined) body.stage_id = stageId
+      }
+      const r = await fetch(appendTenant(`${PLUGIN_BASE}/scan`, tenant), {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(body),
       })
+      // T8 backend returns 409 device_busy {error, serial, tenant, job_id, since}
+      // when the requested device is held by another tenant — surface an operator-friendly
+      // message rather than a raw HTTP status.
+      if (r.status === 409) {
+        const j = (await r.json().catch(() => ({}))) as { error?: string; tenant?: string; job_id?: string }
+        const who = j.tenant ?? '?'
+        const job = j.job_id ? j.job_id.slice(0, 8) : '?'
+        setErr(`Device ocupado por ${who} (job ${job}). Aguarde ou escolha outro device.`)
+        return
+      }
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       onDone()
     } catch (e) {
@@ -859,7 +914,8 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
   const handleStart = () => {
     // Hygienization confirmation supersedes the writeback confirmation:
     // the operator MUST acknowledge the global pause before anything else.
-    if (hygienizationMode) setConfirmingHygienization(true)
+    // T34 — raw tenants skip hygienization entirely (toggle is disabled, backend rejects).
+    if (!isRaw && hygienizationMode) setConfirmingHygienization(true)
     else if (hasWriteback) setConfirming(true)
     else submit()
   }
@@ -898,6 +954,22 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
             />
           </Field>
         </div>
+        {/* T33 — Pipeline/Stage ID overrides (only rendered for raw-mode tenants). */}
+        {isRaw ? (
+          <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
+            <div className="mb-2 text-xs text-zinc-400">
+              Overrides de Pipeline/Stage (raw mode) — vazio usa o default do tenant.
+            </div>
+            <PipelineStagePicker
+              pipelineId={pipelineId}
+              stageId={stageId}
+              onChange={({ pipelineId: p, stageId: s }) => {
+                setPipelineId(p)
+                setStageId(s)
+              }}
+            />
+          </div>
+        ) : null}
       </Section>
 
       <Section
@@ -1011,13 +1083,18 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
       >
         <div className="space-y-2 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4">
           <Toggle
-            checked={hygienizationMode}
+            checked={!isRaw && hygienizationMode}
             onChange={setHygienizationMode}
+            disabled={isRaw}
             label="Pausar envio prod e usar rate conservador"
-            hint="recheck_after_days será forçado para no mínimo 30; durante o scan, NENHUMA mensagem prod sai. Auto-resume ao terminar."
+            hint={
+              isRaw
+                ? 'indisponível em raw mode — tenants raw não pausam envio prod'
+                : 'recheck_after_days será forçado para no mínimo 30; durante o scan, NENHUMA mensagem prod sai. Auto-resume ao terminar.'
+            }
             icon={<CircleAlert className="h-4 w-4 text-amber-300" />}
           />
-          {hygienizationMode ? (
+          {!isRaw && hygienizationMode ? (
             <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200 flex items-start gap-2">
               <CircleAlert className="h-4 w-4 shrink-0 mt-0.5" />
               <div>
@@ -1162,15 +1239,16 @@ function ConfirmModal({
 // ── Jobs ───────────────────────────────────────────────────────────────────
 
 function JobsPanel() {
+  const { tenant } = useTenant()
   const [jobs, setJobs] = useState<PrecheckJob[] | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
   const refresh = useCallback(() => {
-    fetch(`${PLUGIN_BASE}/jobs?limit=30`, { headers: authHeaders() })
+    fetch(appendTenant(`${PLUGIN_BASE}/jobs?limit=30`, tenant), { headers: authHeaders() })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d) => setJobs(Array.isArray(d) ? d : []))
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
-  }, [])
+  }, [tenant])
 
   useEffect(() => {
     refresh()
@@ -1370,6 +1448,7 @@ function JobStatusPill({ status }: { status: PrecheckJob['status'] }) {
 // ── Deals ──────────────────────────────────────────────────────────────────
 
 function DealsPanel() {
+  const { tenant } = useTenant()
   const [filter, setFilter] = useState<'all' | 'valid' | 'invalid' | 'tombstoned'>('all')
   const [search, setSearch] = useState('')
   const [deals, setDeals] = useState<DealRow[] | null>(null)
@@ -1379,11 +1458,11 @@ function DealsPanel() {
 
   useEffect(() => {
     setDeals(null)
-    fetch(`${PLUGIN_BASE}/deals?limit=100&filter=${filter}`, { headers: authHeaders() })
+    fetch(appendTenant(`${PLUGIN_BASE}/deals?limit=100&filter=${filter}`, tenant), { headers: authHeaders() })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d) => { setDeals(d.data ?? []); setTotal(d.total ?? 0) })
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
-  }, [filter])
+  }, [filter, tenant])
 
   const visibleDeals = useMemo(() => {
     if (!deals) return []
@@ -1489,6 +1568,7 @@ function DealsPanel() {
 }
 
 function DealRowView({ deal, expanded, onToggle }: { deal: DealRow; expanded: boolean; onToggle: () => void }) {
+  const { tenant } = useTenant()
   const [detail, setDetail] = useState<{ phones_json?: string } | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -1496,14 +1576,17 @@ function DealRowView({ deal, expanded, onToggle }: { deal: DealRow; expanded: bo
     if (!expanded || detail) return
     setLoading(true)
     fetch(
-      `${PLUGIN_BASE}/deals/${encodeURIComponent(deal.pasta)}/${deal.deal_id}/${encodeURIComponent(deal.contato_tipo)}/${deal.contato_id}`,
+      appendTenant(
+        `${PLUGIN_BASE}/deals/${encodeURIComponent(deal.pasta)}/${deal.deal_id}/${encodeURIComponent(deal.contato_tipo)}/${deal.contato_id}`,
+        tenant,
+      ),
       { headers: authHeaders() },
     )
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then(setDetail)
       .catch(() => setDetail(null))
       .finally(() => setLoading(false))
-  }, [expanded, detail, deal])
+  }, [expanded, detail, deal, tenant])
 
   const isTombstoned = deal.deleted_at != null
   const tone: 'emerald' | 'rose' | 'amber' =
@@ -1656,19 +1739,26 @@ function Toggle({
   label,
   hint,
   icon,
+  disabled,
 }: {
   checked: boolean
   onChange: (v: boolean) => void
   label: string
   hint?: string
   icon?: React.ReactNode
+  disabled?: boolean
 }) {
   return (
     <button
       type="button"
-      onClick={() => onChange(!checked)}
+      onClick={() => { if (!disabled) onChange(!checked) }}
+      disabled={disabled}
       className={`w-full flex items-start gap-3 rounded-md border p-3 text-left transition-colors ${
-        checked ? 'border-sky-500/30 bg-sky-500/5' : 'border-zinc-800 bg-zinc-950 hover:border-zinc-700'
+        disabled
+          ? 'border-zinc-800 bg-zinc-950 opacity-50 cursor-not-allowed'
+          : checked
+            ? 'border-sky-500/30 bg-sky-500/5'
+            : 'border-zinc-800 bg-zinc-950 hover:border-zinc-700'
       }`}
     >
       <div className="mt-0.5">{icon}</div>
@@ -1676,8 +1766,8 @@ function Toggle({
         <div className="text-sm text-zinc-100">{label}</div>
         {hint ? <div className="mt-0.5 text-[11px] text-zinc-500">{hint}</div> : null}
       </div>
-      <div className={`mt-1 h-4 w-7 rounded-full p-0.5 transition-colors ${checked ? 'bg-sky-500' : 'bg-zinc-700'}`}>
-        <div className={`h-3 w-3 rounded-full bg-white transition-transform ${checked ? 'translate-x-3' : ''}`} />
+      <div className={`mt-1 h-4 w-7 rounded-full p-0.5 transition-colors ${checked && !disabled ? 'bg-sky-500' : 'bg-zinc-700'}`}>
+        <div className={`h-3 w-3 rounded-full bg-white transition-transform ${checked && !disabled ? 'translate-x-3' : ''}`} />
       </div>
     </button>
   )

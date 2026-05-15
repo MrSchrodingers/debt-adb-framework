@@ -317,7 +317,7 @@ describe('PipedriveActivityStore — findCurrentPastaNote', () => {
       http_status: 201, error_msg: null, attempts: 1,
     })
 
-    const found = store.findCurrentPastaNote('P-1')
+    const found = store.findCurrentPastaNote('P-1', 'adb')
     expect(found).not.toBeNull()
     expect(found!.pipedrive_response_id).toBe(999)
     expect(found!.row_id).toBe(id1)
@@ -329,7 +329,7 @@ describe('PipedriveActivityStore — findCurrentPastaNote', () => {
     db.pragma('journal_mode = WAL')
     const store = new PipedriveActivityStore(db)
     store.initialize()
-    expect(store.findCurrentPastaNote('P-1')).toBeNull()
+    expect(store.findCurrentPastaNote('P-1', 'adb')).toBeNull()
   })
 
   it('skips orphaned rows', () => {
@@ -344,7 +344,7 @@ describe('PipedriveActivityStore — findCurrentPastaNote', () => {
     })
     store.updateResult(id, { status: 'success', pipedrive_response_id: 999, http_status: 201, error_msg: null, attempts: 1 })
     store.markOrphaned(id, 'PUT 404')
-    expect(store.findCurrentPastaNote('P-1')).toBeNull()
+    expect(store.findCurrentPastaNote('P-1', 'adb')).toBeNull()
   })
 
   it('returns the most recent row when multiple successes exist', () => {
@@ -371,7 +371,7 @@ describe('PipedriveActivityStore — findCurrentPastaNote', () => {
     })
     store.updateResult(id2, { status: 'success', pipedrive_response_id: 200, http_status: 200, error_msg: null, attempts: 1 })
 
-    const found = store.findCurrentPastaNote('P-1')
+    const found = store.findCurrentPastaNote('P-1', 'adb')
     expect(found!.pipedrive_response_id).toBe(200)
     expect(found!.row_id).toBe(id2)
   })
@@ -387,7 +387,7 @@ describe('PipedriveActivityStore — findCurrentPastaNote', () => {
       pipedrive_endpoint: '/activities', pipedrive_payload_json: '{}',
     })
     store.updateResult(id, { status: 'success', pipedrive_response_id: 999, http_status: 201, error_msg: null, attempts: 1 })
-    expect(store.findCurrentPastaNote('P-1')).toBeNull()
+    expect(store.findCurrentPastaNote('P-1', 'adb')).toBeNull()
   })
 })
 
@@ -551,5 +551,184 @@ describe('PipedriveActivityStore — insertPending with revises_row_id and http_
       .get(id) as { revises_row_id: string | null; http_verb: string }
     expect(row.revises_row_id).toBeNull()
     expect(row.http_verb).toBe('POST')
+  })
+})
+
+// T23: per-tenant dedup. The (tenant, dedup_key) UNIQUE INDEX is partial
+// (`WHERE dedup_key IS NOT NULL`), so pre-T23 rows with NULL dedup_key
+// coexist; new rows are deduped at the tenant boundary.
+describe('PipedriveActivityStore — tenant dedup (T23)', () => {
+  let db: import('better-sqlite3').Database
+  let store: PipedriveActivityStore
+  beforeEach(() => {
+    db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    store = new PipedriveActivityStore(db)
+    store.initialize()
+  })
+  afterEach(() => db.close())
+
+  it('dedupes per (tenant, dedup_key) — same key across tenants does not collide', () => {
+    const adbRowId = store.insertPending({
+      scenario: 'pasta_summary',
+      deal_id: 1,
+      pasta: 'P-1',
+      phone_normalized: null,
+      job_id: 'j1',
+      pipedrive_endpoint: '/notes',
+      pipedrive_payload_json: '{}',
+      tenant: 'adb',
+      dedup_key: 'k1',
+    })
+    const sicoobRowId = store.insertPending({
+      scenario: 'pasta_summary',
+      deal_id: 1,
+      pasta: 'P-1',
+      phone_normalized: null,
+      job_id: 'j1',
+      pipedrive_endpoint: '/notes',
+      pipedrive_payload_json: '{}',
+      tenant: 'sicoob',
+      dedup_key: 'k1',
+    })
+    const adb = store.findByDedupKey('adb', 'k1')
+    const sicoob = store.findByDedupKey('sicoob', 'k1')
+    expect(adb?.id).toBe(adbRowId)
+    expect(sicoob?.id).toBe(sicoobRowId)
+    expect(adb?.tenant).toBe('adb')
+    expect(sicoob?.tenant).toBe('sicoob')
+    expect(adb?.dedup_key).toBe('k1')
+    expect(sicoob?.dedup_key).toBe('k1')
+  })
+
+  it('UNIQUE (tenant, dedup_key) rejects same key for same tenant', () => {
+    store.insertPending({
+      scenario: 'pasta_summary',
+      deal_id: 1,
+      pasta: 'P-1',
+      phone_normalized: null,
+      job_id: 'j1',
+      pipedrive_endpoint: '/notes',
+      pipedrive_payload_json: '{}',
+      tenant: 'adb',
+      dedup_key: 'k2',
+    })
+    expect(() =>
+      store.insertPending({
+        scenario: 'pasta_summary',
+        deal_id: 1,
+        pasta: 'P-1',
+        phone_normalized: null,
+        job_id: 'j1',
+        pipedrive_endpoint: '/notes',
+        pipedrive_payload_json: '{}',
+        tenant: 'adb',
+        dedup_key: 'k2',
+      }),
+    ).toThrow(/UNIQUE|constraint/i)
+  })
+
+  it('allows multiple NULL dedup_key rows (partial index excludes NULLs)', () => {
+    // Two pre-T23 style rows (no dedup_key) for the same tenant must not
+    // collide — the partial UNIQUE INDEX excludes them via the
+    // `WHERE dedup_key IS NOT NULL` predicate.
+    const id1 = store.insertPending({
+      scenario: 'pasta_summary',
+      deal_id: 1,
+      pasta: 'P-1',
+      phone_normalized: null,
+      job_id: 'j1',
+      pipedrive_endpoint: '/notes',
+      pipedrive_payload_json: '{}',
+      tenant: 'adb',
+    })
+    const id2 = store.insertPending({
+      scenario: 'pasta_summary',
+      deal_id: 1,
+      pasta: 'P-1',
+      phone_normalized: null,
+      job_id: 'j1',
+      pipedrive_endpoint: '/notes',
+      pipedrive_payload_json: '{}',
+      tenant: 'adb',
+    })
+    expect(id1).not.toBe(id2)
+    expect(store.findByDedupKey('adb', '__none__')).toBeNull()
+  })
+
+  it('insertPending defaults tenant to adb when omitted (back-compat)', () => {
+    const id = store.insertPending({
+      scenario: 'pasta_summary',
+      deal_id: 1,
+      pasta: 'P-1',
+      phone_normalized: null,
+      job_id: 'j1',
+      pipedrive_endpoint: '/notes',
+      pipedrive_payload_json: '{}',
+      dedup_key: 'k-default',
+    })
+    const row = store.findByDedupKey('adb', 'k-default')
+    expect(row?.id).toBe(id)
+    expect(row?.tenant).toBe('adb')
+  })
+})
+
+describe('PipedriveActivityStore — tenant isolation on pasta queries', () => {
+  it('hasRecentSuccess does NOT match across tenants', () => {
+    const db = new Database(':memory:')
+    const s = new PipedriveActivityStore(db)
+    s.initialize()
+    // Insert a SUCCESS row for adb with pasta='1857'
+    s.insertPending({
+      scenario: 'pasta_summary',
+      deal_id: 1,
+      pasta: '1857',
+      phone_normalized: null,
+      job_id: 'j_adb',
+      pipedrive_endpoint: '/notes',
+      pipedrive_payload_json: '{}',
+      manual: false,
+      triggered_by: 'test',
+      tenant: 'adb',
+      dedup_key: 'pasta_summary|1857|j_adb',
+    })
+    db.prepare(
+      `UPDATE pipedrive_activities SET pipedrive_response_status = 'success', completed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE tenant = 'adb' AND pasta = '1857'`,
+    ).run()
+
+    const sinceIso = new Date(Date.now() - 86_400_000).toISOString()
+    // adb sees its own success
+    expect(
+      s.hasRecentSuccess({ tenant: 'adb', scenario: 'pasta_summary', deal_id: 1, pasta: '1857', phone_normalized: null, sinceIso }),
+    ).toBe(true)
+    // sicoob does NOT see adb's success
+    expect(
+      s.hasRecentSuccess({ tenant: 'sicoob', scenario: 'pasta_summary', deal_id: 1, pasta: '1857', phone_normalized: null, sinceIso }),
+    ).toBe(false)
+  })
+
+  it('findCurrentPastaNote does NOT match across tenants', () => {
+    const db = new Database(':memory:')
+    const s = new PipedriveActivityStore(db)
+    s.initialize()
+    s.insertPending({
+      scenario: 'pasta_summary',
+      deal_id: 1,
+      pasta: '1857',
+      phone_normalized: null,
+      job_id: 'j_adb',
+      pipedrive_endpoint: '/notes',
+      pipedrive_payload_json: '{}',
+      manual: false,
+      triggered_by: 'test',
+      tenant: 'adb',
+      dedup_key: 'pasta_summary|1857|j_adb',
+    })
+    db.prepare(
+      `UPDATE pipedrive_activities SET pipedrive_response_status = 'success', pipedrive_response_id = 9999, completed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE tenant = 'adb' AND pasta = '1857'`,
+    ).run()
+
+    expect(s.findCurrentPastaNote('1857', 'adb')?.pipedrive_response_id).toBe(9999)
+    expect(s.findCurrentPastaNote('1857', 'sicoob')).toBeNull()
   })
 })

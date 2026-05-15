@@ -728,3 +728,37 @@ describe('PrecheckJobStore — tombstoned exclusion from live counters', () => {
     db.close()
   })
 })
+
+describe('PrecheckJobStore — multi-tenant', () => {
+  it('creates jobs with default tenant=adb (back-compat)', () => {
+    const db = new Database(':memory:')
+    const store = new PrecheckJobStore(db)
+    store.initialize()
+    const job = store.createJob({ limit: 1, writeback_invalid: false, hygienization_mode: false }, 'ext_1', { pipedriveEnabled: false, hygienizationMode: false })
+    const row = db.prepare('SELECT tenant FROM adb_precheck_jobs WHERE id = ?').get(job.id) as { tenant: string }
+    expect(row.tenant).toBe('adb')
+  })
+
+  it('createJob accepts explicit tenant', () => {
+    const db = new Database(':memory:')
+    const store = new PrecheckJobStore(db)
+    store.initialize()
+    const job = store.createJob(
+      { limit: 1, writeback_invalid: false, hygienization_mode: false },
+      'ext_2',
+      { pipedriveEnabled: false, hygienizationMode: false, tenant: 'sicoob' },
+    )
+    const row = db.prepare('SELECT tenant FROM adb_precheck_jobs WHERE id = ?').get(job.id) as { tenant: string }
+    expect(row.tenant).toBe('sicoob')
+  })
+
+  it('listJobs(tenant) filters by tenant', () => {
+    const db = new Database(':memory:')
+    const store = new PrecheckJobStore(db)
+    store.initialize()
+    store.createJob({ writeback_invalid: false, hygienization_mode: false }, 'a', { pipedriveEnabled: false, hygienizationMode: false, tenant: 'adb' })
+    store.createJob({ writeback_invalid: false, hygienization_mode: false }, 'b', { pipedriveEnabled: false, hygienizationMode: false, tenant: 'sicoob' })
+    expect(store.listJobs(50, 'sicoob').length).toBe(1)
+    expect(store.listJobs(50).length).toBe(2)
+  })
+})

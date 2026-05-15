@@ -120,6 +120,30 @@ export class PrecheckJobStore {
     this.db.prepare(
       'CREATE INDEX IF NOT EXISTS idx_deals_ddd_scanned ON adb_precheck_deals(substr(primary_valid_phone, 1, 2), scanned_at) WHERE primary_valid_phone IS NOT NULL AND deleted_at IS NULL'
     ).run()
+
+    // Multi-tenant migration — default 'adb' preserves existing rows.
+    this.idempotentAlter(
+      'adb_precheck_jobs',
+      'tenant',
+      "ALTER TABLE adb_precheck_jobs ADD COLUMN tenant TEXT NOT NULL DEFAULT 'adb'",
+    )
+    this.idempotentAlter(
+      'adb_precheck_deals',
+      'tenant',
+      "ALTER TABLE adb_precheck_deals ADD COLUMN tenant TEXT NOT NULL DEFAULT 'adb'",
+    )
+    this.db
+      .prepare("CREATE INDEX IF NOT EXISTS idx_adb_precheck_jobs_tenant ON adb_precheck_jobs(tenant, status)")
+      .run()
+    this.db
+      .prepare("CREATE INDEX IF NOT EXISTS idx_adb_precheck_deals_tenant ON adb_precheck_deals(tenant, scanned_at DESC)")
+      .run()
+  }
+
+  private idempotentAlter(table: string, column: string, ddl: string): void {
+    const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+    if (cols.some((c) => c.name === column)) return
+    this.db.prepare(ddl).run()
   }
 
   /** Mark every job left in `running` state as failed. */
@@ -144,6 +168,7 @@ export class PrecheckJobStore {
       hygienizationMode?: boolean
       triggeredBy?: string
       parentJobId?: string
+      tenant?: 'adb' | 'sicoob' | 'oralsin'
     },
   ): PrecheckJob {
     if (externalRef) {
@@ -158,10 +183,11 @@ export class PrecheckJobStore {
     const hygienizationMode = opts?.hygienizationMode === true ? 1 : 0
     const triggeredBy = opts?.triggeredBy ?? 'manual'
     const parentJobId = opts?.parentJobId ?? null
+    const tenant = opts?.tenant ?? 'adb'
     this.db
       .prepare(
-        `INSERT INTO adb_precheck_jobs (id, external_ref, status, params_json, created_at, pipedrive_enabled, hygienization_mode, triggered_by, parent_job_id)
-         VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO adb_precheck_jobs (id, external_ref, status, params_json, created_at, pipedrive_enabled, hygienization_mode, triggered_by, parent_job_id, tenant)
+         VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -172,6 +198,7 @@ export class PrecheckJobStore {
         hygienizationMode,
         triggeredBy,
         parentJobId,
+        tenant,
       )
     return this.getJob(id)!
   }
@@ -182,7 +209,12 @@ export class PrecheckJobStore {
       .get(id) as PrecheckJob | undefined) ?? null
   }
 
-  listJobs(limit = 20): PrecheckJob[] {
+  listJobs(limit = 20, tenant?: 'adb' | 'sicoob' | 'oralsin'): PrecheckJob[] {
+    if (tenant) {
+      return this.db
+        .prepare('SELECT * FROM adb_precheck_jobs WHERE tenant = ? ORDER BY created_at DESC LIMIT ?')
+        .all(tenant, limit) as PrecheckJob[]
+    }
     return this.db
       .prepare('SELECT * FROM adb_precheck_jobs ORDER BY created_at DESC LIMIT ?')
       .all(limit) as PrecheckJob[]

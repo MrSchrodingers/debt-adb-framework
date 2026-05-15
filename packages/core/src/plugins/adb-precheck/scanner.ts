@@ -77,6 +77,10 @@ export interface ScannerDeps {
   logger: PluginLogger
   /** Abort signal — if true, scanner drains current page then stops. */
   shouldCancel: (jobId: string) => boolean
+  /** Tenant id this scanner instance was constructed for. Used for log payloads and writeback gating. */
+  tenant?: 'adb' | 'sicoob' | 'oralsin'
+  /** 'prov' enables writebacks; 'raw' skips them. Default 'prov' for back-compat. */
+  tenantMode?: 'prov' | 'raw'
   /** Routes ADB probes to this device. Required for L3 strategy. */
   deviceSerial?: string
   /** Routes WAHA tiebreaker probes to this session. Required for L2. */
@@ -235,6 +239,14 @@ export class PrecheckScanner {
 
   async runJob(jobId: string, params: PrecheckScanParams): Promise<void> {
     const { pg, store, logger, shouldCancel, onJobFinished, pauseState } = this.deps
+    // Resolve the tenant once per job — propagated to the validator so the
+    // DeviceMutex holder state can be labelled with `{ tenant, jobId }`.
+    // T22 will fully populate per-tenant routing; until then `'adb'` is the
+    // safe default (matches the DB column default applied by T3).
+    // Guarded against legacy/partial-mock stores that lack getJob.
+    const jobTenant = (typeof store.getJob === 'function'
+      ? store.getJob(jobId)?.tenant
+      : undefined) ?? 'adb'
     // Per-job opt-out: even when the integration is wired we honour the
     // `pipedrive_enabled === false` flag and skip all 3 scenarios for this
     // job. This lets operators run a quick scan without polluting Pipedrive.
@@ -414,6 +426,7 @@ export class PrecheckScanner {
         scannerSideFilter,
         pgExcludedKeys: pgParams.excluded_keys?.length ?? 0,
         params,
+        tenant: this.deps.tenant ?? 'adb',
       })
 
       // ── Reactive device-failure recovery ───────────────────────────────
@@ -470,7 +483,7 @@ export class PrecheckScanner {
       outer: for await (const page of pg.iterateDeals(pgParams, 200)) {
         if (shouldCancel(jobId)) {
           store.finishJob(jobId, 'cancelled')
-          logger.warn('precheck scan cancelled', { jobId })
+          logger.warn('precheck scan cancelled', { jobId, tenant: this.deps.tenant ?? 'adb' })
           finalStatus = 'cancelled'
           if (onJobFinished) await onJobFinished(jobId)
           // Resume the global pause before exiting the cancel path; the early
@@ -520,6 +533,8 @@ export class PrecheckScanner {
                 device_serial: probeDevice,
                 waha_session: probeSender,
                 profile_id: probeProfile,
+                tenant: jobTenant,
+                job_id: jobId,
               })
               // Any successful validator call clears the consecutive-error
               // streak — inconclusive (exists_on_wa === null) is allowed
@@ -678,7 +693,8 @@ export class PrecheckScanner {
                   errorCount,
                 })
               }
-              try {
+              if (this.deps.tenantMode !== 'raw') {
+                try {
                 const result = this.deps.pendingWritebacks
                   ? await this.deps.pendingWritebacks.submitInvalidation(key, {
                       motivo: INVALID_MOTIVO,
@@ -695,7 +711,7 @@ export class PrecheckScanner {
                       archiveIfEmpty,
                     })
                 if ('archived' in result && result.archived) {
-                  logger.info('deal archived (no valid phones)', { jobId, key })
+                  logger.info('deal archived (no valid phones)', { jobId, key, tenant: this.deps.tenant ?? 'adb' })
                   // Pipedrive Scenario B: only on successful archive.
                   // When BACKEND=rest, Pipeboard fires Pipedrive
                   // server-side via Temporal — gate by skip flag.
@@ -733,7 +749,9 @@ export class PrecheckScanner {
                   key,
                   count: dedupedInvalids.size,
                   error: e instanceof Error ? e.message : String(e),
+                  tenant: this.deps.tenant ?? 'adb',
                 })
+              }
               }
             }
           }
@@ -864,11 +882,12 @@ export class PrecheckScanner {
         jobId,
         processedCount,
         budget: processingBudget,
+        tenant: this.deps.tenant ?? 'adb',
       })
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       store.finishJob(jobId, 'failed', msg)
-      logger.error('precheck scan failed', { jobId, error: msg })
+      logger.error('precheck scan failed', { jobId, error: msg, tenant: this.deps.tenant ?? 'adb' })
       finalStatus = 'failed'
       if (onJobFinished) {
         try { await onJobFinished(jobId) } catch (cbErr) {
@@ -984,6 +1003,9 @@ export class PrecheckScanner {
       probeDevice && probeSender && this.deps.resolveProfileForSender
         ? this.deps.resolveProfileForSender(probeDevice, probeSender) ?? undefined
         : undefined
+    const jobTenant = (typeof this.deps.store.getJob === 'function'
+      ? this.deps.store.getJob(jobId)?.tenant
+      : undefined) ?? 'adb'
 
     const touchedPastas = new Set<string>()
     let totalResolved = 0
@@ -1033,6 +1055,8 @@ export class PrecheckScanner {
                 waha_session: probeSender,
                 profile_id: probeProfile,
                 attempt_phase: 'sweep_retry',
+                tenant: jobTenant,
+                job_id: jobId,
               })
               if (r.exists_on_wa !== null) {
                 ph.outcome = r.exists_on_wa === 1 ? 'valid' : 'invalid'
@@ -1177,6 +1201,10 @@ export class PrecheckScanner {
     const fonte = this.deps.fonte ?? 'dispatch_adb_precheck'
     void triggeredBy
 
+    if (this.deps.tenantMode === 'raw') {
+      // Raw-mode tenants (sicoob/oralsin) have no prov_* tables — skip writebacks.
+      return
+    }
     try {
       const result = this.deps.pendingWritebacks
         ? await this.deps.pendingWritebacks.submitInvalidation(key, {
@@ -1195,13 +1223,14 @@ export class PrecheckScanner {
           })
       if ('archived' in result && result.archived) {
         this.deps.logger.info('deal archived from retry path (no valid phones)', {
-          jobId, key, triggeredBy,
+          jobId, key, triggeredBy, tenant: this.deps.tenant ?? 'adb',
         })
       }
     } catch (e) {
       this.deps.logger.warn('retry-pass invalidation submit failed', {
         jobId, key, triggeredBy,
         error: e instanceof Error ? e.message : String(e),
+        tenant: this.deps.tenant ?? 'adb',
       })
     }
   }
@@ -1326,6 +1355,9 @@ export class PrecheckScanner {
       probeDevice && probeSender && this.deps.resolveProfileForSender
         ? this.deps.resolveProfileForSender(probeDevice, probeSender) ?? undefined
         : undefined
+    const jobTenant = (typeof this.deps.store.getJob === 'function'
+      ? this.deps.store.getJob(jobId)?.tenant
+      : undefined) ?? 'adb'
 
     let resolvedCount = 0
 
@@ -1350,6 +1382,8 @@ export class PrecheckScanner {
             waha_session: probeSender,
             profile_id: probeProfile,
             attempt_phase: 'scan_retry',
+            tenant: jobTenant,
+            job_id: jobId,
           })
           if (r.exists_on_wa !== null) {
             ph.outcome = r.exists_on_wa === 1 ? 'valid' : 'invalid'

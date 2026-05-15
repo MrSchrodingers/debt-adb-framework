@@ -66,8 +66,15 @@ export interface PluginContext {
    * can omit it; production plugins should always wire through.
    */
   deviceMutex?: {
-    acquire(deviceSerial: string): Promise<() => void>
+    acquire(deviceSerial: string, ctx?: { tenant: string; jobId: string }): Promise<() => void>
+    isHeld(deviceSerial: string): boolean
+    describeHolder(deviceSerial: string): { tenant: string; jobId: string; since: string } | null
   }
+  /**
+   * Returns the list of currently-connected devices. Provided when the
+   * server has a DeviceManager wired; absent in unit-test fixtures.
+   */
+  listConnectedDevices?: () => Promise<Array<{ serial: string }>>
   /**
    * Cross-plugin services registry (NEW-5, Sprint 2). Plugins can register
    * shared capabilities (e.g. a Pipedrive HTTP client with auth + rate

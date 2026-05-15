@@ -53,7 +53,7 @@ import { createRequire } from 'node:module'
 // includes 'debt-sdr', so deferring the require has no startup cost.
 const dispatchRequire = createRequire(import.meta.url)
 import { AdbPrecheckPlugin } from './plugins/adb-precheck-plugin.js'
-import { resolvePipeboardBackend } from './plugins/adb-precheck/index.js'
+import { resolvePipeboardBackend, TenantRegistry } from './plugins/adb-precheck/index.js'
 import { AdbProbeStrategy, WahaCheckStrategy, CacheOnlyStrategy } from './check-strategies/index.js'
 import { ContactValidator } from './validator/contact-validator.js'
 import type { DispatchEventName } from './events/index.js'
@@ -763,7 +763,23 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // register views via `ctx.registerGeoView(...)`; core hosts the map
   // framework + delegation endpoints; loader unregisters on plugin destroy.
   const geoRegistry = new GeoViewRegistry({ cacheTtlMs: 60_000 })
-  const pluginLoader = new PluginLoader(pluginRegistry, pluginEventBus, queue, db, pinoLogger, senderMapping, engine, idempotencyCache, deviceMutex, undefined, geoRegistry, deviceTenantAssignment)
+  const pluginLoader = new PluginLoader(
+    pluginRegistry,
+    pluginEventBus,
+    queue,
+    db,
+    pinoLogger,
+    senderMapping,
+    engine,
+    idempotencyCache,
+    deviceMutex,
+    undefined,
+    geoRegistry,
+    deviceTenantAssignment,
+    // T7: surface connected devices to plugins for /devices/availability.
+    // DeviceManager.getDevices() returns rich records; we project to {serial}.
+    async () => deviceManager.getDevices().map((d) => ({ serial: d.serial })),
+  )
 
   // Admin routes for plugin introspection + control (B4, Sprint 2 v2 roadmap).
   // Registered after pluginLoader so the GET endpoint can surface loaded
@@ -785,6 +801,9 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
   // Load plugins from config
   const pluginNames = (process.env.DISPATCH_PLUGINS || '').split(',').map(s => s.trim()).filter(Boolean)
+  // Instantiated once at boot; shared across the adb-precheck factory closure so
+  // TenantRegistry.fromEnv() is not called on every /tenants request.
+  const tenantRegistry = TenantRegistry.fromEnv(process.env)
   const pluginMap: Record<string, () => DispatchPlugin> = {
     oralsin: () => new OralsinPlugin(process.env.PLUGIN_ORALSIN_WEBHOOK_URL || 'http://localhost:8000/api/webhooks/dispatch/', db),
     'debt-sdr': () => {
@@ -857,6 +876,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
           // lifetime of the job and resumes in finally.
           pauseState,
           hygienizationOperator: 'adb-precheck:hygienization',
+          tenantRegistry,
         },
         db,
         contactRegistry,
