@@ -212,6 +212,7 @@ export class ContactRegistry {
     exists_on_wa?: 0 | 1 | null
     ddd?: string
     search?: string
+    tenant?: 'adb' | 'sicoob' | 'oralsin'
   } = {}): { data: WaContactRecord[]; total: number } {
     const conds: string[] = []
     const condsJoined: string[] = []
@@ -236,6 +237,25 @@ export class ContactRegistry {
       condsJoined.push('(wa.phone_normalized LIKE ? OR c.name LIKE ?)')
       const term = `%${params.search.replace(/\D/g, '')}%`
       args.push(term)
+    }
+    // wa_contacts is a shared cross-tenant cache by design (spec §3.4 / grill D2).
+    // Tenant filter is opt-in via EXISTS JOIN: include only phones that appear
+    // in adb_precheck_deals.phones_json owned by the given tenant. Matches the
+    // pattern used by Geo cohort views (T40p).
+    if (params.tenant) {
+      const tenantClause = `EXISTS (
+        SELECT 1 FROM adb_precheck_deals d, json_each(d.phones_json) p
+        WHERE d.tenant = ?
+          AND json_extract(p.value, '$.normalized') = wa_contacts.phone_normalized
+      )`
+      const tenantClauseJoined = `EXISTS (
+        SELECT 1 FROM adb_precheck_deals d, json_each(d.phones_json) p
+        WHERE d.tenant = ?
+          AND json_extract(p.value, '$.normalized') = wa.phone_normalized
+      )`
+      conds.push(tenantClause)
+      condsJoined.push(tenantClauseJoined)
+      args.push(params.tenant)
     }
     const where = conds.length ? `WHERE ${conds.join(' AND ')}` : ''
     const whereJoined = condsJoined.length ? `WHERE ${condsJoined.join(' AND ')}` : ''

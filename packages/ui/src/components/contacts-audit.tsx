@@ -16,6 +16,8 @@ import {
   Loader2,
 } from 'lucide-react'
 import { CORE_URL, authHeaders } from '../config'
+import { TenantProvider, useTenant } from './adb-precheck/tenant-context'
+import { TenantSelector } from './adb-precheck/tenant-selector'
 
 // ────────────────────────────────────────────────────────────────────
 // Types — espelham o schema do backend (packages/core/src/contacts/types.ts)
@@ -125,6 +127,15 @@ const RESULT_META: Record<CheckResult, { label: string; icon: typeof CheckCircle
 // ────────────────────────────────────────────────────────────────────
 
 export function ContactsAudit() {
+  return (
+    <TenantProvider>
+      <ContactsAuditInner />
+    </TenantProvider>
+  )
+}
+
+function ContactsAuditInner() {
+  const { tenant } = useTenant()
   const [contacts, setContacts] = useState<WaContactRecord[]>([])
   const [total, setTotal] = useState(0)
   const [selectedPhone, setSelectedPhone] = useState<string | null>(null)
@@ -144,14 +155,23 @@ export function ContactsAudit() {
       const params = new URLSearchParams()
       if (existsFilter !== 'all') params.set('exists', existsFilter)
       if (searchQuery) params.set('search', searchQuery)
+      // Tenant filter: backend faz EXISTS JOIN com adb_precheck_deals.phones_json
+      // (cache wa_contacts e shared cross-tenant by design — spec §3.4).
+      // Quando tenant=null (Global), omitido = retorna cache global inteiro.
+      if (tenant?.id) params.set('tenant', tenant.id)
       params.set('limit', '200')
       const res = await fetch(`${CORE_URL}/api/v1/contacts?${params.toString()}`, { headers: authHeaders() })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const body = (await res.json()) as ListResponse
       setContacts(body.data ?? [])
       setTotal(body.total ?? 0)
-      if (body.data?.length && !selectedPhone) {
-        setSelectedPhone(body.data[0].phone_normalized)
+      // Quando trocar tenant, dropa seleção se o phone atual nao esta no novo set
+      if (body.data?.length) {
+        if (!selectedPhone || !body.data.some((c) => c.phone_normalized === selectedPhone)) {
+          setSelectedPhone(body.data[0].phone_normalized)
+        }
+      } else {
+        setSelectedPhone(null)
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -159,7 +179,7 @@ export function ContactsAudit() {
     } finally {
       setLoading(false)
     }
-  }, [searchQuery, existsFilter, selectedPhone])
+  }, [searchQuery, existsFilter, selectedPhone, tenant])
 
   const fetchDetail = useCallback(async (phone: string) => {
     setDetailLoading(true)
@@ -227,7 +247,17 @@ export function ContactsAudit() {
   const filteredContacts = useMemo(() => contacts, [contacts])
 
   return (
-    <div className="grid grid-cols-12 gap-6">
+    <div className="space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <h2 className="text-base font-semibold text-zinc-100">Contatos WhatsApp</h2>
+          <p className="text-xs text-zinc-500">
+            Cache wa_contacts é global (compartilhado entre tenants); filtro de empresa cruza com adb_precheck_deals.tenant.
+          </p>
+        </div>
+        <TenantSelector />
+      </div>
+      <div className="grid grid-cols-12 gap-6">
       <aside className="col-span-12 lg:col-span-4 xl:col-span-3">
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4 sticky top-4">
           <div className="flex items-center gap-2 mb-3">
@@ -338,6 +368,7 @@ export function ContactsAudit() {
           </div>
         )}
       </section>
+      </div>
     </div>
   )
 }

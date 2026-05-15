@@ -120,17 +120,21 @@ export function registerContactRoutes(
       exists?: string
       ddd?: string
       search?: string
+      tenant?: string
     }
     let exists_on_wa: 0 | 1 | null | undefined
     if (q.exists === '1') exists_on_wa = 1
     else if (q.exists === '0') exists_on_wa = 0
     else if (q.exists === 'null') exists_on_wa = null
+    const tenant: 'adb' | 'sicoob' | 'oralsin' | undefined =
+      q.tenant === 'adb' || q.tenant === 'sicoob' || q.tenant === 'oralsin' ? q.tenant : undefined
     return registry.list({
       limit: q.limit ? Number(q.limit) : undefined,
       offset: q.offset ? Number(q.offset) : undefined,
       exists_on_wa,
       ddd: q.ddd,
       search: q.search,
+      tenant,
     })
   })
 
