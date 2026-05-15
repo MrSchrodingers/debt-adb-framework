@@ -6,6 +6,7 @@ import { PluginEventBus } from './plugin-event-bus.js'
 import { DispatchEmitter } from '../events/index.js'
 import { MessageQueue } from '../queue/message-queue.js'
 import { SenderMapping } from '../engine/sender-mapping.js'
+import { DeviceTenantAssignment } from '../engine/device-tenant-assignment.js'
 import type { SendEngine } from '../engine/send-engine.js'
 import type { DispatchPlugin, PluginContext, PluginEnqueueParams } from './types.js'
 
@@ -375,6 +376,192 @@ describe('PluginLoader', () => {
       expect(result.status).toBe('error')
       expect(result.error).toContain('No sender mapping')
       expect(mockEngine.registerContact).not.toHaveBeenCalled()
+    })
+  })
+
+  // ── G3 (debt-sdr): tenant-aware claims ─────────────────────────────────
+
+  describe('PluginContext.device + tenant APIs (G3)', () => {
+    function makeLoaderWithDTA(opts: { dta?: DeviceTenantAssignment; senderMapping?: SenderMapping } = {}) {
+      return new PluginLoader(
+        registry,
+        eventBus,
+        queue,
+        db,
+        undefined, // logger
+        opts.senderMapping,
+        undefined, // sendEngine
+        undefined, // idempotencyCache
+        undefined, // deviceMutex
+        undefined, // services
+        undefined, // geoRegistry
+        opts.dta,
+      )
+    }
+
+    it('requestDeviceAssignment routes through DTA with caller pluginName', async () => {
+      const dta = new DeviceTenantAssignment(db)
+      const loaderWithDTA = makeLoaderWithDTA({ dta })
+      const plugin = makePlugin({ name: 'debt-sdr' })
+      let capturedCtx: PluginContext | null = null
+      ;(plugin.init as ReturnType<typeof vi.fn>).mockImplementation(async (ctx: PluginContext) => {
+        capturedCtx = ctx
+      })
+
+      await loaderWithDTA.loadPlugin(plugin, 'key-1', 'secret-1')
+      const r = capturedCtx!.requestDeviceAssignment('devA', 'oralsin-sdr')
+
+      expect(r.ok).toBe(true)
+      const assignment = dta.getAssignment('devA')
+      expect(assignment).not.toBeNull()
+      expect(assignment!.tenant_name).toBe('oralsin-sdr')
+      expect(assignment!.claimed_by_plugin).toBe('debt-sdr')
+    })
+
+    it('requestDeviceAssignment returns sentinel when DTA not wired', async () => {
+      const loaderNoDTA = makeLoaderWithDTA({})
+      const plugin = makePlugin({ name: 'debt-sdr' })
+      let capturedCtx: PluginContext | null = null
+      ;(plugin.init as ReturnType<typeof vi.fn>).mockImplementation(async (ctx: PluginContext) => {
+        capturedCtx = ctx
+      })
+
+      await loaderNoDTA.loadPlugin(plugin, 'key-1', 'secret-1')
+      const r = capturedCtx!.requestDeviceAssignment('devA', 'oralsin-sdr')
+
+      expect(r.ok).toBe(false)
+      if (!r.ok && r.reason === 'already_claimed') {
+        expect(r.current_tenant).toBe('__unconfigured__')
+      }
+    })
+
+    it('releaseDeviceAssignment rejects non-owner (I2 invariant)', async () => {
+      const dta = new DeviceTenantAssignment(db)
+      dta.claim('devB', 'oralsin-sdr', 'other-plugin')
+      const loaderWithDTA = makeLoaderWithDTA({ dta })
+      const plugin = makePlugin({ name: 'debt-sdr' })
+      let capturedCtx: PluginContext | null = null
+      ;(plugin.init as ReturnType<typeof vi.fn>).mockImplementation(async (ctx: PluginContext) => {
+        capturedCtx = ctx
+      })
+
+      await loaderWithDTA.loadPlugin(plugin, 'key-1', 'secret-1')
+      const r = capturedCtx!.releaseDeviceAssignment('devB')
+
+      expect(r.ok).toBe(false)
+      expect(r.reason).toBe('not_owner')
+      expect(dta.getAssignment('devB')).not.toBeNull()
+    })
+
+    it('releaseDeviceAssignment succeeds for owner', async () => {
+      const dta = new DeviceTenantAssignment(db)
+      const loaderWithDTA = makeLoaderWithDTA({ dta })
+      const plugin = makePlugin({ name: 'debt-sdr' })
+      let capturedCtx: PluginContext | null = null
+      ;(plugin.init as ReturnType<typeof vi.fn>).mockImplementation(async (ctx: PluginContext) => {
+        capturedCtx = ctx
+      })
+
+      await loaderWithDTA.loadPlugin(plugin, 'key-1', 'secret-1')
+      capturedCtx!.requestDeviceAssignment('devC', 'oralsin-sdr')
+      const r = capturedCtx!.releaseDeviceAssignment('devC')
+
+      expect(r.ok).toBe(true)
+      expect(dta.getAssignment('devC')).toBeNull()
+    })
+
+    it('plugin.unload releases all devices claimed by that plugin', async () => {
+      const dta = new DeviceTenantAssignment(db)
+      const loaderWithDTA = makeLoaderWithDTA({ dta })
+      const plugin = makePlugin({ name: 'debt-sdr' })
+      ;(plugin.init as ReturnType<typeof vi.fn>).mockImplementation(async (ctx: PluginContext) => {
+        ctx.requestDeviceAssignment('devD', 'oralsin-sdr')
+        ctx.requestDeviceAssignment('devE', 'oralsin-sdr')
+      })
+
+      await loaderWithDTA.loadPlugin(plugin, 'key-1', 'secret-1')
+      expect(dta.list()).toHaveLength(2)
+
+      await loaderWithDTA.unloadPlugin('debt-sdr')
+      expect(dta.list()).toHaveLength(0)
+    })
+
+    it('destroyAll releases all devices across plugins', async () => {
+      const dta = new DeviceTenantAssignment(db)
+      const loaderWithDTA = makeLoaderWithDTA({ dta })
+
+      const pluginA = makePlugin({ name: 'plugin-a' })
+      ;(pluginA.init as ReturnType<typeof vi.fn>).mockImplementation(async (ctx: PluginContext) => {
+        ctx.requestDeviceAssignment('devF', 'oralsin-sdr')
+      })
+      const pluginB = makePlugin({ name: 'plugin-b' })
+      ;(pluginB.init as ReturnType<typeof vi.fn>).mockImplementation(async (ctx: PluginContext) => {
+        ctx.requestDeviceAssignment('devG', 'sicoob-sdr')
+      })
+
+      await loaderWithDTA.loadPlugin(pluginA, 'key-a', 'secret-a')
+      await loaderWithDTA.loadPlugin(pluginB, 'key-b', 'secret-b')
+      expect(dta.list()).toHaveLength(2)
+
+      await loaderWithDTA.destroyAll()
+      expect(dta.list()).toHaveLength(0)
+    })
+
+    it('assertSenderInTenant succeeds for free sender', async () => {
+      const senderMapping = new SenderMapping(db)
+      senderMapping.initialize()
+      senderMapping.create({ phoneNumber: '554399000300', deviceSerial: 'devX' })
+
+      const dta = new DeviceTenantAssignment(db)
+      const loaderWithDTA = makeLoaderWithDTA({ dta, senderMapping })
+      const plugin = makePlugin({ name: 'debt-sdr' })
+      let capturedCtx: PluginContext | null = null
+      ;(plugin.init as ReturnType<typeof vi.fn>).mockImplementation(async (ctx: PluginContext) => {
+        capturedCtx = ctx
+      })
+
+      await loaderWithDTA.loadPlugin(plugin, 'key-1', 'secret-1')
+      const r = capturedCtx!.assertSenderInTenant('554399000300', 'oralsin-sdr')
+      expect(r.ok).toBe(true)
+    })
+
+    it('assertSenderInTenant rejects conflicting tenant', async () => {
+      const senderMapping = new SenderMapping(db)
+      senderMapping.initialize()
+      senderMapping.create({ phoneNumber: '554399000301', deviceSerial: 'devX' })
+      senderMapping.setSenderTenant('554399000301', 'sicoob-sdr')
+
+      const dta = new DeviceTenantAssignment(db)
+      const loaderWithDTA = makeLoaderWithDTA({ dta, senderMapping })
+      const plugin = makePlugin({ name: 'debt-sdr' })
+      let capturedCtx: PluginContext | null = null
+      ;(plugin.init as ReturnType<typeof vi.fn>).mockImplementation(async (ctx: PluginContext) => {
+        capturedCtx = ctx
+      })
+
+      await loaderWithDTA.loadPlugin(plugin, 'key-1', 'secret-1')
+      const r = capturedCtx!.assertSenderInTenant('554399000301', 'oralsin-sdr')
+
+      expect(r.ok).toBe(false)
+      if (!r.ok && r.reason === 'conflicting_tenant') {
+        expect(r.current_tenant).toBe('sicoob-sdr')
+      }
+    })
+
+    it('assertSenderInTenant returns phone_not_found when SenderMapping missing', async () => {
+      const dta = new DeviceTenantAssignment(db)
+      const loaderNoSM = makeLoaderWithDTA({ dta })
+      const plugin = makePlugin({ name: 'debt-sdr' })
+      let capturedCtx: PluginContext | null = null
+      ;(plugin.init as ReturnType<typeof vi.fn>).mockImplementation(async (ctx: PluginContext) => {
+        capturedCtx = ctx
+      })
+
+      await loaderNoSM.loadPlugin(plugin, 'key-1', 'secret-1')
+      const r = capturedCtx!.assertSenderInTenant('554399000302', 'oralsin-sdr')
+
+      expect(r.ok).toBe(false)
+      if (!r.ok) expect(r.reason).toBe('phone_not_found')
     })
   })
 })
