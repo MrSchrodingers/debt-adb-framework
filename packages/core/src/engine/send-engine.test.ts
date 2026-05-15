@@ -951,6 +951,50 @@ describe('SendEngine', () => {
       expect(result).toBe('/dev/input/event5')
     })
 
+    it('detectTouchDevice handles non-rooted device (shell emits "su: not found" text)', async () => {
+      // Bug reproducer 2026-05-15: on Samsung A03 (no Magisk) the shell
+      // returns `/system/bin/sh: su: inaccessible or not found` as stdout.
+      // The previous code did `BigInt('0x' + caps.trim().replace(/\s+/g,''))`
+      // on that string, which threw SyntaxError and propagated up through
+      // sendeventTap → openViaSearch → send, causing permanently_failed.
+      //
+      // After fix: detectTouchDevice must recognise non-hex output, skip
+      // the event index, and return null. sendeventTap then falls back to
+      // the unprivileged `input tap` command, which works on any device.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const engineAny = engine as any
+      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
+
+      shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('/sys/class/input/event')) {
+          return '/system/bin/sh: su: inaccessible or not found'
+        }
+        return ''
+      })
+
+      const result = await engineAny.detectTouchDevice('non-rooted-device')
+      expect(result).toBeNull()
+    })
+
+    it('sendeventTap on non-rooted device falls back to `input tap` without throwing', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const engineAny = engine as any
+      const shellMock = mockAdb.shell as ReturnType<typeof vi.fn>
+
+      shellMock.mockImplementation(async (_serial: string, cmd: string) => {
+        if (cmd.includes('/sys/class/input/event')) {
+          // Simulate the busybox/toybox `sh` reaction when `su` is missing.
+          return 'sh: su: not found'
+        }
+        return ''
+      })
+
+      await expect(engineAny.sendeventTap('non-rooted', 100, 200)).resolves.not.toThrow()
+      const calls = (shellMock.mock.calls as unknown[][]).map((c) => c[1] as string)
+      expect(calls.some((cmd) => cmd === 'input tap 100 200')).toBe(true)
+      expect(calls.some((cmd) => cmd.includes('sendevent'))).toBe(false)
+    })
+
     it('applies position jitter within +/- 3px range', async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const engineAny = engine as any

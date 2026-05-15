@@ -873,14 +873,20 @@ export class SendEngine {
       const caps = await this.adb.shell(deviceSerial,
         `su -c "cat /sys/class/input/event${i}/device/capabilities/abs 2>/dev/null"`,
       ).catch(() => '')
-      if (caps.trim()) {
-        // Parse hex bitmask — check for ABS_MT_POSITION_X (bit 53) + ABS_MT_POSITION_Y (bit 54)
-        const val = BigInt('0x' + caps.trim().replace(/\s+/g, ''))
-        if ((val & (1n << 53n)) && (val & (1n << 54n))) {
-          const device = `/dev/input/event${i}`
-          this.touchDeviceCache.set(deviceSerial, device)
-          return device
-        }
+      const trimmed = caps.trim().replace(/\s+/g, '')
+      if (!trimmed) continue
+      // Non-rooted devices return stderr text on stdout for this `su -c "..."`
+      // pattern (e.g. "/system/bin/sh: su: inaccessible or not found"). Guard
+      // against feeding that into BigInt — only proceed when the trimmed
+      // output is a valid hex bitmask string. Anything else is skipped and
+      // the loop advances to the next event index.
+      if (!/^[0-9a-fA-F]+$/.test(trimmed)) continue
+      // Parse hex bitmask — check for ABS_MT_POSITION_X (bit 53) + ABS_MT_POSITION_Y (bit 54)
+      const val = BigInt('0x' + trimmed)
+      if ((val & (1n << 53n)) && (val & (1n << 54n))) {
+        const device = `/dev/input/event${i}`
+        this.touchDeviceCache.set(deviceSerial, device)
+        return device
       }
     }
 
