@@ -660,6 +660,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     if (!this.webhookUrl) return
     const job = this.store.getJob(jobId)
     if (!job) return
+    const tenant = job.tenant ?? 'adb'
     const body = {
       event: 'precheck_completed' as const,
       plugin: this.name,
@@ -668,6 +669,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       external_ref: (this.store as unknown as { db: { prepare: (s: string) => { get: (...a: unknown[]) => { external_ref: string | null } | undefined } } })
         .db.prepare('SELECT external_ref FROM adb_precheck_jobs WHERE id = ?').get(jobId)?.external_ref ?? null,
       status: job.status,
+      tenant,
       summary: {
         total_deals: job.total_deals,
         scanned_deals: job.scanned_deals,
@@ -690,6 +692,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       headers['X-Dispatch-Plugin'] = this.name
       headers['X-Dispatch-Event'] = 'precheck_completed'
     }
+    headers['X-Dispatch-Tenant'] = tenant
     try {
       const res = await fetch(this.webhookUrl, { method: 'POST', headers, body: payload })
       if (!res.ok) {
