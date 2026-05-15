@@ -1011,29 +1011,44 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
           onSelect={setDeviceSerial}
           enrichment={devices}
         />
-        {deviceSerial && availableAccounts.length > 0 ? (
+        {deviceSerial ? (
           <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
             <Field
-              label="Sender WAHA (opcional — só relevante se quiser correlacionar com sessão específica)"
-              hint={`${availableAccounts.length} sessão${availableAccounts.length > 1 ? 'ões' : ''} mapeada${availableAccounts.length > 1 ? 's' : ''} · vazio = default do plugin · não bloqueia ADB probe`}
+              label="Sender WAHA (opcional — vazio = default do plugin)"
+              hint={
+                availableAccounts.length > 0
+                  ? `${availableAccounts.length} sessão${availableAccounts.length > 1 ? 'ões' : ''} detectada${availableAccounts.length > 1 ? 's' : ''} no device · escolha uma OU digite outro número manualmente · não bloqueia probe ADB`
+                  : 'WAHA não mapeou número logado neste device — digite o número se quiser correlacionar manualmente, ou deixe vazio (probe ADB roda igual)'
+              }
             >
-              <select
-                value={wahaSession}
-                onChange={(e) => setWahaSession(e.target.value)}
-                className={`${inputCls}`}
-              >
-                <option value="">— usar default do plugin —</option>
-                {availableAccounts.map((a) => (
-                  <option
-                    key={`${a.profileId}|${a.packageName}|${a.phoneNumber}`}
-                    value={a.phoneNumber}
-                  >
-                    {a.phoneNumber}
-                    {a.packageName === 'com.whatsapp.w4b' ? ' · WA Business' : ''}
-                    {a.profileId > 0 ? ` · profile ${a.profileId}` : ''}
-                  </option>
-                ))}
-              </select>
+              {availableAccounts.length > 0 ? (
+                <select
+                  value={availableAccounts.some((a) => a.phoneNumber === wahaSession) ? wahaSession : ''}
+                  onChange={(e) => setWahaSession(e.target.value)}
+                  className={inputCls}
+                >
+                  <option value="">— usar default do plugin —</option>
+                  {availableAccounts.map((a) => (
+                    <option
+                      key={`${a.profileId}|${a.packageName}|${a.phoneNumber}`}
+                      value={a.phoneNumber}
+                    >
+                      {a.phoneNumber}
+                      {a.packageName === 'com.whatsapp.w4b' ? ' · WA Business' : ''}
+                      {a.profileId > 0 ? ` · profile ${a.profileId}` : ''}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="tel"
+                  inputMode="numeric"
+                  value={wahaSession}
+                  onChange={(e) => setWahaSession(e.target.value.replace(/\D/g, ''))}
+                  placeholder="ex: 5543991234567 (opcional, deixe vazio se não souber)"
+                  className={inputCls}
+                />
+              )}
             </Field>
           </div>
         ) : null}

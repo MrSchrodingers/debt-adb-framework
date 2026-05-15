@@ -153,15 +153,19 @@ export function DeviceAvailabilityCard({
           >
             <div className="flex items-center gap-2 min-w-0 flex-1 text-left">
               {offline ? (
-                <WifiOff className="h-3.5 w-3.5 text-zinc-500 flex-shrink-0" />
+                <WifiOff className="h-4 w-4 text-zinc-500 flex-shrink-0" />
               ) : (
-                <Smartphone className="h-3.5 w-3.5 text-zinc-400 flex-shrink-0" />
+                <Smartphone className="h-4 w-4 text-zinc-400 flex-shrink-0" />
               )}
               <div className="flex flex-col min-w-0">
-                <span className="text-zinc-100 truncate">{label}</span>
-                <span className="font-mono text-[10px] text-zinc-500 truncate">
+                <span className="text-zinc-100 truncate font-semibold">{label}</span>
+                {phone ? (
+                  <span className="text-zinc-300 truncate">{formatPhone(phone)}</span>
+                ) : !offline ? (
+                  <span className="text-zinc-500 italic truncate">sem número logado · ADB ok</span>
+                ) : null}
+                <span className="font-mono text-[10px] text-zinc-600 truncate">
                   {shortSerial(d.serial)}
-                  {phone ? <span className="ml-2 font-sans text-zinc-400">{formatPhone(phone)}</span> : null}
                   {offline ? ` · ${info?.status}` : ''}
                 </span>
               </div>
