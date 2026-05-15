@@ -36,9 +36,20 @@ import {
   SubTabBar,
 } from './plugin-ui'
 import { PipedriveView } from './adb-precheck/pipedrive-view'
+import { TenantProvider, useTenant, type TenantSummary } from './adb-precheck/tenant-context'
+import { TenantSelector } from './adb-precheck/tenant-selector'
 
 const PLUGIN_BASE = `${CORE_URL}/api/v1/plugins/adb-precheck`
 const ACCENT = 'sky' as const
+
+// Helper: appends ?tenant=<id> (or &tenant=<id>) to any plugin URL when a
+// non-null tenant is selected. Global mode (tenant === null) omits the
+// param so the backend falls back to its legacy default ('adb').
+function appendTenant(url: string, tenant: TenantSummary | null): string {
+  if (!tenant) return url
+  const sep = url.includes('?') ? '&' : '?'
+  return `${url}${sep}tenant=${encodeURIComponent(tenant.id)}`
+}
 
 type SubTab = 'overview' | 'scan' | 'deals' | 'jobs' | 'pipedrive'
 type PluginStatus = 'active' | 'inactive' | 'checking' | 'error'
@@ -163,6 +174,15 @@ interface PhoneResult {
 // ── Root component ─────────────────────────────────────────────────────────
 
 export function AdbPrecheckTab() {
+  return (
+    <TenantProvider>
+      <AdbPrecheckTabInner />
+    </TenantProvider>
+  )
+}
+
+function AdbPrecheckTabInner() {
+  const { tenant } = useTenant()
   const [activeSubTab, setActiveSubTab] = useState<SubTab>('overview')
   const [status, setStatus] = useState<PluginStatus>('checking')
   const [activeJobs, setActiveJobs] = useState(0)
@@ -170,13 +190,13 @@ export function AdbPrecheckTab() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const h = await fetch(`${PLUGIN_BASE}/health`, { headers: authHeaders() })
+      const h = await fetch(appendTenant(`${PLUGIN_BASE}/health`, tenant), { headers: authHeaders() })
       if (!h.ok) { setStatus(h.status === 404 ? 'inactive' : 'error'); return }
       const body = await h.json() as { ok?: boolean }
       setStatus(body.ok ? 'active' : 'error')
       const [jobs, stats] = await Promise.all([
-        fetch(`${PLUGIN_BASE}/jobs?limit=30`, { headers: authHeaders() }).then((r) => r.ok ? r.json() : []),
-        fetch(`${PLUGIN_BASE}/stats`, { headers: authHeaders() }).then((r) => r.ok ? r.json() : null),
+        fetch(appendTenant(`${PLUGIN_BASE}/jobs?limit=30`, tenant), { headers: authHeaders() }).then((r) => r.ok ? r.json() : []),
+        fetch(appendTenant(`${PLUGIN_BASE}/stats`, tenant), { headers: authHeaders() }).then((r) => r.ok ? r.json() : null),
       ])
       const arr = Array.isArray(jobs) ? jobs as PrecheckJob[] : []
       setActiveJobs(arr.filter((j) => j.status === 'running' || j.status === 'queued').length)
@@ -184,7 +204,7 @@ export function AdbPrecheckTab() {
     } catch {
       setStatus('error')
     }
-  }, [])
+  }, [tenant])
 
   useEffect(() => {
     fetchStatus()
@@ -202,9 +222,12 @@ export function AdbPrecheckTab() {
         accent={ACCENT}
         version="0.1.0"
         actions={
-          <AccentButton accent={ACCENT} variant="ghost" onClick={fetchStatus} icon={RefreshCw}>
-            Atualizar
-          </AccentButton>
+          <div className="flex items-center gap-2">
+            <TenantSelector />
+            <AccentButton accent={ACCENT} variant="ghost" onClick={fetchStatus} icon={RefreshCw}>
+              Atualizar
+            </AccentButton>
+          </div>
         }
       />
 
@@ -237,6 +260,7 @@ export function AdbPrecheckTab() {
 // ── Overview ───────────────────────────────────────────────────────────────
 
 function OverviewPanel({ onStartScan }: { onStartScan: () => void }) {
+  const { tenant } = useTenant()
   const [stats, setStats] = useState<AggregateStats | null>(null)
   const [global, setGlobal] = useState<GlobalStats | null>(null)
   const [latestJobs, setLatestJobs] = useState<PrecheckJob[]>([])
@@ -250,15 +274,15 @@ function OverviewPanel({ onStartScan }: { onStartScan: () => void }) {
   const load = useCallback(async () => {
     try {
       const [s, g, j] = await Promise.all([
-        fetch(`${PLUGIN_BASE}/stats`, { headers: authHeaders() }).then(r => r.ok ? r.json() : Promise.reject(new Error(`stats HTTP ${r.status}`))),
-        fetch(`${PLUGIN_BASE}/stats/global`, { headers: authHeaders() }).then(r => r.ok ? r.json() : null),
-        fetch(`${PLUGIN_BASE}/jobs?limit=5`, { headers: authHeaders() }).then(r => r.ok ? r.json() : []),
+        fetch(appendTenant(`${PLUGIN_BASE}/stats`, tenant), { headers: authHeaders() }).then(r => r.ok ? r.json() : Promise.reject(new Error(`stats HTTP ${r.status}`))),
+        fetch(appendTenant(`${PLUGIN_BASE}/stats/global`, tenant), { headers: authHeaders() }).then(r => r.ok ? r.json() : null),
+        fetch(appendTenant(`${PLUGIN_BASE}/jobs?limit=5`, tenant), { headers: authHeaders() }).then(r => r.ok ? r.json() : []),
       ])
       setStats(s); setGlobal(g as GlobalStats | null); setLatestJobs(Array.isArray(j) ? j : []); setErr(null)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     }
-  }, [])
+  }, [tenant])
 
   useEffect(() => {
     load()
@@ -270,10 +294,12 @@ function OverviewPanel({ onStartScan }: { onStartScan: () => void }) {
     setSweepSubmitting(true); setSweepError(null)
     try {
       const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
-      const r = await fetch(`${PLUGIN_BASE}/retry-errors`, {
+      const sweepBody: Record<string, unknown> = { since_iso: since, max_deals: 200 }
+      if (tenant) sweepBody.tenant = tenant.id
+      const r = await fetch(appendTenant(`${PLUGIN_BASE}/retry-errors`, tenant), {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ since_iso: since, max_deals: 200 }),
+        body: JSON.stringify(sweepBody),
       })
       if (r.status === 409) {
         setSweepError('Pasta já em scan. Tente novamente em alguns minutos.')
@@ -443,12 +469,13 @@ function SweepConfirmModal({
 }
 
 function LocksPanel() {
+  const { tenant } = useTenant()
   const [locks, setLocks] = useState<ActiveLock[]>([])
   const [loading, setLoading] = useState(true)
 
   const fetchLocks = useCallback(async () => {
     try {
-      const r = await fetch(`${PLUGIN_BASE}/admin/locks`, { headers: authHeaders() })
+      const r = await fetch(appendTenant(`${PLUGIN_BASE}/admin/locks`, tenant), { headers: authHeaders() })
       if (!r.ok) return
       const data = await r.json() as { locks?: ActiveLock[] }
       setLocks(Array.isArray(data.locks) ? data.locks : [])
@@ -457,7 +484,7 @@ function LocksPanel() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [tenant])
 
   useEffect(() => {
     void fetchLocks()
@@ -739,6 +766,7 @@ interface DeviceOption {
 }
 
 function NewScanPanel({ onDone }: { onDone: () => void }) {
+  const { tenant } = useTenant()
   const [limit, setLimit] = useState('100')
   const [pastaPrefix, setPastaPrefix] = useState('')
   const [pipelineNome, setPipelineNome] = useState('')
@@ -832,7 +860,7 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
   const submit = async () => {
     setSubmitting(true); setErr(null)
     try {
-      const body = {
+      const body: Record<string, unknown> = {
         limit: Number(limit) || undefined,
         pasta_prefix: pastaPrefix || undefined,
         pipeline_nome: pipelineNome || undefined,
@@ -842,7 +870,10 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
         device_serial: deviceSerial || undefined,
         waha_session: wahaSession || undefined,
       }
-      const r = await fetch(`${PLUGIN_BASE}/scan`, {
+      // When tenant is selected (non-null), include it in the POST body;
+      // when null (Global mode), omit so backend defaults to 'adb'.
+      if (tenant) body.tenant = tenant.id
+      const r = await fetch(appendTenant(`${PLUGIN_BASE}/scan`, tenant), {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(body),
@@ -1162,15 +1193,16 @@ function ConfirmModal({
 // ── Jobs ───────────────────────────────────────────────────────────────────
 
 function JobsPanel() {
+  const { tenant } = useTenant()
   const [jobs, setJobs] = useState<PrecheckJob[] | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
   const refresh = useCallback(() => {
-    fetch(`${PLUGIN_BASE}/jobs?limit=30`, { headers: authHeaders() })
+    fetch(appendTenant(`${PLUGIN_BASE}/jobs?limit=30`, tenant), { headers: authHeaders() })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d) => setJobs(Array.isArray(d) ? d : []))
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
-  }, [])
+  }, [tenant])
 
   useEffect(() => {
     refresh()
@@ -1370,6 +1402,7 @@ function JobStatusPill({ status }: { status: PrecheckJob['status'] }) {
 // ── Deals ──────────────────────────────────────────────────────────────────
 
 function DealsPanel() {
+  const { tenant } = useTenant()
   const [filter, setFilter] = useState<'all' | 'valid' | 'invalid' | 'tombstoned'>('all')
   const [search, setSearch] = useState('')
   const [deals, setDeals] = useState<DealRow[] | null>(null)
@@ -1379,11 +1412,11 @@ function DealsPanel() {
 
   useEffect(() => {
     setDeals(null)
-    fetch(`${PLUGIN_BASE}/deals?limit=100&filter=${filter}`, { headers: authHeaders() })
+    fetch(appendTenant(`${PLUGIN_BASE}/deals?limit=100&filter=${filter}`, tenant), { headers: authHeaders() })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d) => { setDeals(d.data ?? []); setTotal(d.total ?? 0) })
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
-  }, [filter])
+  }, [filter, tenant])
 
   const visibleDeals = useMemo(() => {
     if (!deals) return []
@@ -1489,6 +1522,7 @@ function DealsPanel() {
 }
 
 function DealRowView({ deal, expanded, onToggle }: { deal: DealRow; expanded: boolean; onToggle: () => void }) {
+  const { tenant } = useTenant()
   const [detail, setDetail] = useState<{ phones_json?: string } | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -1496,14 +1530,17 @@ function DealRowView({ deal, expanded, onToggle }: { deal: DealRow; expanded: bo
     if (!expanded || detail) return
     setLoading(true)
     fetch(
-      `${PLUGIN_BASE}/deals/${encodeURIComponent(deal.pasta)}/${deal.deal_id}/${encodeURIComponent(deal.contato_tipo)}/${deal.contato_id}`,
+      appendTenant(
+        `${PLUGIN_BASE}/deals/${encodeURIComponent(deal.pasta)}/${deal.deal_id}/${encodeURIComponent(deal.contato_tipo)}/${deal.contato_id}`,
+        tenant,
+      ),
       { headers: authHeaders() },
     )
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then(setDetail)
       .catch(() => setDetail(null))
       .finally(() => setLoading(false))
-  }, [expanded, detail, deal])
+  }, [expanded, detail, deal, tenant])
 
   const isTombstoned = deal.deleted_at != null
   const tone: 'emerald' | 'rose' | 'amber' =
