@@ -60,7 +60,7 @@ function classifyShellError(message: string): DeviceUnreadyReason {
 export async function checkDeviceReady(
   adb: AdbShellAdapter,
   serial: string,
-  opts: { appPackage?: string } = {},
+  opts: { appPackage?: string | string[] } = {},
 ): Promise<DeviceReadiness> {
   let boot: string
   try {
@@ -73,15 +73,28 @@ export async function checkDeviceReady(
     return { ok: false, reason: 'boot_not_completed', detail: boot.trim().slice(0, 80) }
   }
   if (opts.appPackage) {
-    let pid: string
-    try {
-      pid = await adb.shell(serial, `pidof ${opts.appPackage}`)
-    } catch (e) {
-      const detail = e instanceof Error ? e.message : String(e)
-      return { ok: false, reason: classifyShellError(detail), detail: detail.slice(0, 200) }
+    // Accept either a single package name (legacy) or a list of candidates
+    // (e.g. ['com.whatsapp', 'com.whatsapp.w4b']) — device is ready if ANY
+    // of the candidates is running. Useful for fleets with mixed
+    // WhatsApp / WhatsApp Business installs (Samsung A03 ships w4b only,
+    // POCO C71 typically com.whatsapp).
+    const candidates = Array.isArray(opts.appPackage) ? opts.appPackage : [opts.appPackage]
+    for (const pkg of candidates) {
+      let pid: string
+      try {
+        pid = await adb.shell(serial, `pidof ${pkg}`)
+      } catch (e) {
+        const detail = e instanceof Error ? e.message : String(e)
+        return { ok: false, reason: classifyShellError(detail), detail: detail.slice(0, 200) }
+      }
+      if (pid.trim()) {
+        return { ok: true } // at least one variant is alive
+      }
     }
-    if (!pid.trim()) {
-      return { ok: false, reason: 'app_not_running', detail: `pidof ${opts.appPackage} returned empty` }
+    return {
+      ok: false,
+      reason: 'app_not_running',
+      detail: `pidof returned empty for: ${candidates.join(', ')}`,
     }
   }
   return { ok: true }

@@ -1103,7 +1103,13 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       )
     }
     if (effectiveSerial) {
-      const ready = await checkDeviceReady(this.adb, effectiveSerial, { appPackage: 'com.whatsapp' })
+      // Pre-flight tries BOTH WhatsApp variants. Samsung A03 fleet typically
+      // ships com.whatsapp.w4b (Business) without the regular client; POCO
+      // C71 ships com.whatsapp. Without both candidates the W4B-only Samsungs
+      // 503'd here even though the scanner can probe them fine.
+      const ready = await checkDeviceReady(this.adb, effectiveSerial, {
+        appPackage: ['com.whatsapp', 'com.whatsapp.w4b'],
+      })
       if (!ready.ok) {
         this.ctx?.logger.warn('scan rejected: device not ready', {
           serial: effectiveSerial, reason: ready.reason, detail: ready.detail,
