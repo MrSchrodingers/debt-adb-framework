@@ -334,17 +334,31 @@ export class PrecheckJobStore {
    * and the count scanned within the freshness window starting at
    * `thresholdIso`. Used by /stats/pool to expose the operator-facing view of
    * how many deals are still pending vs already covered.
+   *
+   * `tenant` scopes both counters to a single tenant. Omitted = ALL tenants
+   * (legacy behaviour; preserved so internal callers that don't carry a
+   * tenant context still work).
    */
-  countScannedSince(thresholdIso: string): { fresh: number; total: number } {
+  countScannedSince(
+    thresholdIso: string,
+    tenant?: 'adb' | 'sicoob' | 'oralsin',
+  ): { fresh: number; total: number } {
     // `fresh` excludes tombstoned: those deals were removed upstream by
     // Pipeboard's ETL and don't cover the pool anymore. `total` stays
     // lifetime (audit truth — includes tombstoned).
+    const tenantClause = tenant ? ' AND tenant = ?' : ''
+    const tenantClauseTotal = tenant ? ' WHERE tenant = ?' : ''
+    const freshParams: unknown[] = tenant ? [thresholdIso, tenant] : [thresholdIso]
+    const totalParams: unknown[] = tenant ? [tenant] : []
     const fresh = (this.db
-      .prepare(`SELECT COUNT(*) AS n FROM adb_precheck_deals WHERE scanned_at >= ? AND deleted_at IS NULL`)
-      .get(thresholdIso) as { n: number }).n
+      .prepare(
+        `SELECT COUNT(*) AS n FROM adb_precheck_deals
+         WHERE scanned_at >= ? AND deleted_at IS NULL${tenantClause}`,
+      )
+      .get(...freshParams) as { n: number }).n
     const total = (this.db
-      .prepare(`SELECT COUNT(*) AS n FROM adb_precheck_deals`)
-      .get() as { n: number }).n
+      .prepare(`SELECT COUNT(*) AS n FROM adb_precheck_deals${tenantClauseTotal}`)
+      .get(...totalParams) as { n: number }).n
     return { fresh, total }
   }
 
@@ -474,12 +488,14 @@ export class PrecheckJobStore {
    * under `phones_error` so the operator can see the unresolved
    * remainder (matches `listDealsWithErrors` semantics).
    */
-  aggregatePhoneStatsTruth(): {
+  aggregatePhoneStatsTruth(tenant?: 'adb' | 'sicoob' | 'oralsin'): {
     phones_checked: number
     phones_valid: number
     phones_invalid: number
     phones_error: number
   } {
+    const tenantClause = tenant ? ' WHERE d.tenant = ?' : ''
+    const params: unknown[] = tenant ? [tenant] : []
     const row = (this.db
       .prepare(
         `SELECT
@@ -487,9 +503,9 @@ export class PrecheckJobStore {
            SUM(CASE WHEN json_extract(je.value, '$.outcome') = 'valid'   THEN 1 ELSE 0 END) AS phones_valid,
            SUM(CASE WHEN json_extract(je.value, '$.outcome') = 'invalid' THEN 1 ELSE 0 END) AS phones_invalid,
            SUM(CASE WHEN json_extract(je.value, '$.outcome') = 'error'   THEN 1 ELSE 0 END) AS phones_error
-         FROM adb_precheck_deals d, json_each(d.phones_json) je`,
+         FROM adb_precheck_deals d, json_each(d.phones_json) je${tenantClause}`,
       )
-      .get() as
+      .get(...params) as
         | { phones_checked: number; phones_valid: number; phones_invalid: number; phones_error: number }
         | undefined) ?? { phones_checked: 0, phones_valid: 0, phones_invalid: 0, phones_error: 0 }
     // SUM over an empty set is NULL in SQLite; COALESCE each column.
@@ -676,7 +692,7 @@ export class PrecheckJobStore {
     }
   }
 
-  aggregateStats(): {
+  aggregateStats(tenant?: 'adb' | 'sicoob' | 'oralsin'): {
     deals_scanned: number
     deals_with_valid: number
     deals_all_invalid: number
@@ -692,6 +708,8 @@ export class PrecheckJobStore {
     //   `deals_all_invalid` LIVE only AND `invalid_count > 0` (zero-phone
     //                       deals don't count as "nenhum telefone WhatsApp").
     //   `deals_tombstoned`  exactly the rows with deleted_at NOT NULL.
+    const tenantClause = tenant ? ' WHERE tenant = ?' : ''
+    const params: unknown[] = tenant ? [tenant] : []
     const base = (this.db
       .prepare(
         `SELECT COUNT(*) AS deals_scanned,
@@ -699,9 +717,9 @@ export class PrecheckJobStore {
                 SUM(CASE WHEN deleted_at IS NULL AND valid_count = 0 AND invalid_count > 0    THEN 1 ELSE 0 END) AS deals_all_invalid,
                 SUM(CASE WHEN deleted_at IS NOT NULL                                          THEN 1 ELSE 0 END) AS deals_tombstoned,
                 MAX(scanned_at) AS last_scan_at
-         FROM adb_precheck_deals`,
+         FROM adb_precheck_deals${tenantClause}`,
       )
-      .get() as {
+      .get(...params) as {
       deals_scanned: number
       deals_with_valid: number
       deals_all_invalid: number
@@ -716,7 +734,9 @@ export class PrecheckJobStore {
     }
     // Truth-set, same rationale as `aggregatePhoneStatsTruth`. The legacy
     // SUM(adb_precheck_jobs.total_phones) double-counts every retry pass.
-    const phones = this.aggregatePhoneStatsTruth()
+    // Propagate tenant scope so the phones panel matches the deals panel
+    // when an operator filters by Sicoob/Oralsin.
+    const phones = this.aggregatePhoneStatsTruth(tenant)
     return {
       deals_scanned: base.deals_scanned ?? 0,
       deals_with_valid: base.deals_with_valid ?? 0,

@@ -219,7 +219,7 @@ function AdbPrecheckTabInner() {
       <PluginHeader
         icon={Stethoscope}
         title="ADB Pre-check"
-        subtitle="Pipeboard tenant_adb · pre-validacao WhatsApp dos leads de localizacao"
+        subtitle={`Pipeboard tenant_${tenant?.id ?? 'all'} · ${tenant?.label ?? 'Global'} · pre-validacao WhatsApp dos leads de localizacao`}
         status={status}
         accent={ACCENT}
         version="0.1.0"

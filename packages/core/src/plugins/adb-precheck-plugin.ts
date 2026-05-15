@@ -732,10 +732,22 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
    * preserve the legacy single-tenant behaviour byte-for-byte.
    */
   private resolvePgFromQuery(req: unknown): IPipeboardClient {
-    const q = (req as { query?: { tenant?: string } } | undefined)?.query
-    const raw = q?.tenant?.toLowerCase()
-    const id: TenantId = raw === 'sicoob' || raw === 'oralsin' ? raw : 'adb'
+    const id = this.resolveTenantFromReq(req)
     return this.pgByTenant.get(id) ?? this.pgByTenant.get('adb')!
+  }
+
+  /**
+   * T40e: single source of truth for `?tenant=` query parsing on read-only
+   * routes. Used by every stats/list handler so the SQLite store filters by
+   * tenant in lockstep with the per-tenant Pipeboard client (`pgByTenant`).
+   *
+   * Unknown / missing tenant defaults to 'adb' to preserve the pre-T22
+   * single-tenant contract for callers that don't carry tenant context.
+   */
+  private resolveTenantFromReq(req: unknown): TenantId {
+    const q = (req as { query?: { tenant?: string } } | undefined)?.query
+    const raw = typeof q?.tenant === 'string' ? q.tenant.toLowerCase() : ''
+    return raw === 'sicoob' || raw === 'oralsin' ? raw : 'adb'
   }
 
   private async handleListTenants(_req: unknown, reply: unknown): Promise<unknown> {
@@ -772,8 +784,9 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     return r.send({ devices })
   }
 
-  private async handleStats(_req: unknown, reply: unknown): Promise<unknown> {
-    return (reply as { send: (x: unknown) => unknown }).send(this.store.aggregateStats())
+  private async handleStats(req: unknown, reply: unknown): Promise<unknown> {
+    const tenant = this.resolveTenantFromReq(req)
+    return (reply as { send: (x: unknown) => unknown }).send(this.store.aggregateStats(tenant))
   }
 
   /**
@@ -820,9 +833,13 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       poolError = e instanceof Error ? e.message : String(e)
     }
 
+    // T40e: scope deal/phone stats to the selected tenant. The pg.countPool
+    // call above is already tenant-scoped via resolvePgFromQuery, so every
+    // numerator and denominator on this endpoint now reflects the same slice.
+    const tenant = this.resolveTenantFromReq(req)
     const thresholdIso = new Date(Date.now() - recheckAfterDays * 86_400_000).toISOString()
-    const { fresh, total: scannedTotal } = this.store.countScannedSince(thresholdIso)
-    const dealAgg = this.store.aggregateStats()
+    const { fresh, total: scannedTotal } = this.store.countScannedSince(thresholdIso, tenant)
+    const dealAgg = this.store.aggregateStats(tenant)
     // Bucket math with tombstoned excluded from live coverage:
     //   scannedTotal = fresh (live + window) + stale (live + outside window) + tombstoned
     //   poolTotal already excludes tombstoned (they're gone from prov_consultas)
@@ -836,13 +853,14 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       poolTotal !== null && poolTotal > 0 ? (liveScanned / poolTotal) * 100 : null
     // Truth-set: derived from adb_precheck_deals.phones_json (current state),
     // NOT from SUM(adb_precheck_jobs.*) which inflates with retry passes.
-    const phoneAgg = this.store.aggregatePhoneStatsTruth()
+    const phoneAgg = this.store.aggregatePhoneStatsTruth(tenant)
 
     // wa_contact_checks lives in the shared registry; query directly
     // since the plugin already owns this DB. Count DISTINCT phones —
     // the cache stores one row per (phone, attempt_phase) and ratios
     // of ~2 rows/phone are normal once retries run, so a raw COUNT(*)
-    // would also overstate cache coverage.
+    // would also overstate cache coverage. The cache is SHARED across
+    // tenants by design (spec §3.4 / grill D2) — DO NOT filter by tenant.
     let cacheFresh = 0
     let cacheTotal = 0
     try {
@@ -954,8 +972,12 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       poolError = e instanceof Error ? e.message : String(e)
     }
 
+    // T40e: pool counts are tenant-scoped via resolvePgFromQuery; mirror
+    // that on the SQLite-side counters so the operator's "Sicoob" selection
+    // doesn't show ADB's `scanned_total` against Sicoob's `pool_total`.
+    const tenant = this.resolveTenantFromReq(req)
     const thresholdIso = new Date(Date.now() - recheckAfterDays * 86_400_000).toISOString()
-    const { fresh, total: scannedTotal } = this.store.countScannedSince(thresholdIso)
+    const { fresh, total: scannedTotal } = this.store.countScannedSince(thresholdIso, tenant)
     const stale = Math.max(0, scannedTotal - fresh)
     const pending = poolTotal !== null ? Math.max(0, poolTotal - fresh) : null
     const coveragePercent =
@@ -1177,7 +1199,8 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
 
   private async handleListJobs(req: unknown, reply: unknown): Promise<unknown> {
     const limit = Number((req as { query: { limit?: string } }).query?.limit ?? 20)
-    return (reply as { send: (x: unknown) => unknown }).send(this.store.listJobs(limit))
+    const tenant = this.resolveTenantFromReq(req)
+    return (reply as { send: (x: unknown) => unknown }).send(this.store.listJobs(limit, tenant))
   }
 
   private async handleListDeals(req: unknown, reply: unknown): Promise<unknown> {
@@ -1195,6 +1218,11 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     const q = (req as { query: Record<string, string | undefined> }).query ?? {}
     const limit = Math.min(Math.max(Number(q.limit ?? 50), 1), 500)
     const offset = Math.max(Number(q.offset ?? 0), 0)
+    // T40e: scope every row to the selected tenant. Without this gate the
+    // Sicoob tab pages through ADB rows because adb_precheck_deals stores
+    // all tenants in one table (T22 migration: default 'adb', per-row
+    // tenant column added).
+    const tenant = this.resolveTenantFromReq(req)
     let where: string
     switch (q.filter) {
       case 'valid':
@@ -1215,14 +1243,14 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
               valid_count, invalid_count, primary_valid_phone,
               scanned_at, last_job_id, deleted_at
        FROM adb_precheck_deals
-       WHERE ${where}
+       WHERE ${where} AND tenant = ?
        ORDER BY COALESCE(deleted_at, scanned_at) DESC
        LIMIT ? OFFSET ?`,
     )
-    const rows = stmt.all(limit, offset)
+    const rows = stmt.all(tenant, limit, offset)
     const totalRow = this.db
-      .prepare(`SELECT COUNT(*) AS n FROM adb_precheck_deals WHERE ${where}`)
-      .get() as { n: number }
+      .prepare(`SELECT COUNT(*) AS n FROM adb_precheck_deals WHERE ${where} AND tenant = ?`)
+      .get(tenant) as { n: number }
     return (reply as { send: (x: unknown) => unknown }).send({
       data: rows,
       total: totalRow.n,
@@ -1323,12 +1351,17 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
 
   private async handleGetDeal(req: unknown, reply: unknown): Promise<unknown> {
     const p = (req as { params: { pasta: string; deal_id: string; contato_tipo: string; contato_id: string } }).params
+    // T40e: same (pasta, deal_id, contato_tipo, contato_id) tuple can exist
+    // across tenants in principle; require tenant in the WHERE so we never
+    // leak another tenant's row.
+    const tenant = this.resolveTenantFromReq(req)
     const row = this.db
       .prepare(
         `SELECT * FROM adb_precheck_deals
-         WHERE pasta = ? AND deal_id = ? AND contato_tipo = ? AND contato_id = ?`,
+         WHERE pasta = ? AND deal_id = ? AND contato_tipo = ? AND contato_id = ?
+           AND tenant = ?`,
       )
-      .get(p.pasta, Number(p.deal_id), p.contato_tipo, Number(p.contato_id))
+      .get(p.pasta, Number(p.deal_id), p.contato_tipo, Number(p.contato_id), tenant)
     const r = reply as { status: (c: number) => { send: (x: unknown) => unknown } }
     if (!row) return r.status(404).send({ error: 'Deal not scanned yet' })
     return (reply as { send: (x: unknown) => unknown }).send(row)
@@ -1346,9 +1379,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
    */
   private async handleNoteHistory(req: unknown, reply: unknown): Promise<unknown> {
     const { pasta } = (req as { params: { pasta: string } }).params
-    const q = (req as { query?: { tenant?: string } } | undefined)?.query
-    const rawTenant = q?.tenant?.toLowerCase()
-    const tenantId: TenantId = rawTenant === 'sicoob' || rawTenant === 'oralsin' ? rawTenant : 'adb'
+    const tenantId = this.resolveTenantFromReq(req)
     const r = reply as {
       status: (c: number) => { send: (x: unknown) => unknown }
       send: (x: unknown) => unknown
