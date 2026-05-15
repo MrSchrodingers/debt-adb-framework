@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
-import { Stethoscope, Package } from 'lucide-react'
+import { Stethoscope, Package, Megaphone } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
 import { useTranslation } from 'react-i18next'
 import { CORE_URL, authHeaders } from '../config'
 import { OralsinTab } from './oralsin-tab'
 import { AdbPrecheckTab } from './adb-precheck-tab'
+import { DebtSdrTab } from './debt-sdr-tab'
 import { StatusDot, type Accent } from './plugin-ui'
 
-type Plugin = 'oralsin' | 'adb-precheck'
+type Plugin = 'oralsin' | 'adb-precheck' | 'debt-sdr'
 
 type PluginStatus = 'active' | 'inactive' | 'checking' | 'error'
 
@@ -53,6 +54,22 @@ const PLUGINS: PluginDescriptor[] = [
       return (d.deals_scanned ?? 0).toLocaleString('pt-BR')
     },
   },
+  {
+    id: 'debt-sdr',
+    label: 'DEBT SDR',
+    subtitle: 'Multi-tenant SDR · Pipedrive lead pull + cold sequence',
+    icon: Megaphone,
+    accent: 'violet',
+    probeUrl: `${CORE_URL}/api/v1/plugins/debt-sdr/health`,
+    metricLabel: 'alertas pendentes',
+    metricFetch: async () => {
+      const r = await fetch(`${CORE_URL}/api/v1/plugins/debt-sdr/stats`, { headers: authHeaders() })
+      if (!r.ok) return '—'
+      const d = await r.json() as { tenants?: Array<{ alerts_unresolved?: number }> }
+      const total = (d.tenants ?? []).reduce((sum, t) => sum + (t.alerts_unresolved ?? 0), 0)
+      return total.toLocaleString('pt-BR')
+    },
+  },
 ]
 
 export function PluginTabs() {
@@ -61,10 +78,12 @@ export function PluginTabs() {
   const [statuses, setStatuses] = useState<Record<Plugin, PluginStatus>>({
     oralsin: 'checking',
     'adb-precheck': 'checking',
+    'debt-sdr': 'checking',
   })
   const [metrics, setMetrics] = useState<Record<Plugin, string>>({
     oralsin: '—',
     'adb-precheck': '—',
+    'debt-sdr': '—',
   })
 
   useEffect(() => {
@@ -91,7 +110,12 @@ export function PluginTabs() {
     return () => { cancelled = true; clearInterval(t) }
   }, [])
 
-  const ActiveComponent = active === 'oralsin' ? OralsinTab : AdbPrecheckTab
+  const ActiveComponent =
+    active === 'oralsin'
+      ? OralsinTab
+      : active === 'adb-precheck'
+        ? AdbPrecheckTab
+        : DebtSdrTab
 
   return (
     <div className="space-y-5">
