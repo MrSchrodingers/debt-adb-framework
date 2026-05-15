@@ -982,67 +982,48 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
 
       <Section
         title="Device de probe"
-        description="Escolha qual telefone (de qual device conectado) executa a verificação ADB. Vazio = usa o default do plugin. O card abaixo mostra status busy/free em tempo real (5s poll)."
+        description={
+          devicesLoading
+            ? 'Carregando dispositivos conectados…'
+            : `Clique no telefone que executa a verificação ADB. ${devices.length} conectado${devices.length === 1 ? '' : 's'}. Atualiza busy/free a cada 5s. Vazio = default do plugin.`
+        }
       >
-        <div className="space-y-3">
-          <DeviceAvailabilityCard selected={deviceSerial || null} onSelect={setDeviceSerial} />
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 mt-3">
-          <Field
-            label="Device (ADB serial)"
-            hint={devicesLoading ? 'carregando...' : `${devices.length} conectados — também selecionável via card acima`}
-          >
-            <select
-              value={deviceSerial}
-              onChange={(e) => setDeviceSerial(e.target.value)}
-              disabled={devicesLoading}
-              className={`${inputCls} disabled:opacity-60`}
+        <DeviceAvailabilityCard
+          selected={deviceSerial || null}
+          onSelect={setDeviceSerial}
+          enrichment={devices}
+        />
+        {deviceSerial ? (
+          <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
+            <Field
+              label="Número do sender (WAHA session)"
+              hint={
+                availableAccounts.length === 0
+                  ? 'nenhum número mapeado neste device'
+                  : `${availableAccounts.length} mapeado${availableAccounts.length > 1 ? 's' : ''} · vazio = default do plugin`
+              }
             >
-              <option value="">— usar default do plugin —</option>
-              {devices.map((d) => {
-                const primary = d.accounts[0]?.phoneNumber
-                const offline = d.status && d.status !== 'online'
-                return (
-                  <option key={d.serial} value={d.serial}>
-                    {d.serial}
-                    {primary ? ` · ${primary}` : ''}
-                    {d.accounts.length > 1 ? ` (+${d.accounts.length - 1})` : ''}
-                    {offline ? ` [${d.status}]` : ''}
+              <select
+                value={wahaSession}
+                onChange={(e) => setWahaSession(e.target.value)}
+                disabled={availableAccounts.length === 0}
+                className={`${inputCls} disabled:opacity-60`}
+              >
+                <option value="">— usar default do plugin —</option>
+                {availableAccounts.map((a) => (
+                  <option
+                    key={`${a.profileId}|${a.packageName}|${a.phoneNumber}`}
+                    value={a.phoneNumber}
+                  >
+                    {a.phoneNumber}
+                    {a.packageName === 'com.whatsapp.w4b' ? ' · WA Business' : ''}
+                    {a.profileId > 0 ? ` · profile ${a.profileId}` : ''}
                   </option>
-                )
-              })}
-            </select>
-          </Field>
-          <Field
-            label="Número do sender (WAHA session)"
-            hint={
-              !deviceSerial
-                ? 'escolha um device primeiro'
-                : availableAccounts.length === 0
-                ? 'nenhum número mapeado neste device'
-                : `${availableAccounts.length} mapeado${availableAccounts.length > 1 ? 's' : ''}`
-            }
-          >
-            <select
-              value={wahaSession}
-              onChange={(e) => setWahaSession(e.target.value)}
-              disabled={!deviceSerial || availableAccounts.length === 0}
-              className={`${inputCls} disabled:opacity-60`}
-            >
-              <option value="">— usar default do plugin —</option>
-              {availableAccounts.map((a) => (
-                <option
-                  key={`${a.profileId}|${a.packageName}|${a.phoneNumber}`}
-                  value={a.phoneNumber}
-                >
-                  {a.phoneNumber}
-                  {a.packageName === 'com.whatsapp.w4b' ? ' · WA Business' : ''}
-                  {a.profileId > 0 ? ` · profile ${a.profileId}` : ''}
-                </option>
-              ))}
-            </select>
-          </Field>
-        </div>
+                ))}
+              </select>
+            </Field>
+          </div>
+        ) : null}
       </Section>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
