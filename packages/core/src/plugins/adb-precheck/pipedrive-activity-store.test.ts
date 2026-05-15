@@ -553,3 +553,122 @@ describe('PipedriveActivityStore — insertPending with revises_row_id and http_
     expect(row.http_verb).toBe('POST')
   })
 })
+
+// T23: per-tenant dedup. The (tenant, dedup_key) UNIQUE INDEX is partial
+// (`WHERE dedup_key IS NOT NULL`), so pre-T23 rows with NULL dedup_key
+// coexist; new rows are deduped at the tenant boundary.
+describe('PipedriveActivityStore — tenant dedup (T23)', () => {
+  let db: import('better-sqlite3').Database
+  let store: PipedriveActivityStore
+  beforeEach(() => {
+    db = new Database(':memory:')
+    db.pragma('journal_mode = WAL')
+    store = new PipedriveActivityStore(db)
+    store.initialize()
+  })
+  afterEach(() => db.close())
+
+  it('dedupes per (tenant, dedup_key) — same key across tenants does not collide', () => {
+    const adbRowId = store.insertPending({
+      scenario: 'pasta_summary',
+      deal_id: 1,
+      pasta: 'P-1',
+      phone_normalized: null,
+      job_id: 'j1',
+      pipedrive_endpoint: '/notes',
+      pipedrive_payload_json: '{}',
+      tenant: 'adb',
+      dedup_key: 'k1',
+    })
+    const sicoobRowId = store.insertPending({
+      scenario: 'pasta_summary',
+      deal_id: 1,
+      pasta: 'P-1',
+      phone_normalized: null,
+      job_id: 'j1',
+      pipedrive_endpoint: '/notes',
+      pipedrive_payload_json: '{}',
+      tenant: 'sicoob',
+      dedup_key: 'k1',
+    })
+    const adb = store.findByDedupKey('adb', 'k1')
+    const sicoob = store.findByDedupKey('sicoob', 'k1')
+    expect(adb?.id).toBe(adbRowId)
+    expect(sicoob?.id).toBe(sicoobRowId)
+    expect(adb?.tenant).toBe('adb')
+    expect(sicoob?.tenant).toBe('sicoob')
+    expect(adb?.dedup_key).toBe('k1')
+    expect(sicoob?.dedup_key).toBe('k1')
+  })
+
+  it('UNIQUE (tenant, dedup_key) rejects same key for same tenant', () => {
+    store.insertPending({
+      scenario: 'pasta_summary',
+      deal_id: 1,
+      pasta: 'P-1',
+      phone_normalized: null,
+      job_id: 'j1',
+      pipedrive_endpoint: '/notes',
+      pipedrive_payload_json: '{}',
+      tenant: 'adb',
+      dedup_key: 'k2',
+    })
+    expect(() =>
+      store.insertPending({
+        scenario: 'pasta_summary',
+        deal_id: 1,
+        pasta: 'P-1',
+        phone_normalized: null,
+        job_id: 'j1',
+        pipedrive_endpoint: '/notes',
+        pipedrive_payload_json: '{}',
+        tenant: 'adb',
+        dedup_key: 'k2',
+      }),
+    ).toThrow(/UNIQUE|constraint/i)
+  })
+
+  it('allows multiple NULL dedup_key rows (partial index excludes NULLs)', () => {
+    // Two pre-T23 style rows (no dedup_key) for the same tenant must not
+    // collide — the partial UNIQUE INDEX excludes them via the
+    // `WHERE dedup_key IS NOT NULL` predicate.
+    const id1 = store.insertPending({
+      scenario: 'pasta_summary',
+      deal_id: 1,
+      pasta: 'P-1',
+      phone_normalized: null,
+      job_id: 'j1',
+      pipedrive_endpoint: '/notes',
+      pipedrive_payload_json: '{}',
+      tenant: 'adb',
+    })
+    const id2 = store.insertPending({
+      scenario: 'pasta_summary',
+      deal_id: 1,
+      pasta: 'P-1',
+      phone_normalized: null,
+      job_id: 'j1',
+      pipedrive_endpoint: '/notes',
+      pipedrive_payload_json: '{}',
+      tenant: 'adb',
+    })
+    expect(id1).not.toBe(id2)
+    expect(store.findByDedupKey('adb', '__none__')).toBeNull()
+  })
+
+  it('insertPending defaults tenant to adb when omitted (back-compat)', () => {
+    const id = store.insertPending({
+      scenario: 'pasta_summary',
+      deal_id: 1,
+      pasta: 'P-1',
+      phone_normalized: null,
+      job_id: 'j1',
+      pipedrive_endpoint: '/notes',
+      pipedrive_payload_json: '{}',
+      dedup_key: 'k-default',
+    })
+    const row = store.findByDedupKey('adb', 'k-default')
+    expect(row?.id).toBe(id)
+    expect(row?.tenant).toBe('adb')
+  })
+})

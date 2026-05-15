@@ -137,6 +137,14 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   private pipedriveClient: PipedriveClient | null = null
   private pipedrivePublisher: PipedrivePublisher | null = null
   private pipedriveActivityStore: PipedriveActivityStore | null = null
+  /**
+   * T23: per-tenant PipedrivePublisher map. Built in init() once we have the
+   * pastaLocks + activity store + tenant registry wired. The legacy
+   * `pipedrivePublisher` field is preserved and now points at the 'adb'
+   * tenant's publisher so the read-only plugin routes
+   * (`/plugins/adb-precheck/pipedrive/*`) keep working without refactor.
+   */
+  private pipedriveByTenant = new Map<TenantId, PipedrivePublisher>()
   private readonly pipedriveCacheTtlDays: number | undefined
   private readonly pipedriveCompanyDomain: string | null
   private readonly pauseState: DispatchPauseState | undefined
@@ -152,6 +160,14 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   private readonly adbRestTimeoutMs: number | undefined
   private readonly adbPgConnectionString: string | undefined
   private readonly adbPgMaxConnections: number
+  // T23: stashed for per-tenant PipedriveClient construction in init(). The
+  // tenant registry carries each tenant's apiToken + companyDomain, and the
+  // rate/burst/emitter knobs are shared across tenants (same Pipedrive
+  // workspace contention regardless of which tenant initiated the publish).
+  private readonly pipedriveRatePerSec: number | undefined
+  private readonly pipedriveBurst: number | undefined
+  private readonly pipedriveBaseUrl: string | undefined
+  private readonly emitter: DispatchEmitter | undefined
 
   constructor(
     opts: {
@@ -262,6 +278,11 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     this.pauseState = opts.pauseState
     this.hygienizationOperator = opts.hygienizationOperator ?? 'adb-precheck:hygienization'
     this.tenantRegistry = opts.tenantRegistry
+    // T23: stash for per-tenant PipedriveClient construction in init().
+    this.pipedriveRatePerSec = opts.pipedrive?.ratePerSec
+    this.pipedriveBurst = opts.pipedrive?.burst
+    this.pipedriveBaseUrl = opts.pipedrive?.baseUrl
+    this.emitter = opts.emitter
 
     // Pipedrive client + publisher are wired only when a token is provided.
     // Stays null when the env var is missing — scanner becomes a no-op for
@@ -343,17 +364,14 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     if (reaped > 0) {
       ctx.logger.warn('reaped orphaned precheck jobs from prior run', { count: reaped })
     }
+    // T23: activity store is shared across tenants — every (tenant, dedup_key)
+    // pair lives in the same table. Initialised before the per-tenant publisher
+    // loop below so each tenant's PipedrivePublisher can wire it up directly.
+    // Stays null when no tenant has Pipedrive configured (scanner is a no-op
+    // for Pipedrive intents in that case).
     if (this.pipedriveClient) {
       this.pipedriveActivityStore = new PipedriveActivityStore(this.db)
       this.pipedriveActivityStore.initialize()
-      this.pipedrivePublisher = new PipedrivePublisher(
-        this.pipedriveClient,
-        ctx.logger,
-        this.pipedriveActivityStore,
-        this.pipedriveCompanyDomain,
-        undefined, // idempotencyWindowMs uses default
-        this.pastaLocks,
-      )
       ctx.logger.info('Pipedrive integration enabled', {
         companyDomain: this.pipedriveCompanyDomain ?? '(unset — links disabled)',
       })
@@ -427,6 +445,52 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     this.pendingWritebacks.initialize()
     this.pendingWritebacks.startDrain()
 
+    // T23: build one PipedrivePublisher per tenant. Each tenant carries its
+    // own Pipedrive workspace token + company domain via TenantConfig, so
+    // every publisher gets its own PipedriveClient instance. The shared
+    // activity store + pasta locks live across tenants because dedup +
+    // pasta concurrency are global concerns regardless of who initiated
+    // the publish.
+    //
+    // Tenants without `pipedrive.apiToken` configured don't get a publisher —
+    // their scanner runs without Pipedrive (intents are simply not emitted).
+    // The legacy `this.pipedrivePublisher` field is kept in sync with the
+    // 'adb' publisher so the read-only Pipedrive plugin routes
+    // (`/plugins/adb-precheck/pipedrive/*`) keep working without refactor.
+    if (this.pipedriveActivityStore) {
+      for (const tc of tenantRegistry.list()) {
+        if (!tc.pipedrive?.apiToken) continue
+        // adb tenant reuses the constructor-built client (preserves
+        // single-tenant rate-bucket behaviour byte-for-byte); other tenants
+        // get a fresh client built from their TenantConfig credentials.
+        const client =
+          tc.id === 'adb' && this.pipedriveClient
+            ? this.pipedriveClient
+            : new PipedriveClient({
+                apiToken: tc.pipedrive.apiToken,
+                baseUrl: this.pipedriveBaseUrl,
+                ratePerSec: this.pipedriveRatePerSec,
+                burst: this.pipedriveBurst,
+                emitter: this.emitter,
+              })
+        const publisher = new PipedrivePublisher(
+          client,
+          ctx.logger,
+          this.pipedriveActivityStore,
+          tc.pipedrive.companyDomain ?? null,
+          undefined, // idempotencyWindowMs uses default
+          this.pastaLocks ?? undefined,
+          tc.id,
+          tc.label,
+        )
+        this.pipedriveByTenant.set(tc.id, publisher)
+      }
+      // Back-compat: legacy field points at the adb tenant's publisher.
+      // The read-only plugin routes (`/plugins/adb-precheck/pipedrive/*`)
+      // only surface adb-tenant data so this is safe.
+      this.pipedrivePublisher = this.pipedriveByTenant.get('adb') ?? null
+    }
+
     for (const tc of tenantRegistry.list()) {
       const client = this.pgByTenant.get(tc.id)!
       const scanner = new PrecheckScanner({
@@ -458,12 +522,15 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
         },
         onJobFinished: (jobId) => this.deliverJobCompletedCallback(jobId),
         onInvalidPhone: this.onInvalidPhoneCb,
-        // T22 transitional: shared pipedrivePublisher. T23 swaps for a
-        // per-tenant map so raw tenants can target their own Pipedrive
-        // company. For now, all scanners publish through the same
-        // publisher (the only configured token belongs to adb's
-        // Pipedrive account).
-        pipedrive: this.pipedrivePublisher ?? undefined,
+        // T23: each scanner gets its tenant's PipedrivePublisher. Tenants
+        // without an apiToken configured pass undefined and the scanner
+        // skips Pipedrive intents entirely. The publishers are independent
+        // instances so the in-memory `seenDedupKeys` Set is naturally
+        // tenant-scoped, and each persists rows with its own `tenant`
+        // value so the partial UNIQUE INDEX on (tenant, dedup_key)
+        // enforces cross-restart idempotency without cross-tenant
+        // collisions.
+        pipedrive: this.pipedriveByTenant.get(tc.id) ?? undefined,
         pipedriveCacheTtlDays: this.pipedriveCacheTtlDays,
         // Pipeboard generates deal-level Pipedrive activities server-side
         // when running on the REST backend, so skip the Dispatch-side
@@ -553,14 +620,19 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       clearInterval(this.pastaLockReapTimer)
       this.pastaLockReapTimer = null
     }
-    if (this.pipedrivePublisher) {
-      try { await this.pipedrivePublisher.flush() }
+    // T23: flush every per-tenant publisher. Sequential rather than parallel
+    // so a slow tenant doesn't starve a fast one — drain order does not
+    // matter because publishers are independent.
+    for (const [tenantId, publisher] of this.pipedriveByTenant.entries()) {
+      try { await publisher.flush() }
       catch (e) {
         this.ctx?.logger.warn('Pipedrive publisher flush failed during destroy', {
+          tenant: tenantId,
           error: e instanceof Error ? e.message : String(e),
         })
       }
     }
+    this.pipedriveByTenant.clear()
     this.pendingWritebacks?.stopDrain()
     for (const [tenantId, pg] of this.pgByTenant.entries()) {
       try {

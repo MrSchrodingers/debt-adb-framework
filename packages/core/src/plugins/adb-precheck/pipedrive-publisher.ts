@@ -77,6 +77,19 @@ export class PipedrivePublisher {
     private readonly companyDomain?: string | null,
     private readonly idempotencyWindowMs: number = 30 * 24 * 60 * 60_000,
     private readonly pastaLocks?: PastaLockManager,
+    /**
+     * T23: tenant ownership for cross-tenant dedup. Defaults to 'adb' so
+     * existing tests + the legacy single-tenant boot path keep working
+     * byte-for-byte. The plugin builds one publisher per tenant in T23 so
+     * the in-memory `seenDedupKeys` Set is naturally tenant-scoped.
+     */
+    private readonly tenant: 'adb' | 'sicoob' | 'oralsin' = 'adb',
+    /**
+     * T23: human-friendly tenant label, forwarded to the pasta_summary header
+     * via `buildPastaSummaryNote`. Defaults to undefined so the adb formatter
+     * output stays identical to pre-T23 (no header prefix).
+     */
+    private readonly tenantLabel?: string,
   ) {}
 
   enqueueDealAllFail(intent: PipedriveDealAllFailIntent, meta?: Partial<PublisherEnqueueMeta>): string | null {
@@ -92,7 +105,9 @@ export class PipedrivePublisher {
   }
 
   enqueuePastaSummary(intent: PipedrivePastaSummaryIntent, meta?: Partial<PublisherEnqueueMeta>): string | null {
-    const builtIntent = buildPastaSummaryNote(intent, this.companyDomain)
+    const builtIntent = buildPastaSummaryNote(intent, this.companyDomain, {
+      tenantLabel: this.tenantLabel,
+    })
     // Look up the current Pipedrive note for this pasta. If one exists, switch
     // to PUT instead of creating a duplicate note. Only applies when the store
     // is available (test instantiations without a store fall back to POST).
@@ -180,6 +195,8 @@ export class PipedrivePublisher {
         triggered_by: meta.triggered_by,
         revises_row_id: revisesRowId,
         http_verb: isUpdate ? 'PUT' : 'POST',
+        tenant: this.tenant,
+        dedup_key: intent.dedup_key,
       })
     }
     this.queue.push({ intent, rowId, meta })
@@ -279,6 +296,12 @@ export class PipedrivePublisher {
               triggered_by: next.meta.triggered_by,
               http_verb: 'POST',
               // No revises_row_id — fresh creation, not a revision of the orphaned row.
+              tenant: this.tenant,
+              // T23: fallback recreates the same logical record under a fresh
+              // POST — append `:recreate` to the dedup_key so it does not
+              // collide with the orphaned PUT row under the partial UNIQUE
+              // INDEX (tenant, dedup_key).
+              dedup_key: `${fallbackIntent.dedup_key}:recreate`,
             })
           }
           // Unshift so it is the very next item processed.

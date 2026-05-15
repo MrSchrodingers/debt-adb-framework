@@ -293,6 +293,7 @@ function renderDealPhonesTable(deal: PipedrivePastaDealRow): string {
 export function buildPastaSummaryNote(
   intent: PipedrivePastaSummaryIntent,
   companyDomain?: string | null,
+  opts?: { tenantLabel?: string },
 ): PipedriveNoteIntent {
   const okPct = pct(intent.ok_deals, intent.total_deals)
   const archivedPct = pct(intent.archived_deals, intent.total_deals)
@@ -305,17 +306,25 @@ export function buildPastaSummaryNote(
   const startedEsc = escapeHtml(intent.job_started ?? 'n/a')
   const endedEsc = escapeHtml(intent.job_ended ?? 'n/a')
 
+  // T23: pasta_summary header gains a tenant prefix for non-adb tenants.
+  // The adb tenant label ('ADB/Debt') and undefined both produce empty
+  // prefix — preserves the legacy single-tenant output byte-for-byte.
+  const tenantPrefix =
+    opts?.tenantLabel && opts.tenantLabel !== 'ADB/Debt'
+      ? ` &middot; <em>${escapeHtml(opts.tenantLabel)}</em>`
+      : ''
+
   const parts: string[] = []
 
   // ── Header — pasta name as visual title + first-deal link inline ──────
   if (dealUrl) {
     parts.push(
-      `<p><strong>📋 Resumo de varredura</strong> &middot; Pasta <strong>${pastaEsc}</strong> &middot; `
+      `<p><strong>📋 Resumo de varredura</strong>${tenantPrefix} &middot; Pasta <strong>${pastaEsc}</strong> &middot; `
         + `<a href="${escapeHtml(dealUrl)}">deal #${intent.first_deal_id}</a></p>`,
     )
   } else {
     parts.push(
-      `<p><strong>📋 Resumo de varredura</strong> &middot; Pasta <strong>${pastaEsc}</strong></p>`,
+      `<p><strong>📋 Resumo de varredura</strong>${tenantPrefix} &middot; Pasta <strong>${pastaEsc}</strong></p>`,
     )
   }
 
