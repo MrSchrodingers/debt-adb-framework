@@ -76,7 +76,42 @@ export interface PluginContext {
    * CRM consumer materializes (B2 revisado).
    */
   services: PluginServicesRegistry
+
+  // ── G3 (debt-sdr): tenant-aware device + sender claims ────────────────
+
+  /**
+   * Claim exclusive ownership of a device for a tenant. Loader injects the
+   * caller pluginName. Idempotent for the same (tenant, plugin). Fails with
+   * `already_claimed` when another tenant or plugin holds the device.
+   * Plugins SHOULD fail init() when this fails — no split-tenant mode.
+   */
+  requestDeviceAssignment(deviceSerial: string, tenantName: string): AssignmentResult
+
+  /**
+   * Upsert tenant ownership on a sender phone. Idempotent for the same
+   * tenant. Fails with `conflicting_tenant` when the sender is already
+   * owned by another tenant. Callers should fail init() on conflict.
+   */
+  assertSenderInTenant(senderPhone: string, tenantName: string): AssertTenantResult
+
+  /**
+   * Release a device assignment. Loader passes the caller pluginName, so
+   * plugins can only release devices they themselves claimed (I2 ownership
+   * invariant). Unclaimed devices are a no-op.
+   */
+  releaseDeviceAssignment(deviceSerial: string): { ok: boolean; reason?: 'not_owner' }
 }
+
+// ── G3 (debt-sdr): result discriminated unions ──
+
+export type AssignmentResult =
+  | { ok: true }
+  | { ok: false; reason: 'already_claimed'; current_tenant: string; current_plugin: string }
+
+export type AssertTenantResult =
+  | { ok: true }
+  | { ok: false; reason: 'phone_not_found' }
+  | { ok: false; reason: 'conflicting_tenant'; current_tenant: string }
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 // NOTE: `any` is intentional here — plugins register handlers with

@@ -20,6 +20,7 @@ import { validateManifest, type ManifestValidationResult } from './manifest.js'
 import { InMemoryServicesRegistry, type PluginServicesRegistry } from './services-registry.js'
 import type { GeoViewRegistry } from '../geo/registry.js'
 import type { GeoViewDefinition } from '../geo/types.js'
+import type { DeviceTenantAssignment } from '../engine/device-tenant-assignment.js'
 
 const PRIORITY_MAP: Record<string, number> = {
   high: 1,
@@ -70,6 +71,13 @@ export class PluginLoader {
      * plugin's views on unload/reload to preserve plugin isolation.
      */
     private geoRegistry?: GeoViewRegistry,
+    /**
+     * G3 (debt-sdr): tenant-scoped device claim store. When provided,
+     * plugins can call `ctx.requestDeviceAssignment(...)` to gate hard
+     * tenant partition. Loader auto-releases all devices owned by a
+     * plugin on unload/destroy.
+     */
+    private dta?: DeviceTenantAssignment,
   ) {
     this.services = services ?? new InMemoryServicesRegistry()
     this.loggerFactory = logger ?? {
@@ -231,6 +239,7 @@ export class PluginLoader {
       await plugin.destroy()
       this.loadedPlugins.delete(name)
       this.geoRegistry?.unregisterPlugin(name)
+      this.releaseDevicesOnUnload(name)
     }
   }
 
@@ -240,11 +249,23 @@ export class PluginLoader {
         await plugin.destroy()
         this.loadedPlugins.delete(name)
         this.geoRegistry?.unregisterPlugin(name)
+        this.releaseDevicesOnUnload(name)
       } catch (err) {
         this.loggerFactory.child({ plugin: name }).warn('Plugin destroy failed', {
           err: err instanceof Error ? err.message : String(err),
         })
       }
+    }
+  }
+
+  /** G3: auto-release devices owned by a plugin on destroy. */
+  private releaseDevicesOnUnload(name: string): void {
+    const released = this.dta?.releaseByPlugin(name) ?? 0
+    if (released > 0) {
+      this.loggerFactory.child({ plugin: name }).info(
+        'Released device assignments on destroy',
+        { count: released },
+      )
     }
   }
 
@@ -370,6 +391,38 @@ export class PluginLoader {
       deviceMutex: this.deviceMutex,
 
       services: this.services,
+
+      // ── G3 (debt-sdr): tenant-aware claims ────────────────────────────
+
+      requestDeviceAssignment: (deviceSerial, tenantName) => {
+        if (!this.dta) {
+          logger.warn(
+            'requestDeviceAssignment called but DeviceTenantAssignment not wired',
+            { deviceSerial },
+          )
+          return {
+            ok: false,
+            reason: 'already_claimed',
+            current_tenant: '__unconfigured__',
+            current_plugin: '__none__',
+          }
+        }
+        return this.dta.claim(deviceSerial, tenantName, pluginName)
+      },
+
+      assertSenderInTenant: (senderPhone, tenantName) => {
+        if (!this.senderMapping) {
+          return { ok: false, reason: 'phone_not_found' }
+        }
+        return this.senderMapping.setSenderTenant(senderPhone, tenantName)
+      },
+
+      releaseDeviceAssignment: (deviceSerial) => {
+        if (!this.dta) return { ok: false }
+        const r = this.dta.release(deviceSerial, pluginName)
+        if (r.ok) return { ok: true }
+        return { ok: false, reason: r.reason }
+      },
     }
   }
 }
