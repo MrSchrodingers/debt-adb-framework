@@ -4,6 +4,12 @@ import type { EnqueueParams, Message, MessageStatus, PaginatedFilters, Paginated
 import { VALID_TRANSITIONS } from './types.js'
 import { getTracer } from '../telemetry/tracer.js'
 import { SpanStatusCode } from '@opentelemetry/api'
+import type { DeviceTenantAssignment } from '../engine/device-tenant-assignment.js'
+
+export interface MessageQueueOptions {
+  /** G2.3 (debt-sdr): when provided, dequeueBySender filters by device claim. */
+  dta?: DeviceTenantAssignment
+}
 
 /**
  * Strip all non-digit characters from a phone string.
@@ -16,7 +22,18 @@ function normalizeDigits(phone: string): string {
 }
 
 export class MessageQueue {
-  constructor(private db: Database.Database) {}
+  private readonly dta?: DeviceTenantAssignment
+  /** G2.3 metric: count of dequeue attempts that returned 0 due to tenant filter. */
+  private blockedByTenantFilter = 0
+
+  constructor(private db: Database.Database, opts?: MessageQueueOptions) {
+    this.dta = opts?.dta
+  }
+
+  /** G2.3: snapshot of how many dequeues were blocked by tenant filter. */
+  getBlockedByTenantFilterCount(): number {
+    return this.blockedByTenantFilter
+  }
 
   initialize(): void {
     this.db.exec(`
@@ -700,14 +717,40 @@ export class MessageQueue {
   }
 
   dequeueBySender(deviceSerial: string, batchSize = 50): Message[] {
+    // G2.3 (debt-sdr): tenant partition.
+    //
+    // Computed once per call (outside the txn) — assignment state changes
+    // through DeviceTenantAssignment in separate transactions, and we want
+    // a stable view for the duration of this dequeue.
+    //
+    // Feature flag DISPATCH_QUEUE_TENANT_FILTER=false disables the filter
+    // entirely (rollback escape hatch — Task 10).
+    const tenantFilterDisabled = process.env.DISPATCH_QUEUE_TENANT_FILTER === 'false'
+    const assignment = !tenantFilterDisabled ? this.dta?.getAssignment(deviceSerial) ?? null : null
+    let tenantClause: string
+    let tenantBinds: readonly string[]
+    if (tenantFilterDisabled || !this.dta) {
+      // No filter applied (no DTA wired OR flag off).
+      tenantClause = ''
+      tenantBinds = []
+    } else if (assignment) {
+      // Device is claimed: only same-tenant messages are visible.
+      tenantClause = 'AND tenant_hint = ?'
+      tenantBinds = [assignment.tenant_name]
+    } else {
+      // Device is unclaimed: only legacy (null tenant_hint) messages.
+      tenantClause = 'AND tenant_hint IS NULL'
+      tenantBinds = []
+    }
+
     const txn = this.db.transaction(() => {
       // Step 1: Check for high-priority messages (priority < 5)
       const highPriority = this.db.prepare(`
         SELECT * FROM messages
-        WHERE status = 'queued' AND priority < 5
+        WHERE status = 'queued' AND priority < 5 ${tenantClause}
         ORDER BY priority ASC, created_at ASC
         LIMIT 1
-      `).get() as Record<string, unknown> | undefined
+      `).get(...tenantBinds) as Record<string, unknown> | undefined
 
       if (highPriority) {
         // Lock just the high-priority message
@@ -727,11 +770,11 @@ export class MessageQueue {
       const topSender = this.db.prepare(`
         SELECT sender_number, COUNT(*) as cnt
         FROM messages
-        WHERE status = 'queued' AND sender_number IS NOT NULL
+        WHERE status = 'queued' AND sender_number IS NOT NULL ${tenantClause}
         GROUP BY sender_number
         ORDER BY cnt DESC
         LIMIT 1
-      `).get() as { sender_number: string; cnt: number } | undefined
+      `).get(...tenantBinds) as { sender_number: string; cnt: number } | undefined
 
       if (!topSender) {
         // Fallback: dequeue any single queued message (no sender_number set)
@@ -742,21 +785,21 @@ export class MessageQueue {
               locked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
           WHERE id = (
-            SELECT id FROM messages WHERE status = 'queued'
+            SELECT id FROM messages WHERE status = 'queued' ${tenantClause}
             ORDER BY priority ASC, created_at ASC LIMIT 1
           )
           RETURNING *
-        `).get(deviceSerial) as Record<string, unknown> | undefined
+        `).get(deviceSerial, ...tenantBinds) as Record<string, unknown> | undefined
         return any ? [this.rowToMessage(any)] : []
       }
 
       // Step 3: Lock batch for that sender
       const ids = this.db.prepare(`
         SELECT id FROM messages
-        WHERE status = 'queued' AND sender_number = ?
+        WHERE status = 'queued' AND sender_number = ? ${tenantClause}
         ORDER BY priority ASC, created_at ASC
         LIMIT ?
-      `).all(topSender.sender_number, batchSize) as { id: string }[]
+      `).all(topSender.sender_number, ...tenantBinds, batchSize) as { id: string }[]
 
       if (ids.length === 0) return []
 
@@ -779,7 +822,19 @@ export class MessageQueue {
       return rows.map((row) => this.rowToMessage(row))
     })
 
-    return txn.immediate()
+    const result = txn.immediate()
+
+    // G2.3 metric: any non-empty queue blocked by tenant filter?
+    // Cheap heuristic — count when filter was active and we returned 0
+    // but a non-filtered count would have been > 0.
+    if (result.length === 0 && (tenantClause !== '' || (this.dta && !tenantFilterDisabled))) {
+      const total = this.db
+        .prepare("SELECT COUNT(*) AS n FROM messages WHERE status = 'queued'")
+        .get() as { n: number }
+      if (total.n > 0) this.blockedByTenantFilter++
+    }
+
+    return result
   }
 
   updateScreenshotPath(id: string, screenshotPath: string): void {

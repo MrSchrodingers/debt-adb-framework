@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
 import { MessageQueue } from './message-queue.js'
 import type { Message } from './types.js'
+import { DeviceTenantAssignment } from '../engine/device-tenant-assignment.js'
 
 describe('MessageQueue', () => {
   let db: Database.Database
@@ -532,6 +533,135 @@ describe('MessageQueue', () => {
         .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='messages'")
         .all() as { name: string }[]
       expect(indexes.map(i => i.name)).toContain('idx_messages_tenant_hint')
+    })
+  })
+
+  // ── G2.3 (debt-sdr): dequeueBySender tenant filter ──────────────────────
+
+  describe('dequeueBySender — tenant filter (G2.3)', () => {
+    let dta: DeviceTenantAssignment
+    let tenantQueue: MessageQueue
+
+    beforeEach(() => {
+      dta = new DeviceTenantAssignment(db)
+      tenantQueue = new MessageQueue(db, { dta })
+      tenantQueue.initialize()
+      delete process.env.DISPATCH_QUEUE_TENANT_FILTER
+    })
+
+    it('returns legacy messages when device is unclaimed', () => {
+      tenantQueue.enqueue({
+        to: '554399999991',
+        body: 'x',
+        idempotencyKey: 'g23-A',
+        senderNumber: '554399000100',
+      })
+      const batch = tenantQueue.dequeueBySender('devA')
+      expect(batch).toHaveLength(1)
+      expect(batch[0]!.tenantHint).toBeNull()
+    })
+
+    it('rejects legacy (null-hint) messages when device is claimed', () => {
+      dta.claim('devA', 'oralsin-sdr', 'debt-sdr')
+      tenantQueue.enqueue({
+        to: '554399999992',
+        body: 'x',
+        idempotencyKey: 'g23-B',
+        senderNumber: '554399000100',
+      })
+      expect(tenantQueue.dequeueBySender('devA')).toHaveLength(0)
+    })
+
+    it('returns same-tenant messages on claimed device', () => {
+      dta.claim('devA', 'oralsin-sdr', 'debt-sdr')
+      tenantQueue.enqueue({
+        to: '554399999993',
+        body: 'x',
+        idempotencyKey: 'g23-C',
+        senderNumber: '554399000100',
+        tenantHint: 'oralsin-sdr',
+      })
+      const batch = tenantQueue.dequeueBySender('devA')
+      expect(batch).toHaveLength(1)
+      expect(batch[0]!.tenantHint).toBe('oralsin-sdr')
+    })
+
+    it('rejects cross-tenant messages on claimed device', () => {
+      dta.claim('devA', 'oralsin-sdr', 'debt-sdr')
+      tenantQueue.enqueue({
+        to: '554399999994',
+        body: 'x',
+        idempotencyKey: 'g23-D',
+        senderNumber: '554399000100',
+        tenantHint: 'sicoob-sdr',
+      })
+      expect(tenantQueue.dequeueBySender('devA')).toHaveLength(0)
+    })
+
+    it('high-priority messages also respect tenant filter on claimed device', () => {
+      dta.claim('devA', 'oralsin-sdr', 'debt-sdr')
+      tenantQueue.enqueue({
+        to: '554399999995',
+        body: 'x',
+        idempotencyKey: 'g23-E',
+        senderNumber: '554399000100',
+        tenantHint: 'sicoob-sdr',
+        priority: 1,
+      })
+      expect(tenantQueue.dequeueBySender('devA')).toHaveLength(0)
+    })
+
+    it('fallback path (no sender_number) respects tenant filter', () => {
+      dta.claim('devA', 'oralsin-sdr', 'debt-sdr')
+      tenantQueue.enqueue({
+        to: '554399999996',
+        body: 'x',
+        idempotencyKey: 'g23-F',
+        tenantHint: 'sicoob-sdr',
+      })
+      expect(tenantQueue.dequeueBySender('devA')).toHaveLength(0)
+
+      tenantQueue.enqueue({
+        to: '554399999997',
+        body: 'y',
+        idempotencyKey: 'g23-G',
+        tenantHint: 'oralsin-sdr',
+      })
+      const batch = tenantQueue.dequeueBySender('devA')
+      expect(batch).toHaveLength(1)
+      expect(batch[0]!.tenantHint).toBe('oralsin-sdr')
+    })
+
+    it('increments blockedByTenantFilter when filter rejects a non-empty queue', () => {
+      dta.claim('devA', 'oralsin-sdr', 'debt-sdr')
+      tenantQueue.enqueue({
+        to: '554399999998',
+        body: 'x',
+        idempotencyKey: 'g23-H',
+        senderNumber: '554399000100',
+        tenantHint: 'sicoob-sdr',
+      })
+      const before = tenantQueue.getBlockedByTenantFilterCount()
+      tenantQueue.dequeueBySender('devA')
+      expect(tenantQueue.getBlockedByTenantFilterCount()).toBe(before + 1)
+    })
+
+    it('feature flag DISPATCH_QUEUE_TENANT_FILTER=false bypasses the filter', () => {
+      process.env.DISPATCH_QUEUE_TENANT_FILTER = 'false'
+      try {
+        dta.claim('devA', 'oralsin-sdr', 'debt-sdr')
+        tenantQueue.enqueue({
+          to: '554399999999',
+          body: 'x',
+          idempotencyKey: 'g23-I',
+          senderNumber: '554399000100',
+          tenantHint: 'sicoob-sdr',
+        })
+        const batch = tenantQueue.dequeueBySender('devA')
+        expect(batch).toHaveLength(1)
+      } finally {
+        delete process.env.DISPATCH_QUEUE_TENANT_FILTER
+      }
     })
   })
 })
