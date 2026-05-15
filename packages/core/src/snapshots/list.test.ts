@@ -10,9 +10,13 @@ describe('listSnapshotFiles', () => {
     dir = mkdtempSync(join(tmpdir(), 'snap-list-'))
   })
 
-  function seed(day: string, file: string, content = '<x/>') {
-    mkdirSync(join(dir, day), { recursive: true })
-    writeFileSync(join(dir, day, file), content)
+  /**
+   * Seed a file under `<dir>/<tenant>/<day>/<file>`.
+   * Defaults to tenant='adb' to match the ProbeSnapshotWriter default.
+   */
+  function seed(day: string, file: string, content = '<x/>', tenant = 'adb') {
+    mkdirSync(join(dir, tenant, day), { recursive: true })
+    writeFileSync(join(dir, tenant, day, file), content)
   }
 
   it('returns empty when baseDir does not exist', () => {
@@ -30,6 +34,7 @@ describe('listSnapshotFiles', () => {
     expect(files.length).toBe(2)
     expect(files[0].state).toBeDefined()
     expect(files[0].phone_last4).toBeDefined()
+    expect(files[0].tenant).toBe('adb')
   })
 
   it('filters non-conforming files', () => {
@@ -64,5 +69,23 @@ describe('listSnapshotFiles', () => {
     expect(files[0].day).toBe('2026-05-07')
     expect(files[1].day).toBe('2026-05-06')
     expect(files[2].day).toBe('2026-05-05')
+  })
+
+  it('filters by tenant — returns only matching tenant files', () => {
+    seed('2026-05-06', '120000_1111_unknown_10.xml', '<x/>', 'sicoob')
+    seed('2026-05-06', '120000_2222_unknown_10.xml', '<x/>', 'adb')
+    const files = listSnapshotFiles(dir, { tenant: 'sicoob' })
+    expect(files.length).toBe(1)
+    expect(files[0].tenant).toBe('sicoob')
+  })
+
+  it('traverses all tenants when tenant filter is absent and tags each entry', () => {
+    seed('2026-05-06', '120000_1111_unknown_10.xml', '<x/>', 'adb')
+    seed('2026-05-06', '120000_2222_unknown_10.xml', '<x/>', 'sicoob')
+    const files = listSnapshotFiles(dir)
+    expect(files.length).toBe(2)
+    const tenants = new Set(files.map((f) => f.tenant))
+    expect(tenants.has('adb')).toBe(true)
+    expect(tenants.has('sicoob')).toBe(true)
   })
 })

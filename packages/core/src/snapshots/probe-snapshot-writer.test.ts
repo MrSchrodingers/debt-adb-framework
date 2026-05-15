@@ -18,8 +18,9 @@ describe('ProbeSnapshotWriter', () => {
       phone: '5511999999999',
       timestamp: new Date('2026-05-06T10:30:45Z'),
     })
-    expect(path).toMatch(/2026-05-06\/103045_9999_unknown_4\.xml$/)
-    const files = readdirSync(join(dir, '2026-05-06'))
+    // Default tenant is 'adb': path now includes adb/<date>/<file>
+    expect(path).toMatch(/adb[/\\]2026-05-06[/\\]103045_9999_unknown_4\.xml$/)
+    const files = readdirSync(join(dir, 'adb', '2026-05-06'))
     expect(files.length).toBe(1)
   })
 
@@ -68,5 +69,30 @@ describe('ProbeSnapshotWriter', () => {
     // Path contains today's date
     const today = before.toISOString().slice(0, 10)
     expect(path).toContain(today)
+  })
+
+  it('writes under <baseDir>/<tenant>/<date>/<file>.xml when tenant is provided', () => {
+    const w = new ProbeSnapshotWriter({ baseDir: dir, dailyQuota: 100, perMinuteCap: 100 })
+    const p = w.write({
+      xml: '<x/>',
+      state: 'unknown',
+      phone: '5543991234567',
+      timestamp: new Date('2026-05-06T10:30:45Z'),
+      tenant: 'sicoob',
+    })
+    expect(p).not.toBeNull()
+    expect(p).toContain(`${join('sicoob', '2026-05-06')}`)
+  })
+
+  it('back-compat: defaults to <baseDir>/adb/... when tenant is absent', () => {
+    const w = new ProbeSnapshotWriter({ baseDir: dir, dailyQuota: 100, perMinuteCap: 100 })
+    const p = w.write({
+      xml: '<y/>',
+      state: 'unknown',
+      phone: '5543991234567',
+      timestamp: new Date('2026-05-06T10:30:45Z'),
+    })
+    expect(p).not.toBeNull()
+    expect(p).toContain(`${join('adb', '2026-05-06')}`)
   })
 })

@@ -1371,8 +1371,9 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     const q = ((req as { query?: Record<string, string | undefined> }).query ?? {})
     const since = q.since
     const state = q.state
+    const tenantFilter = typeof q.tenant === 'string' && q.tenant.length > 0 ? q.tenant : undefined
     const baseDir = join(process.env.DATA_DIR ?? 'data', 'probe-snapshots')
-    const snapshots = listSnapshotFiles(baseDir, { since, state })
+    const snapshots = listSnapshotFiles(baseDir, { since, state, tenant: tenantFilter })
     return (reply as { send: (x: unknown) => unknown }).send({ snapshots })
   }
 }

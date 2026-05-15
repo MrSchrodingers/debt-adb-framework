@@ -341,6 +341,7 @@ export class AdbProbeStrategy implements CheckStrategy {
           xml,
           state: result.state,
           phone: variant,
+          tenant: ctx.tenant ?? 'adb',
         }) ?? undefined
       }
       return {
@@ -369,6 +370,7 @@ export class AdbProbeStrategy implements CheckStrategy {
         xml,
         state: deadlineUiState,
         phone: variant,
+        tenant: ctx.tenant ?? 'adb',
       }) ?? undefined
     }
     return {
