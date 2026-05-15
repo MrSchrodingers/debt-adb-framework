@@ -826,6 +826,14 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     //
     // Skipped when no device is wired (legacy callers / unit tests).
     const effectiveSerial = rawParams.device_serial ?? this.defaultDeviceSerial
+    if (effectiveSerial && this.ctx?.deviceMutex?.isHeld(effectiveSerial)) {
+      const h = this.ctx.deviceMutex.describeHolder(effectiveSerial)
+      return r.status(409).send(
+        h
+          ? { error: 'device_busy', serial: effectiveSerial, tenant: h.tenant, job_id: h.jobId, since: h.since }
+          : { error: 'device_busy', serial: effectiveSerial },
+      )
+    }
     if (effectiveSerial) {
       const ready = await checkDeviceReady(this.adb, effectiveSerial, { appPackage: 'com.whatsapp' })
       if (!ready.ok) {
