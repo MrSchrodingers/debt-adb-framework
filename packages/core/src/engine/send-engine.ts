@@ -16,6 +16,25 @@ const ALLOWED_PACKAGES = new Set(['com.whatsapp', 'com.whatsapp.w4b'])
 
 /** Device serials: alphanumeric + limited safe chars. Reject shell metacharacters. */
 const DEVICE_SERIAL_RE = /^[a-zA-Z0-9_:.\-]+$/
+
+/**
+ * Thrown by SendEngine.send() when the post-send UI dump indicates the
+ * tap on the send button did NOT deliver the message (chat input still
+ * shows the body, dialog appeared after send, etc).
+ *
+ * The orchestrator MUST treat this as a real ADB failure but MUST NOT
+ * dispatch the WAHA fallback for it: if the validation was a false
+ * negative, WAHA would send a duplicate. Re-enqueue for an ADB retry is
+ * the safe choice; permanent failure after maxRetries surfaces the
+ * problem without doubling delivery.
+ */
+export class PostSendValidationError extends Error {
+  readonly skipWahaFallback = true
+  constructor(public readonly validationReason: string) {
+    super(`post_send_validation failed: ${validationReason}`)
+    this.name = 'PostSendValidationError'
+  }
+}
 import { SendStrategy } from './send-strategy.js'
 
 export interface SendResult {
@@ -84,6 +103,30 @@ export class SendEngine {
 
   private record(messageId: string, event: string, metadata?: Record<string, unknown>): void {
     this.recorder?.record(messageId, event, metadata)
+  }
+
+  /**
+   * Capture a forensic screenshot for a message that post_send_validation
+   * decided was not delivered. The capture is intentionally best-effort —
+   * the calling path is about to throw PostSendValidationError, so any
+   * failure here must not mask the original validation failure.
+   */
+  private async captureForensicScreenshot(deviceSerial: string, messageId: string): Promise<void> {
+    try {
+      const buf = (await this.adb.screenshot(deviceSerial)) as Buffer
+      const path = `reports/sends/${messageId}.png`
+      await mkdir('reports/sends', { recursive: true })
+      const processed = this.screenshotPolicy
+        ? await this.screenshotPolicy.processBuffer(buf)
+        : buf
+      await writeFile(path, processed)
+      this.queue.markScreenshotPersisted(messageId, path, processed.length)
+      this.record(messageId, 'screenshot_forensic', { path, reason: 'post_send_validation_failed' })
+    } catch (err) {
+      this.record(messageId, 'screenshot_forensic_failed', {
+        reason: err instanceof Error ? err.message : String(err),
+      })
+    }
   }
 
   private async withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -265,9 +308,51 @@ export class SendEngine {
       // Wait for send confirmation
       await this.delay(2000)
 
-      // CRITICAL: Mark as sent IMMEDIATELY after tap — before screenshot/validation
-      // This prevents WAHA fallback from firing if screenshot/validation throws,
-      // which would cause duplicate messages (ADB already sent + WAHA sends again)
+      // Post-send validation — authoritative. The UI dump tells us whether
+      // the tap on the send button actually delivered the message or the
+      // body is still sitting in the chat input field. Marking the message
+      // as sent BEFORE this check (the previous behaviour) silently lied
+      // to the operator and to downstream metrics whenever the tap missed.
+      //
+      // Validation throws are treated as soft positives (mark sent) to
+      // preserve the old "don't double-send via WAHA" property — a
+      // validation infrastructure failure should not be conflated with
+      // a real delivery failure.
+      let validationDecidedFailure = false
+      let validationReason = ''
+      try {
+        const postSendXml = await this.dumpUi(deviceSerial)
+        const validator = new ScreenshotValidator()
+        const validation = validator.validate(postSendXml, appPackage)
+        this.record(message.id, 'post_send_validation', {
+          valid: validation.valid,
+          reason: validation.reason,
+          chatInputFound: validation.chatInputFound,
+          dialogDetected: validation.dialogDetected,
+          chatInputHasBodyText: validation.chatInputHasBodyText ?? false,
+          lastMessageVisible: validation.lastMessageVisible,
+        })
+        if (!validation.valid) {
+          validationDecidedFailure = true
+          validationReason = validation.reason
+        }
+      } catch (err) {
+        // Validation is best-effort — don't fail the send if UI dump fails.
+        // Keep the legacy "treat as sent" behaviour on infra errors so we
+        // don't lose visibility on otherwise-successful sends.
+        this.record(message.id, 'post_send_validation', {
+          valid: false,
+          reason: `UI dump failed: ${err instanceof Error ? err.message : String(err)}`,
+        })
+      }
+
+      if (validationDecidedFailure) {
+        // Best-effort screenshot for forensic evidence — still happens
+        // even though the send is being marked as failed.
+        await this.captureForensicScreenshot(deviceSerial, message.id).catch(() => undefined)
+        throw new PostSendValidationError(validationReason)
+      }
+
       const durationMs = Date.now() - startTime
       this.queue.updateStatus(message.id, 'sending', 'sent')
       this.emitter.emit('message:sent', {
@@ -281,23 +366,6 @@ export class SendEngine {
         appPackage,
         senderNumber: message.senderNumber ?? undefined,
       })
-
-      // Post-send validation — check UI state via XML dump (observability-only)
-      try {
-        const postSendXml = await this.dumpUi(deviceSerial)
-        const validator = new ScreenshotValidator()
-        const validation = validator.validate(postSendXml)
-        this.record(message.id, 'post_send_validation', {
-          valid: validation.valid,
-          reason: validation.reason,
-          chatInputFound: validation.chatInputFound,
-          dialogDetected: validation.dialogDetected,
-          lastMessageVisible: validation.lastMessageVisible,
-        })
-      } catch {
-        // Validation is best-effort — don't fail the send if UI dump fails
-        this.record(message.id, 'post_send_validation', { valid: false, reason: 'UI dump failed' })
-      }
 
       // Screenshot handling — use policy if available
       const shouldCapture = this.screenshotPolicy

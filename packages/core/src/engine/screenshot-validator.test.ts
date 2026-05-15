@@ -154,5 +154,66 @@ describe('ScreenshotValidator', () => {
       expect(result.valid).toBe(false)
       expect(result.dialogDetected).toBe(true)
     })
+
+    // ────────────────────────────────────────────────────────────────────
+    // Bug found 2026-05-15 in prod:
+    //  (a) w4b namespace (com.whatsapp.w4b:id/entry) wasn't recognised,
+    //      every w4b send reported "Chat input not found" even when the
+    //      dump clearly showed an input field.
+    //  (b) input-with-body-text was reported as "Chat appears healthy" —
+    //      meaning the body was sitting un-sent in the field but the
+    //      validator said the send succeeded.
+    // ────────────────────────────────────────────────────────────────────
+
+    it('recognises chat input on com.whatsapp.w4b namespace (Business)', () => {
+      const xml = `<hierarchy>
+        <node resource-id="com.whatsapp.w4b:id/entry" text="" bounds="[50,1400][850,1500]" />
+      </hierarchy>`
+
+      const result = validator.validate(xml, 'com.whatsapp.w4b')
+
+      expect(result.chatInputFound).toBe(true)
+      expect(result.valid).toBe(true)
+      expect(result.reason).toBe('Chat appears healthy')
+    })
+
+    it('treats chat input with non-empty text as NOT delivered (body still in field)', () => {
+      // Real prod dump from Samsung A03 w4b 2026-05-15 14:55: tap on send
+      // failed and the body stayed in the input. validator must surface this.
+      const xml = `<hierarchy>
+        <node resource-id="com.whatsapp.w4b:id/entry" text="Teste W4B fix3 14:54:52" bounds="[50,1400][850,1500]" />
+      </hierarchy>`
+
+      const result = validator.validate(xml, 'com.whatsapp.w4b')
+
+      expect(result.chatInputFound).toBe(true)
+      expect(result.valid).toBe(false)
+      expect(result.reason).toContain('still has body text')
+    })
+
+    it('empty-text chat input on default namespace = healthy', () => {
+      // Backwards-compat: existing com.whatsapp callers without appPackage
+      // still see the historical behaviour.
+      const xml = `<hierarchy>
+        <node resource-id="com.whatsapp:id/entry" text="" bounds="[50,1400][850,1500]" />
+      </hierarchy>`
+
+      const result = validator.validate(xml)
+
+      expect(result.chatInputFound).toBe(true)
+      expect(result.valid).toBe(true)
+    })
+
+    it('com.whatsapp namespace input with non-empty text = NOT delivered', () => {
+      const xml = `<hierarchy>
+        <node resource-id="com.whatsapp:id/entry" text="Mensagem nao enviada" />
+      </hierarchy>`
+
+      const result = validator.validate(xml)
+
+      expect(result.chatInputFound).toBe(true)
+      expect(result.valid).toBe(false)
+      expect(result.reason).toContain('still has body text')
+    })
   })
 })
