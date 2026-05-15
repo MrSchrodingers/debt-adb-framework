@@ -744,14 +744,54 @@ export class MessageQueue {
       tenantBinds = []
     }
 
+    // Sender→device routing constraint (bug fix 2026-05-15).
+    //
+    // Historically dequeueBySender ignored sender_mapping entirely — any
+    // worker could grab the global "top sender" and send through its own
+    // device, causing messages addressed to senders on device A to be sent
+    // from device B. The fix joins messages.sender_number to
+    // sender_mapping.phone_number filtered by device_serial=? and only
+    // surfaces messages whose sender is actually attached to this device
+    // (active=1, paused=0).
+    //
+    // Side effect: orphan senders (no row in sender_mapping) become
+    // un-dequeueable by any worker — this is intentional, since the
+    // system cannot safely route them anywhere. Legacy messages with
+    // sender_number IS NULL are still picked up via the fallback path.
+    //
+    // sender_mapping table is owned by SenderMapping (engine/) but lives
+    // in the same SQLite db; the join works without a runtime handle.
+    const senderMappingExists = this.db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sender_mapping'")
+      .get() !== undefined
+
     const txn = this.db.transaction(() => {
       // Step 1: Check for high-priority messages (priority < 5)
-      const highPriority = this.db.prepare(`
-        SELECT * FROM messages
-        WHERE status = 'queued' AND priority < 5 ${tenantClause}
-        ORDER BY priority ASC, created_at ASC
-        LIMIT 1
-      `).get(...tenantBinds) as Record<string, unknown> | undefined
+      const highPrioritySql = senderMappingExists
+        ? `SELECT m.* FROM messages m
+           WHERE m.status = 'queued' AND m.priority < 5 ${tenantClause.replace(/\btenant_hint\b/g, 'm.tenant_hint')}
+             AND (
+               m.sender_number IS NULL
+               OR EXISTS (
+                 SELECT 1 FROM sender_mapping sm
+                  WHERE sm.phone_number = m.sender_number
+                    AND sm.device_serial = ?
+                    AND sm.active = 1
+                    AND sm.paused = 0
+               )
+             )
+           ORDER BY m.priority ASC, m.created_at ASC
+           LIMIT 1`
+        : `SELECT * FROM messages
+           WHERE status = 'queued' AND priority < 5 ${tenantClause}
+           ORDER BY priority ASC, created_at ASC
+           LIMIT 1`
+      const highPriorityBinds = senderMappingExists
+        ? [...tenantBinds, deviceSerial]
+        : [...tenantBinds]
+      const highPriority = this.db
+        .prepare(highPrioritySql)
+        .get(...highPriorityBinds) as Record<string, unknown> | undefined
 
       if (highPriority) {
         // Lock just the high-priority message
@@ -767,30 +807,64 @@ export class MessageQueue {
         return row ? [this.rowToMessage(row)] : []
       }
 
-      // Step 2: Find sender group with most pending messages
-      const topSender = this.db.prepare(`
-        SELECT sender_number, COUNT(*) as cnt
-        FROM messages
-        WHERE status = 'queued' AND sender_number IS NOT NULL ${tenantClause}
-        GROUP BY sender_number
-        ORDER BY cnt DESC
-        LIMIT 1
-      `).get(...tenantBinds) as { sender_number: string; cnt: number } | undefined
+      // Step 2: Find sender group with most pending messages, scoped to
+      // senders mapped to *this* device.
+      const topSenderSql = senderMappingExists
+        ? `SELECT m.sender_number, COUNT(*) AS cnt
+           FROM messages m
+           JOIN sender_mapping sm ON sm.phone_number = m.sender_number
+           WHERE m.status = 'queued'
+             AND m.sender_number IS NOT NULL
+             AND sm.device_serial = ?
+             AND sm.active = 1
+             AND sm.paused = 0
+             ${tenantClause.replace(/\btenant_hint\b/g, 'm.tenant_hint')}
+           GROUP BY m.sender_number
+           ORDER BY cnt DESC
+           LIMIT 1`
+        : `SELECT sender_number, COUNT(*) as cnt
+           FROM messages
+           WHERE status = 'queued' AND sender_number IS NOT NULL ${tenantClause}
+           GROUP BY sender_number
+           ORDER BY cnt DESC
+           LIMIT 1`
+      const topSenderBinds = senderMappingExists
+        ? [deviceSerial, ...tenantBinds]
+        : [...tenantBinds]
+      const topSender = this.db
+        .prepare(topSenderSql)
+        .get(...topSenderBinds) as { sender_number: string; cnt: number } | undefined
 
       if (!topSender) {
-        // Fallback: dequeue any single queued message (no sender_number set)
-        const any = this.db.prepare(`
-          UPDATE messages
-          SET status = 'locked',
-              locked_by = ?,
-              locked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-          WHERE id = (
-            SELECT id FROM messages WHERE status = 'queued' ${tenantClause}
-            ORDER BY priority ASC, created_at ASC LIMIT 1
-          )
-          RETURNING *
-        `).get(deviceSerial, ...tenantBinds) as Record<string, unknown> | undefined
+        // Fallback: dequeue any single queued message that has NO sender
+        // assignment yet (legacy / admin path). Orphan senders (with
+        // sender_number set but no mapping row) are NOT eligible — we
+        // refuse to guess which device should run them.
+        const fallbackSql = senderMappingExists
+          ? `UPDATE messages
+             SET status = 'locked',
+                 locked_by = ?,
+                 locked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = (
+               SELECT id FROM messages
+               WHERE status = 'queued' AND sender_number IS NULL ${tenantClause}
+               ORDER BY priority ASC, created_at ASC LIMIT 1
+             )
+             RETURNING *`
+          : `UPDATE messages
+             SET status = 'locked',
+                 locked_by = ?,
+                 locked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = (
+               SELECT id FROM messages WHERE status = 'queued' ${tenantClause}
+               ORDER BY priority ASC, created_at ASC LIMIT 1
+             )
+             RETURNING *`
+        const any = this.db
+          .prepare(fallbackSql)
+          .get(deviceSerial, ...tenantBinds) as Record<string, unknown> | undefined
         return any ? [this.rowToMessage(any)] : []
       }
 

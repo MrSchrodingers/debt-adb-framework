@@ -664,4 +664,132 @@ describe('MessageQueue', () => {
       }
     })
   })
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Sender→device routing (bug found 2026-05-15, fix landed same day).
+  //
+  // dequeueBySender(deviceSerial) historically only filtered by tenant_hint
+  // and picked the global "top sender" — meaning a worker running on
+  // device A could pull a message whose senderNumber is mapped to device B
+  // and execute it on the wrong physical handset (the lockedBy row
+  // reflected this). Operators observed messages with senderNumber from
+  // the Samsung A03 actually being sent through the POCO Serenity.
+  //
+  // The fix joins `messages` to `sender_mapping` and requires
+  // `sender_mapping.device_serial = ?` (the caller's device) plus
+  // active=1 and paused=0. Messages without a sender_number (legacy /
+  // fallback path) stay dequeueable by any worker — they have no
+  // routing constraint.
+  // ──────────────────────────────────────────────────────────────────────
+
+  describe('dequeueBySender — sender→device routing', () => {
+    let routedQueue: MessageQueue
+
+    beforeEach(() => {
+      // Seed minimal sender_mapping schema. The real SenderMapping class
+      // lives in engine/, but this lower-level test only needs the columns
+      // the dequeue join reads. Mirrors SenderMapping.initialize().
+      db.prepare(`
+        CREATE TABLE IF NOT EXISTS sender_mapping (
+          id TEXT PRIMARY KEY,
+          phone_number TEXT NOT NULL UNIQUE,
+          device_serial TEXT NOT NULL,
+          profile_id INTEGER NOT NULL DEFAULT 0,
+          app_package TEXT NOT NULL DEFAULT 'com.whatsapp',
+          waha_session TEXT,
+          waha_api_url TEXT,
+          active INTEGER NOT NULL DEFAULT 1,
+          paused INTEGER NOT NULL DEFAULT 0,
+          paused_at TEXT,
+          paused_reason TEXT,
+          tenant TEXT,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        )
+      `).run()
+      routedQueue = new MessageQueue(db)
+      routedQueue.initialize()
+    })
+
+    function seedSender(phone: string, deviceSerial: string, opts: { active?: 0 | 1; paused?: 0 | 1 } = {}): void {
+      db.prepare(`
+        INSERT INTO sender_mapping (id, phone_number, device_serial, active, paused)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(phone, phone, deviceSerial, opts.active ?? 1, opts.paused ?? 0)
+    }
+
+    it('does NOT return a message whose senderNumber is mapped to a different device', () => {
+      seedSender('554399000A', 'devA')
+      seedSender('554399000B', 'devB')
+
+      routedQueue.enqueue({
+        to: '5543991938235',
+        body: 'x',
+        idempotencyKey: 'route-1',
+        senderNumber: '554399000B', // owned by devB
+      })
+
+      // Worker on devA must not pick up a devB-owned message.
+      expect(routedQueue.dequeueBySender('devA')).toHaveLength(0)
+      // devB owns the sender → must pick it up.
+      const batch = routedQueue.dequeueBySender('devB')
+      expect(batch).toHaveLength(1)
+      expect(batch[0]!.senderNumber).toBe('554399000B')
+    })
+
+    it('high-priority message also respects sender→device binding', () => {
+      seedSender('554399000B', 'devB')
+
+      routedQueue.enqueue({
+        to: '5543991938235',
+        body: 'high',
+        idempotencyKey: 'route-2',
+        senderNumber: '554399000B',
+        priority: 1,
+      })
+
+      expect(routedQueue.dequeueBySender('devA')).toHaveLength(0)
+      const batch = routedQueue.dequeueBySender('devB')
+      expect(batch).toHaveLength(1)
+      expect(batch[0]!.priority).toBe(1)
+    })
+
+    it('skips inactive (active=0) or paused (paused=1) senders for their device', () => {
+      seedSender('554399000A', 'devA', { active: 0 })
+      seedSender('554399000P', 'devA', { paused: 1 })
+      seedSender('554399000C', 'devC')
+
+      routedQueue.enqueue({ to: '5543991938235', body: 'inact', idempotencyKey: 'route-3a', senderNumber: '554399000A' })
+      routedQueue.enqueue({ to: '5543991938235', body: 'pause', idempotencyKey: 'route-3b', senderNumber: '554399000P' })
+
+      // devA worker shouldn't get either — both its senders are unusable.
+      expect(routedQueue.dequeueBySender('devA')).toHaveLength(0)
+      // devC worker has no msgs for its sender, also empty.
+      expect(routedQueue.dequeueBySender('devC')).toHaveLength(0)
+    })
+
+    it('legacy messages without senderNumber stay dequeueable by any worker', () => {
+      // No mapping rows, no senderNumber → fallback path. Some adb-precheck
+      // probes and admin manual sends fall here; routing constraint can't
+      // apply since there's no binding to enforce.
+      routedQueue.enqueue({ to: '5543991938235', body: 'legacy', idempotencyKey: 'route-4' })
+      const batch = routedQueue.dequeueBySender('devA')
+      expect(batch).toHaveLength(1)
+      expect(batch[0]!.senderNumber).toBeNull()
+    })
+
+    it('messages whose senderNumber has no sender_mapping row are NOT dequeueable (orphan guard)', () => {
+      // Defensive: a senderNumber that does not map to any device cannot
+      // be safely routed — refusing it surfaces the misconfig at dequeue
+      // time rather than silently sending from a random worker.
+      routedQueue.enqueue({
+        to: '5543991938235',
+        body: 'orphan',
+        idempotencyKey: 'route-5',
+        senderNumber: '554399ORPHAN',
+      })
+      expect(routedQueue.dequeueBySender('devA')).toHaveLength(0)
+      expect(routedQueue.dequeueBySender('devB')).toHaveLength(0)
+    })
+  })
 })
