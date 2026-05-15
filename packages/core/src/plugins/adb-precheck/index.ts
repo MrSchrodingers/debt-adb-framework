@@ -1,6 +1,8 @@
 export { PipeboardPg } from './postgres-client.js'
 export { PipeboardRest, PipeboardRestError } from './pipeboard-rest.js'
 export type { PipeboardRestOpts } from './pipeboard-rest.js'
+export { PipeboardRawRest, NotSupportedByRawBackendError } from './pipeboard-raw-rest.js'
+export type { PipeboardRawRestOpts } from './pipeboard-raw-rest.js'
 export { PendingWritebacks } from './pending-writebacks.js'
 export type { PendingWritebacksOpts } from './pending-writebacks.js'
 export {
