@@ -12,26 +12,62 @@
 |-----------|--------|----------|
 | Dispatch core (Kali) | Active | https://dispatch.tail106aa2.ts.net/api/v1/health |
 | Pipeboard router (Docker, 188.245.66.92) | Active (healthy) | http://127.0.0.1:18080/api/v1/{tenant}/precheck-raw/healthz |
-| Tenants enabled in prod | `adb` (only) | `GET /api/v1/plugins/adb-precheck/tenants` |
+| Tenants enabled in prod | **`adb`, `sicoob`, `oralsin` (all 3)** | `GET /api/v1/plugins/adb-precheck/tenants` |
 
-**Sicoob is NOT yet active in prod** — code is deployed and tested, but env vars in `/var/www/debt-adb-framework/packages/core/.env` only include adb. Operator must opt in (see "Enable Sicoob" below).
+**All 3 tenants live in prod since 2026-05-15 19:35.** `/tenants` endpoint returns:
 
-## How to enable Sicoob in prod
+```
+adb     mode=prov label=ADB/Debt    pipeline=-  stage=-   pipedrive=true
+sicoob  mode=raw  label=Sicoob      pipeline=14 stage=110 pipedrive=true
+oralsin mode=raw  label=Oralsin     pipeline=3  stage=15  pipedrive=true
+```
 
-1. Copy the API key plaintext from `.dev-state/sicoob-apikey.local.md` (gitignored, local-dev only).
-2. SSH to Kali: `ssh adb@dispatch`
-3. Edit `/var/www/debt-adb-framework/packages/core/.env`:
-   ```
-   PLUGIN_ADB_PRECHECK_TENANTS=adb,sicoob
-   PLUGIN_ADB_PRECHECK_REST_BASE_URL_SICOOB=http://pipeboard-router:18080/api/v1/sicoob
-   PLUGIN_ADB_PRECHECK_REST_API_KEY_SICOOB=<plaintext from .local.md>
-   PLUGIN_ADB_PRECHECK_PIPELINE_ID_SICOOB=14
-   PLUGIN_ADB_PRECHECK_STAGE_ID_SICOOB=110
-   PLUGIN_ADB_PRECHECK_PIPEDRIVE_TOKEN_SICOOB=<sicoob Pipedrive token>
-   PLUGIN_ADB_PRECHECK_PIPEDRIVE_DOMAIN_SICOOB=<sicoob-subdomain>
-   ```
-4. `make -C /var/www/adb_tools core-restart` (NOPASSWD systemd restart)
-5. Verify: `curl -H "X-API-Key: $KEY" https://dispatch.tail106aa2.ts.net/api/v1/plugins/adb-precheck/tenants` should now include `sicoob`.
+Real deals projection verified for both raw tenants:
+- Sicoob: `BASE NOVA - SDR` / `NOVOS CONTRATOS` — 2+ deals pulled (cf_cpf-based pasta)
+- Oralsin: `Cobrança Amigável` / `Novas Cobranças` — 2+ deals pulled (cf_cpf-based pasta)
+
+## Prod env vars (already applied 2026-05-15 19:35)
+
+Live in `/var/www/debt-adb-framework/packages/core/.env`:
+
+```
+PLUGIN_ADB_PRECHECK_TENANTS=adb,sicoob,oralsin
+
+# Sicoob (raw mode)
+PLUGIN_ADB_PRECHECK_REST_BASE_URL_SICOOB=https://pipelineanalytics.debt.com.br/api/v1/sicoob
+PLUGIN_ADB_PRECHECK_REST_API_KEY_SICOOB=pk_cq55eotk0ck2xlaiaybzv07jo09m8gua  # router_api_keys.id=22
+PLUGIN_ADB_PRECHECK_PIPELINE_ID_SICOOB=14
+PLUGIN_ADB_PRECHECK_STAGE_ID_SICOOB=110
+PLUGIN_ADB_PRECHECK_PIPEDRIVE_TOKEN_SICOOB=8fe7cd6ce9f514ec86311bffc79354657beaeb2e
+PLUGIN_ADB_PRECHECK_PIPEDRIVE_DOMAIN_SICOOB=sicoob  # sicoob.pipedrive.com
+
+# Oralsin (raw mode)
+PLUGIN_ADB_PRECHECK_REST_BASE_URL_ORALSIN=https://pipelineanalytics.debt.com.br/api/v1/oralsin
+PLUGIN_ADB_PRECHECK_REST_API_KEY_ORALSIN=pk_zo9k7krkpfhyumg5zdps8ek8f1ucnpfe  # router_api_keys.id=23
+PLUGIN_ADB_PRECHECK_PIPELINE_ID_ORALSIN=3
+PLUGIN_ADB_PRECHECK_STAGE_ID_ORALSIN=15
+PLUGIN_ADB_PRECHECK_PIPEDRIVE_TOKEN_ORALSIN=0b8fe67687c7a1e748fb8aa1aaf7c66fc6f0276f
+PLUGIN_ADB_PRECHECK_PIPEDRIVE_DOMAIN_ORALSIN=oralsin  # oralsin.pipedrive.com
+```
+
+Plaintext API keys also persisted (gitignored):
+- `.dev-state/sicoob-apikey.local.md`
+- `.dev-state/oralsin-apikey.local.md`
+
+## How to disable a tenant in prod
+
+1. SSH: `ssh adb@dispatch`
+2. Edit `.env` — remove tenant from `PLUGIN_ADB_PRECHECK_TENANTS` CSV (e.g. `adb,sicoob` to drop oralsin).
+3. `make -C /var/www/adb_tools core-restart`
+4. The removed tenant's scanner/publisher is no longer dispatched. UI dropdown loses the option after the next /tenants poll.
+
+## Router scope_guard hotfix (post-deploy)
+
+The Go router had a hardcoded allowlist mapping scopes → URL patterns at `router/internal/api/rest/scope_guard.go`. T15 mounted `/precheck-raw/deals` with `requireScope("precheck:read")` middleware but the global scope_guard didn't have a regex matching the new path, so valid keys returned **403 scope_mismatch**.
+
+Fixed in remote commit `3666e19` (router branch `precheck-multi-tenant`): added one regex line `^/api/v1/[a-z0-9_-]+/precheck-raw/deals$` to the `precheck:read` group.
+
+When merging the router `precheck-multi-tenant` branch to main on the Pipeboard repo, include this fix.
 
 ## Architecture (TL;DR)
 
