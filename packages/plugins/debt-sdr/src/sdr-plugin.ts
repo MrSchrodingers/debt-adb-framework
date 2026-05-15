@@ -18,6 +18,8 @@ import { ThrottleGate } from './throttle/throttle-gate.js'
 import { OperatorAlerts } from './operator-alerts.js'
 import { PendingWritebacks } from './responses/pending-writebacks.js'
 import { ResponseHandler } from './responses/response-handler.js'
+import { registerAdminRoutes } from './routes/admin-routes.js'
+import { registerOperatorRoutes } from './routes/operator-routes.js'
 // Side-effect import registers shipped sequences.
 import './sequences/index.js'
 
@@ -73,6 +75,8 @@ export class DebtSdrPlugin implements DispatchPlugin {
   private leadPuller?: LeadPuller
   private sequencer?: Sequencer
   private responseHandler?: ResponseHandler
+  private operatorAlerts?: OperatorAlerts
+  private classifierLog?: ClassifierLog
   private pullTimer?: NodeJS.Timeout
   private sequencerTimer?: NodeJS.Timeout
   private writebackTimer?: NodeJS.Timeout
@@ -101,6 +105,7 @@ export class DebtSdrPlugin implements DispatchPlugin {
         this.assertTenantSenders(tenant)
       }
       this.wireRuntime(ctx)
+      this.registerRoutes(ctx)
       this.startCronsIfEnabled(ctx)
 
       ctx.logger.info('debt-sdr initialized', {
@@ -211,6 +216,8 @@ export class DebtSdrPlugin implements DispatchPlugin {
     const pendingWritebacks = new PendingWritebacks(this.db)
     const classifier = new ResponseClassifier(this.llmClient)
     const classifierLog = new ClassifierLog(this.db)
+    this.operatorAlerts = operatorAlerts
+    this.classifierLog = classifierLog
 
     this.leadPuller = new LeadPuller(
       this.db,
@@ -269,6 +276,30 @@ export class DebtSdrPlugin implements DispatchPlugin {
     // reference to ResponseCallback so the type import isn't pruned
     // (it documents the wire-format we accept).
     void ({} as ResponseCallback)
+  }
+
+  private registerRoutes(ctx: PluginContext): void {
+    if (!this.operatorAlerts || !this.classifierLog || !this.sequencer) {
+      throw new Error('debt-sdr: routes registered before runtime wired')
+    }
+    const tenantNames = this.config.tenants.map((t) => t.name)
+    registerAdminRoutes(ctx, {
+      db: this.db,
+      alerts: this.operatorAlerts,
+      classifierLog: this.classifierLog,
+      tenantNames,
+      llmProviderName: this.llmClient.name,
+      cronsEnabled: () => this.cronsEnabled(),
+      pipedriveTokenPresent: (tenantName) => {
+        const tenant = this.config.tenants.find((t) => t.name === tenantName)
+        return tenant ? Boolean(process.env[tenant.pipedrive.api_token_env]) : false
+      },
+    })
+    registerOperatorRoutes(ctx, {
+      db: this.db,
+      alerts: this.operatorAlerts,
+      sequencer: this.sequencer,
+    })
   }
 
   private startCronsIfEnabled(ctx: PluginContext): void {

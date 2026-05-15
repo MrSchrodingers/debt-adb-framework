@@ -115,10 +115,12 @@ function makeCtx(opts: CtxMockOptions = {}) {
     debug: vi.fn(),
   }
 
+  const registerRoute = vi.fn()
   const ctx: Partial<PluginContext> = {
     requestDeviceAssignment,
     releaseDeviceAssignment,
     assertSenderInTenant,
+    registerRoute,
     logger,
   }
   return {
@@ -126,6 +128,7 @@ function makeCtx(opts: CtxMockOptions = {}) {
     requestDeviceAssignment,
     releaseDeviceAssignment,
     assertSenderInTenant,
+    registerRoute,
     logger,
   }
 }
@@ -248,6 +251,25 @@ describe('DebtSdrPlugin', () => {
     await plugin.init(makeCtx().ctx)
     await plugin.destroy()
     await expect(plugin.destroy()).resolves.not.toThrow()
+  })
+
+  it('init registers admin + operator routes via ctx.registerRoute', async () => {
+    const plugin = new DebtSdrPlugin('http://localhost/x', validRawConfig(), db)
+    const m = makeCtx()
+    await plugin.init(m.ctx)
+
+    const paths = m.registerRoute.mock.calls.map((c) => `${c[0]} ${c[1]}`)
+    expect(paths).toContain('GET /leads')
+    expect(paths).toContain('GET /leads/:id')
+    expect(paths).toContain('GET /sequences/:lead_id')
+    expect(paths).toContain('GET /alerts')
+    expect(paths).toContain('GET /classifier/log')
+    expect(paths).toContain('GET /health')
+    expect(paths).toContain('GET /stats')
+    expect(paths).toContain('PATCH /sequence/:lead_id/abort')
+    expect(paths).toContain('PATCH /sequence/:lead_id/resume')
+    expect(paths).toContain('PATCH /alerts/:id/resolve')
+    expect(paths).toContain('POST /leads/:id/force-recheck')
   })
 
   it('getConfig returns the parsed config', () => {

@@ -104,7 +104,6 @@ export class LeadPuller {
     }
 
     this.logger?.info?.('lead pull complete', {
-      tenant: tenant.name,
       ...result,
       failures: result.failures.length,
     })
