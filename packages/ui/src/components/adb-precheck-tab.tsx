@@ -39,6 +39,7 @@ import { PipedriveView } from './adb-precheck/pipedrive-view'
 import { TenantProvider, useTenant, type TenantSummary } from './adb-precheck/tenant-context'
 import { TenantSelector } from './adb-precheck/tenant-selector'
 import { PipelineStagePicker } from './adb-precheck/pipeline-stage-picker'
+import { DeviceAvailabilityCard } from './adb-precheck/device-availability-card'
 
 const PLUGIN_BASE = `${CORE_URL}/api/v1/plugins/adb-precheck`
 const ACCENT = 'sky' as const
@@ -974,12 +975,15 @@ function NewScanPanel({ onDone }: { onDone: () => void }) {
 
       <Section
         title="Device de probe"
-        description="Escolha qual telefone (de qual device conectado) executa a verificação ADB. Vazio = usa o default do plugin."
+        description="Escolha qual telefone (de qual device conectado) executa a verificação ADB. Vazio = usa o default do plugin. O card abaixo mostra status busy/free em tempo real (5s poll)."
       >
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
+        <div className="space-y-3">
+          <DeviceAvailabilityCard selected={deviceSerial || null} onSelect={setDeviceSerial} />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 mt-3">
           <Field
             label="Device (ADB serial)"
-            hint={devicesLoading ? 'carregando...' : `${devices.length} conectados`}
+            hint={devicesLoading ? 'carregando...' : `${devices.length} conectados — também selecionável via card acima`}
           >
             <select
               value={deviceSerial}
