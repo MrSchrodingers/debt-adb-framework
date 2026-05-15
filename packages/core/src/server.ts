@@ -763,7 +763,23 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // register views via `ctx.registerGeoView(...)`; core hosts the map
   // framework + delegation endpoints; loader unregisters on plugin destroy.
   const geoRegistry = new GeoViewRegistry({ cacheTtlMs: 60_000 })
-  const pluginLoader = new PluginLoader(pluginRegistry, pluginEventBus, queue, db, pinoLogger, senderMapping, engine, idempotencyCache, deviceMutex, undefined, geoRegistry, deviceTenantAssignment)
+  const pluginLoader = new PluginLoader(
+    pluginRegistry,
+    pluginEventBus,
+    queue,
+    db,
+    pinoLogger,
+    senderMapping,
+    engine,
+    idempotencyCache,
+    deviceMutex,
+    undefined,
+    geoRegistry,
+    deviceTenantAssignment,
+    // T7: surface connected devices to plugins for /devices/availability.
+    // DeviceManager.getDevices() returns rich records; we project to {serial}.
+    async () => deviceManager.getDevices().map((d) => ({ serial: d.serial })),
+  )
 
   // Admin routes for plugin introspection + control (B4, Sprint 2 v2 roadmap).
   // Registered after pluginLoader so the GET endpoint can surface loaded

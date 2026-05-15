@@ -421,6 +421,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     ctx.registerRoute('GET',  '/admin/locks',           this.handleListLocks.bind(this))
     ctx.registerRoute('GET',  '/admin/probe-snapshots', this.handleListSnapshots.bind(this))
     ctx.registerRoute('GET',  '/tenants',               this.handleListTenants.bind(this))
+    ctx.registerRoute('GET',  '/devices/availability',  this.handleDeviceAvailability.bind(this))
 
     // Geo views — heatmap by DDD. Plugin contributes 3 cohort views:
     //  - no-match: WA checks that returned 'not_exists' (distinct phones)
@@ -546,6 +547,26 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       pipedriveEnabled: Boolean(t.pipedrive?.apiToken),
     }))
     return r.send({ tenants: list })
+  }
+
+  /**
+   * T7: surface device availability for the multi-tenant precheck UI.
+   * Returns one row per connected device with current holder context when
+   * the DeviceMutex is busy. Degrades gracefully when DeviceManager isn't
+   * wired (unit-test fixtures) — empty list.
+   */
+  private async handleDeviceAvailability(_req: unknown, reply: unknown): Promise<unknown> {
+    const r = reply as { send: (x: unknown) => unknown }
+    const list = this.ctx?.listConnectedDevices ? await this.ctx.listConnectedDevices() : []
+    const mutex = this.ctx?.deviceMutex
+    const devices = list.map((d) => {
+      const holder = mutex?.describeHolder ? mutex.describeHolder(d.serial) : null
+      if (holder) {
+        return { serial: d.serial, available: false, tenant: holder.tenant, job_id: holder.jobId, since: holder.since }
+      }
+      return { serial: d.serial, available: true }
+    })
+    return r.send({ devices })
   }
 
   private async handleStats(_req: unknown, reply: unknown): Promise<unknown> {
