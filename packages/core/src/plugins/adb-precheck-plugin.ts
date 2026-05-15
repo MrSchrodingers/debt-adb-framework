@@ -34,6 +34,7 @@ import {
   type IPipeboardClient,
   type PipeboardBackend,
 } from './adb-precheck/index.js'
+import { TenantRegistry } from './adb-precheck/tenant-registry.js'
 
 const scanParamsSchema = z
   .object({
@@ -133,6 +134,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   private pastaLocks: PastaLockManager | null = null
   private pastaLockReapTimer: NodeJS.Timeout | null = null
   private snapshotWriter: ProbeSnapshotWriter
+  private tenantRegistry: TenantRegistry | undefined
 
   constructor(
     opts: {
@@ -198,6 +200,12 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       pauseState?: DispatchPauseState
       /** Operator label written to the audit log when scanner toggles pause. */
       hygienizationOperator?: string
+      /**
+       * Pre-built TenantRegistry to serve from GET /tenants. When omitted,
+       * the handler falls back to TenantRegistry.fromEnv() at request time.
+       * Injected in server.ts (T9); tests and legacy instantiations can omit.
+       */
+      tenantRegistry?: TenantRegistry
     },
     private db: Database.Database,
     private registry: ContactRegistry,
@@ -235,6 +243,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     this.pipedriveCompanyDomain = opts.pipedrive?.companyDomain ?? null
     this.pauseState = opts.pauseState
     this.hygienizationOperator = opts.hygienizationOperator ?? 'adb-precheck:hygienization'
+    this.tenantRegistry = opts.tenantRegistry
 
     // Pipedrive client + publisher are wired only when a token is provided.
     // Stays null when the env var is missing — scanner becomes a no-op for
@@ -411,6 +420,7 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     ctx.registerRoute('GET',  '/notes/:pasta/history', this.handleNoteHistory.bind(this))
     ctx.registerRoute('GET',  '/admin/locks',           this.handleListLocks.bind(this))
     ctx.registerRoute('GET',  '/admin/probe-snapshots', this.handleListSnapshots.bind(this))
+    ctx.registerRoute('GET',  '/tenants',               this.handleListTenants.bind(this))
 
     // Geo views — heatmap by DDD. Plugin contributes 3 cohort views:
     //  - no-match: WA checks that returned 'not_exists' (distinct phones)
@@ -522,6 +532,20 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   private async handleHealth(_req: unknown, reply: unknown): Promise<unknown> {
     const r = await this.pg.healthcheck()
     return (reply as { send: (x: unknown) => unknown }).send(r)
+  }
+
+  private async handleListTenants(_req: unknown, reply: unknown): Promise<unknown> {
+    const r = reply as { send: (x: unknown) => unknown }
+    const list = (this.tenantRegistry ?? TenantRegistry.fromEnv()).list().map((t) => ({
+      id: t.id,
+      label: t.label,
+      mode: t.mode,
+      defaultPipelineId: t.defaultPipelineId,
+      defaultStageId: t.defaultStageId,
+      writeback: t.writeback,
+      pipedriveEnabled: Boolean(t.pipedrive?.apiToken),
+    }))
+    return r.send({ tenants: list })
   }
 
   private async handleStats(_req: unknown, reply: unknown): Promise<unknown> {
