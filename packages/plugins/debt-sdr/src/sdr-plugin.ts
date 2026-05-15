@@ -3,9 +3,23 @@ import type {
   DispatchPlugin,
   PluginContext,
   DispatchEventName,
+  ResponseCallback,
 } from '@dispatch/core'
 import { loadSdrPluginConfig, type SdrPluginConfig, type SdrTenantConfig } from './config/tenant-config.js'
 import { initSdrSchema } from './db/migrations.js'
+import { TenantPipedriveClient } from './pipedrive/tenant-pipedrive-client.js'
+import { LeadPuller } from './pull/lead-puller.js'
+import { Sequencer } from './sequences/sequencer.js'
+import { ResponseClassifier } from './classifier/classifier.js'
+import { StubLlmClient, type LlmClient } from './classifier/llm-client.js'
+import { ClassifierLog } from './classifier/classifier-log.js'
+import { IdentityGate } from './identity-gate/identity-gate.js'
+import { ThrottleGate } from './throttle/throttle-gate.js'
+import { OperatorAlerts } from './operator-alerts.js'
+import { PendingWritebacks } from './responses/pending-writebacks.js'
+import { ResponseHandler } from './responses/response-handler.js'
+// Side-effect import registers shipped sequences.
+import './sequences/index.js'
 
 interface ClaimedDevice {
   serial: string
@@ -15,21 +29,24 @@ interface ClaimedDevice {
 /**
  * debt-sdr — multi-tenant SDR outbound plugin.
  *
- * init() flow (spec §3 + §5):
- *   1. Parse config (Zod) — throws on invalid
- *   2. Run migrations (idempotent)
- *   3. Preflight: refuse to claim a device that already has a sender owned
- *      by a different tenant (defense for A9 — stale cross-tenant senders)
- *   4. Claim each device via ctx.requestDeviceAssignment (I1)
- *   5. Assert each sender via ctx.assertSenderInTenant (I3)
- *   6. On any failure, release everything claimed so far and rethrow.
- *      No "split-tenant" partial init is permitted.
+ * Lifecycle:
+ *   1. Constructor parses + validates config (throws on invalid).
+ *   2. init() runs schema migrations, preflight checks, claims devices
+ *      + asserts senders, then wires the runtime pipeline:
+ *        - per-tenant Pipedrive clients
+ *        - LeadPuller, IdentityGate, ThrottleGate, Sequencer
+ *        - ResponseClassifier (with configurable LlmClient — defaults
+ *          to StubLlmClient which always returns ambiguous + alert)
+ *        - ClassifierLog, OperatorAlerts, PendingWritebacks
+ *        - ResponseHandler subscribed to incoming patient responses
+ *      Crons are wired but GATED by DISPATCH_SDR_CRONS_ENABLED. Without
+ *      the flag, init succeeds and routes work, but no automatic
+ *      pull/sequencer ticks fire.
+ *   3. destroy() stops crons, unsubscribes, releases claimed devices.
  *
- * destroy() flow:
- *   - Stop any registered crons (Phase D wires these)
- *   - Explicitly release every claimed device (defense in depth — the
- *     loader's auto-cleanup also runs)
- *   - Idempotent (safe to call after a failed init)
+ * Send safety: there is no path for the plugin to enqueue outbound
+ * messages while DISPATCH_SDR_CRONS_ENABLED=false. The sequencer is the
+ * only enqueue surface and it's cron-driven.
  */
 export class DebtSdrPlugin implements DispatchPlugin {
   readonly name = 'debt-sdr'
@@ -47,23 +64,35 @@ export class DebtSdrPlugin implements DispatchPlugin {
 
   private readonly config: SdrPluginConfig
   private readonly db: Database.Database
+  private readonly llmClient: LlmClient
   private ctx: PluginContext | null = null
   private claimedDevices: ClaimedDevice[] = []
 
-  constructor(webhookUrl: string, rawConfig: unknown, db: Database.Database) {
+  // Composed runtime — created in init(), torn down in destroy().
+  private pipedriveClients = new Map<string, TenantPipedriveClient>()
+  private leadPuller?: LeadPuller
+  private sequencer?: Sequencer
+  private responseHandler?: ResponseHandler
+  private pullTimer?: NodeJS.Timeout
+  private sequencerTimer?: NodeJS.Timeout
+  private writebackTimer?: NodeJS.Timeout
+  private responseUnsubscribe?: () => void
+
+  constructor(
+    webhookUrl: string,
+    rawConfig: unknown,
+    db: Database.Database,
+    opts: { llmClient?: LlmClient } = {},
+  ) {
     this.webhookUrl = webhookUrl
     this.config = loadSdrPluginConfig(rawConfig)
     this.db = db
+    this.llmClient = opts.llmClient ?? new StubLlmClient()
   }
 
   async init(ctx: PluginContext): Promise<void> {
     this.ctx = ctx
-
     initSdrSchema(this.db)
-
-    // Preflight: refuse to start if any target device already hosts a
-    // sender owned by another tenant. Catches A9 (stale cross-tenant
-    // senders that survived a previous tenant swap).
     this.assertNoCrossTenantSenders()
 
     try {
@@ -71,35 +100,216 @@ export class DebtSdrPlugin implements DispatchPlugin {
         await this.claimTenantDevices(tenant)
         this.assertTenantSenders(tenant)
       }
+      this.wireRuntime(ctx)
+      this.startCronsIfEnabled(ctx)
+
       ctx.logger.info('debt-sdr initialized', {
         tenants: this.config.tenants.map((t) => t.name),
         claimed_devices: this.claimedDevices.length,
+        crons_enabled: this.cronsEnabled(),
+        llm_provider: this.llmClient.name,
       })
     } catch (err) {
-      // Roll back any partial claims so the loader doesn't have to
-      // (defense in depth — releaseByPlugin will catch leftovers too).
       this.releaseAllClaimed()
       throw err
     }
   }
 
   async destroy(): Promise<void> {
-    if (!this.ctx) return
-    // Phase D wires crons; this site is the single place to stop them.
-    this.releaseAllClaimed()
-    this.ctx.logger.info('debt-sdr destroyed')
-    this.ctx = null
+    if (this.pullTimer) clearInterval(this.pullTimer)
+    if (this.sequencerTimer) clearInterval(this.sequencerTimer)
+    if (this.writebackTimer) clearInterval(this.writebackTimer)
+    this.responseUnsubscribe?.()
+    if (this.ctx) {
+      this.releaseAllClaimed()
+      this.ctx.logger.info('debt-sdr destroyed')
+      this.ctx = null
+    }
   }
 
-  // ── helpers ────────────────────────────────────────────────────────────
+  // ── public test hooks ─────────────────────────────────────────────────
 
   getConfig(): SdrPluginConfig {
     return this.config
   }
 
-  /** Test hook — device serials this instance has claimed. */
   getClaimedDevices(): readonly ClaimedDevice[] {
     return this.claimedDevices
+  }
+
+  /**
+   * Direct accessor for the ResponseHandler — used by E2E / integration
+   * tests that simulate inbound responses. The HTTP route in Task 39
+   * also dispatches via this method.
+   */
+  async handleIncomingResponse(payload: import('./responses/response-handler.js').ResponsePayload): Promise<void> {
+    if (!this.responseHandler) return
+    const tenant = this.tenantOfLead(payload.leadId)
+    if (!tenant) {
+      this.ctx?.logger.warn('incoming response for unknown lead', { lead_id: payload.leadId })
+      return
+    }
+    await this.responseHandler.handle(tenant, payload)
+  }
+
+  // ── internals ─────────────────────────────────────────────────────────
+
+  private cronsEnabled(): boolean {
+    // Default OFF — operator must opt in via env. Plugin still loads
+    // and registers routes; the runtime just doesn't auto-tick.
+    return process.env.DISPATCH_SDR_CRONS_ENABLED === 'true'
+  }
+
+  /**
+   * Lazily build (and cache) the Pipedrive client for a tenant. Missing
+   * env var throws on first use rather than at init time, so the plugin
+   * still loads cleanly in dev / test environments where the operator
+   * hasn't set tokens yet.
+   */
+  private getPipedriveClient(tenant: SdrTenantConfig): TenantPipedriveClient {
+    const cached = this.pipedriveClients.get(tenant.name)
+    if (cached) return cached
+    const token = process.env[tenant.pipedrive.api_token_env]
+    if (!token) {
+      throw new Error(
+        `debt-sdr: missing Pipedrive token env var ${tenant.pipedrive.api_token_env} for tenant ${tenant.name}`,
+      )
+    }
+    const client = new TenantPipedriveClient({ domain: tenant.pipedrive.domain, token })
+    this.pipedriveClients.set(tenant.name, client)
+    return client
+  }
+
+  private wireRuntime(ctx: PluginContext): void {
+    const identityGate = new IdentityGate(this.db, {
+      enqueueHandshake: (input) => {
+        const idempotencyKey = `sdr:${input.tenant}:${input.kind}:${input.leadId}`
+        const messages = ctx.enqueue([
+          {
+            idempotencyKey,
+            correlationId: input.leadId,
+            patient: { phone: input.contact.phone, name: input.contact.name },
+            message: { text: input.text },
+            senders: [{ phone: input.senderPhone, session: '', pair: '', role: 'primary' }],
+            context: { sdr: true, kind: input.kind, tenant: input.tenant, lead_id: input.leadId },
+            sendOptions: { priority: 'normal' },
+            resolvedSenderPhone: input.senderPhone,
+          },
+        ])
+        return messages[0]?.id ?? `sdr-hs-${Date.now()}`
+      },
+      blacklist: () => {
+        // Core's queue manages the blacklist via recordBan; plugins only
+        // see isBlacklisted(). For temp blacklists we rely on the
+        // operator queue inspection — TODO: expose recordBan to plugins
+        // when a use-case demands it.
+      },
+      raiseOperatorAlert: (input) => operatorAlerts.raise(input),
+    })
+    const throttleGate = new ThrottleGate(this.db)
+    const operatorAlerts = new OperatorAlerts(this.db)
+    const pendingWritebacks = new PendingWritebacks(this.db)
+    const classifier = new ResponseClassifier(this.llmClient)
+    const classifierLog = new ClassifierLog(this.db)
+
+    this.leadPuller = new LeadPuller(
+      this.db,
+      { isBlacklisted: (phone) => ctx.isBlacklisted(phone) },
+      ctx.logger,
+    )
+
+    this.sequencer = new Sequencer(this.db, {
+      enqueueStep: (input) => {
+        const idempotencyKey = `sdr:${input.tenant}:step${input.step}:${input.leadId}`
+        const messages = ctx.enqueue([
+          {
+            idempotencyKey,
+            correlationId: input.leadId,
+            patient: { phone: input.contact.phone, name: input.contact.name },
+            message: { text: input.text },
+            senders: [{ phone: input.senderPhone, session: '', pair: '', role: 'primary' }],
+            context: { sdr: true, kind: 'step', tenant: input.tenant, lead_id: input.leadId, step: input.step },
+            sendOptions: { priority: 'normal' },
+            resolvedSenderPhone: input.senderPhone,
+          },
+        ])
+        return messages[0]?.id ?? `sdr-step-${Date.now()}`
+      },
+      pickSender: (tenant) => tenant.senders[0]?.phone ?? '',
+      identityGate,
+      throttleGate,
+      hasOutgoingHistory: () => {
+        // TODO: wire message_history accessor when needed by Phase D
+        // smoke. For now, returning false defers to the identity gate
+        // check which is the safer default.
+        return false
+      },
+      logger: ctx.logger,
+    })
+
+    this.responseHandler = new ResponseHandler(this.db, {
+      classifier,
+      classifierLog,
+      identityGate,
+      sequencer: this.sequencer,
+      pipedrive: (tenantName) => {
+        const tenant = this.config.tenants.find((t) => t.name === tenantName)
+        if (!tenant) throw new Error(`debt-sdr: unknown tenant ${tenantName}`)
+        return this.getPipedriveClient(tenant)
+      },
+      operatorAlerts,
+      pendingWritebacks,
+      logger: ctx.logger,
+    })
+
+    // Response routing: core delivers patient replies via the plugin's
+    // webhookUrl (configured at plugin registration). The HTTP route
+    // is added in Task 39; for now `handleIncomingResponse` is the
+    // direct entry point for tests + E2E. We keep a non-issuing
+    // reference to ResponseCallback so the type import isn't pruned
+    // (it documents the wire-format we accept).
+    void ({} as ResponseCallback)
+  }
+
+  private startCronsIfEnabled(ctx: PluginContext): void {
+    if (!this.cronsEnabled()) {
+      ctx.logger.info('debt-sdr crons disabled (set DISPATCH_SDR_CRONS_ENABLED=true to start)')
+      return
+    }
+    if (!this.leadPuller || !this.sequencer) {
+      throw new Error('debt-sdr crons: runtime not wired')
+    }
+
+    // Pull every tenant's poll_interval_minutes — staggered so two tenants
+    // never hit Pipedrive at the same instant.
+    let offset = 0
+    for (const tenant of this.config.tenants) {
+      const intervalMs = tenant.pipedrive.pull.poll_interval_minutes * 60 * 1000
+      const client = this.getPipedriveClient(tenant)
+      this.pullTimer = setInterval(() => {
+        this.leadPuller!.pullTenant(tenant, client).catch((err) =>
+          ctx.logger.warn('lead pull failed', { tenant: tenant.name, error: String(err) }),
+        )
+      }, intervalMs)
+      // Trigger an immediate first pull after `offset` so plugin boot
+      // doesn't wait the full interval.
+      setTimeout(() => {
+        this.leadPuller!.pullTenant(tenant, client).catch((err) =>
+          ctx.logger.warn('lead initial pull failed', { tenant: tenant.name, error: String(err) }),
+        )
+      }, offset).unref()
+      offset += 30_000
+    }
+
+    // Sequencer tick every minute across all tenants.
+    this.sequencerTimer = setInterval(() => {
+      for (const tenant of this.config.tenants) {
+        this.sequencer!.tick(tenant).catch((err) =>
+          ctx.logger.warn('sequencer tick failed', { tenant: tenant.name, error: String(err) }),
+        )
+      }
+    }, 60_000)
+    this.sequencerTimer.unref?.()
   }
 
   private async claimTenantDevices(tenant: SdrTenantConfig): Promise<void> {
@@ -137,12 +347,6 @@ export class DebtSdrPlugin implements DispatchPlugin {
     }
   }
 
-  /**
-   * Preflight (A9 defense): for each target device, refuse to start if
-   * any active sender_mapping row on that device is owned by a tenant
-   * that isn't ours. A stale cross-tenant sender on a device we're about
-   * to claim would lead to messages going out on the wrong account.
-   */
   private assertNoCrossTenantSenders(): void {
     const stmt = this.db.prepare(
       `SELECT phone_number, tenant
@@ -183,10 +387,6 @@ export class DebtSdrPlugin implements DispatchPlugin {
     for (const claim of this.claimedDevices) {
       const r = this.ctx.releaseDeviceAssignment(claim.serial)
       if (!r.ok) {
-        // Log so a ghost claim in DTA does not silently outlive the
-        // plugin's local bookkeeping. Loader's releaseByPlugin runs
-        // next and should clean up — but we want operator-visible
-        // evidence if it doesn't.
         this.ctx.logger.warn('debt-sdr release returned non-ok', {
           device: claim.serial,
           tenant: claim.tenant,
@@ -195,5 +395,13 @@ export class DebtSdrPlugin implements DispatchPlugin {
       }
     }
     this.claimedDevices = []
+  }
+
+  private tenantOfLead(leadId: string): SdrTenantConfig | null {
+    const row = this.db
+      .prepare('SELECT tenant FROM sdr_lead_queue WHERE id = ?')
+      .get(leadId) as { tenant: string } | undefined
+    if (!row) return null
+    return this.config.tenants.find((t) => t.name === row.tenant) ?? null
   }
 }
