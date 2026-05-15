@@ -23,6 +23,17 @@ export interface ValidateOptions {
    * Default: read from evidence; final fallback 'probe_initial'.
    */
   attempt_phase?: 'probe_initial' | 'probe_recover' | 'scan_retry' | 'sweep_retry'
+  /**
+   * Tenant slug owning the originating job. Propagated to the ADB probe
+   * strategy so DeviceMutex's holder state can identify which tenant
+   * currently holds the device lock. Observational only.
+   */
+  tenant?: string
+  /**
+   * Originating job id. Propagated alongside `tenant` for the same
+   * observational purpose — never used for routing.
+   */
+  job_id?: string
 }
 
 export interface ValidateResult {
@@ -87,6 +98,8 @@ export class ContactValidator {
       const adbResult = await this.adbStrategy.probe(variant, {
         deviceSerial: opts.device_serial,
         profileId: opts.profile_id,
+        tenant: opts.tenant,
+        jobId: opts.job_id,
       })
       attempts.push(adbResult)
 

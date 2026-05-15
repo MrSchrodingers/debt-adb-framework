@@ -235,6 +235,14 @@ export class PrecheckScanner {
 
   async runJob(jobId: string, params: PrecheckScanParams): Promise<void> {
     const { pg, store, logger, shouldCancel, onJobFinished, pauseState } = this.deps
+    // Resolve the tenant once per job — propagated to the validator so the
+    // DeviceMutex holder state can be labelled with `{ tenant, jobId }`.
+    // T22 will fully populate per-tenant routing; until then `'adb'` is the
+    // safe default (matches the DB column default applied by T3).
+    // Guarded against legacy/partial-mock stores that lack getJob.
+    const jobTenant = (typeof store.getJob === 'function'
+      ? store.getJob(jobId)?.tenant
+      : undefined) ?? 'adb'
     // Per-job opt-out: even when the integration is wired we honour the
     // `pipedrive_enabled === false` flag and skip all 3 scenarios for this
     // job. This lets operators run a quick scan without polluting Pipedrive.
@@ -520,6 +528,8 @@ export class PrecheckScanner {
                 device_serial: probeDevice,
                 waha_session: probeSender,
                 profile_id: probeProfile,
+                tenant: jobTenant,
+                job_id: jobId,
               })
               // Any successful validator call clears the consecutive-error
               // streak — inconclusive (exists_on_wa === null) is allowed
@@ -984,6 +994,9 @@ export class PrecheckScanner {
       probeDevice && probeSender && this.deps.resolveProfileForSender
         ? this.deps.resolveProfileForSender(probeDevice, probeSender) ?? undefined
         : undefined
+    const jobTenant = (typeof this.deps.store.getJob === 'function'
+      ? this.deps.store.getJob(jobId)?.tenant
+      : undefined) ?? 'adb'
 
     const touchedPastas = new Set<string>()
     let totalResolved = 0
@@ -1033,6 +1046,8 @@ export class PrecheckScanner {
                 waha_session: probeSender,
                 profile_id: probeProfile,
                 attempt_phase: 'sweep_retry',
+                tenant: jobTenant,
+                job_id: jobId,
               })
               if (r.exists_on_wa !== null) {
                 ph.outcome = r.exists_on_wa === 1 ? 'valid' : 'invalid'
@@ -1326,6 +1341,9 @@ export class PrecheckScanner {
       probeDevice && probeSender && this.deps.resolveProfileForSender
         ? this.deps.resolveProfileForSender(probeDevice, probeSender) ?? undefined
         : undefined
+    const jobTenant = (typeof this.deps.store.getJob === 'function'
+      ? this.deps.store.getJob(jobId)?.tenant
+      : undefined) ?? 'adb'
 
     let resolvedCount = 0
 
@@ -1350,6 +1368,8 @@ export class PrecheckScanner {
             waha_session: probeSender,
             profile_id: probeProfile,
             attempt_phase: 'scan_retry',
+            tenant: jobTenant,
+            job_id: jobId,
           })
           if (r.exists_on_wa !== null) {
             ph.outcome = r.exists_on_wa === 1 ? 'valid' : 'invalid'

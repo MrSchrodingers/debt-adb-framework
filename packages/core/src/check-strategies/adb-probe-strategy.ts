@@ -3,6 +3,7 @@ import type { CheckStrategy, StrategyResult, CheckContext } from './types.js'
 import { classifyUiState, type UiState } from './ui-state-classifier.js'
 import type { ProbeSnapshotWriter } from '../snapshots/probe-snapshot-writer.js'
 import { xmlContainsVariantDigits } from './probe-sanity.js'
+import type { DeviceMutexCtx } from '../engine/device-mutex.js'
 
 /**
  * Optional shared lock taker for the device. Injected from `engine`
@@ -11,9 +12,13 @@ import { xmlContainsVariantDigits } from './probe-sanity.js'
  * the same screen — without this coordination the intent fires
  * mid-typing and WhatsApp moves the half-typed message into the
  * previous chat's draft.
+ *
+ * `ctx` carries the optional `{ tenant, jobId }` holder description
+ * propagated from `CheckContext`. It is observational only — the
+ * mutex uses it to label the holder for debug/monitoring.
  */
 export interface DeviceLockTaker {
-  acquire(deviceSerial: string): Promise<() => void>
+  acquire(deviceSerial: string, ctx?: DeviceMutexCtx): Promise<() => void>
 }
 
 /**
@@ -63,7 +68,10 @@ export class AdbProbeStrategy implements CheckStrategy {
     // Both probeOnce() calls share this lock — it is released in the
     // finally block regardless of outcome.
     const release = this.deviceMutex
-      ? await this.deviceMutex.acquire(deviceSerial)
+      ? await this.deviceMutex.acquire(deviceSerial, {
+          tenant: ctx.tenant ?? '(unknown)',
+          jobId: ctx.jobId ?? '(unknown)',
+        })
       : () => {}
     try {
       // Attempt 1

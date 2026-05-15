@@ -34,4 +34,16 @@ export interface CheckContext {
    * INTERACT_ACROSS_USERS_FULL).
    */
   profileId?: number
+  /**
+   * Tenant id of the caller — propagated to DeviceMutex so the holder
+   * state describes which tenant is currently holding the device lock.
+   * Used by observability/debug paths only; never affects routing.
+   */
+  tenant?: string
+  /**
+   * Originating job id — propagated to DeviceMutex holder state for
+   * the same reason as `tenant`. Used to correlate a held device lock
+   * back to the scan job that took it.
+   */
+  jobId?: string
 }
