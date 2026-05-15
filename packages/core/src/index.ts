@@ -17,6 +17,16 @@ export type { AckRateThresholdRecord, ApplyThresholdParams } from './research/ac
 export { AckPersistFailures } from './waha/ack-persist-failures.js'
 export type { AckPersistFailureRecord } from './waha/ack-persist-failures.js'
 
+// Engine surfaces required by external SDR-aware plugins for race-condition
+// tests + integration tests. Not part of the steady-state plugin API, but
+// exported so plugin authors can stand up realistic in-memory fixtures.
+export { DeviceTenantAssignment } from './engine/device-tenant-assignment.js'
+export type { DeviceAssignment, ClaimResult, ReleaseResult } from './engine/device-tenant-assignment.js'
+export { SenderMapping } from './engine/sender-mapping.js'
+export type { SenderMappingRecord, SenderConfig, ResolvedSender } from './engine/sender-mapping.js'
+export { routeResponse } from './api/response-router.js'
+export type { RouteResponseInput, RouteResponseDecision } from './api/response-router.js'
+
 // Prometheus registry + SDR metric instruments (Task 40). Plugins can
 // import these to attach to the same /metrics endpoint exposed by the
 // dispatch core server. Other dispatch metrics stay internal.
