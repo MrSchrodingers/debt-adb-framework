@@ -23,6 +23,7 @@ import type { DispatchEmitter } from '../events/dispatch-emitter.js'
 import {
   PipeboardPg,
   PipeboardRest,
+  PipeboardRawRest,
   PendingWritebacks,
   PrecheckJobStore,
   PrecheckScanner,
@@ -34,7 +35,7 @@ import {
   type IPipeboardClient,
   type PipeboardBackend,
 } from './adb-precheck/index.js'
-import { TenantRegistry } from './adb-precheck/tenant-registry.js'
+import { TenantRegistry, type TenantId } from './adb-precheck/tenant-registry.js'
 
 const scanParamsSchema = z
   .object({
@@ -71,6 +72,12 @@ const scanParamsSchema = z
      * of the validation routed through the same WhatsApp account.
      */
     waha_session: z.string().min(1).max(64).optional(),
+    /**
+     * Selects which tenant's Pipeboard client + scanner pair to use.
+     * Defaults to 'adb' (back-compat). Validated against the configured
+     * tenant registry — unknown tenants get a 400 from the handler.
+     */
+    tenant: z.enum(['adb', 'sicoob', 'oralsin']).optional(),
   })
   .strict()
 
@@ -109,7 +116,11 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   webhookUrl: string
 
   private ctx: PluginContext | null = null
-  private pg: IPipeboardClient
+  // T22: per-tenant client + scanner. Built in init() from TenantRegistry.
+  // The 'adb' entry preserves the legacy single-tenant behaviour byte-for-
+  // byte; raw tenants (sicoob/oralsin) get a PipeboardRawRest client.
+  private pgByTenant = new Map<TenantId, IPipeboardClient>()
+  private scannerByTenant = new Map<TenantId, PrecheckScanner>()
   private pipeboardBackend: PipeboardBackend = 'sql'
   private pendingWritebacks: PendingWritebacks | null = null
   private store: PrecheckJobStore
@@ -118,7 +129,6 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   // mutex-aware AdbProbeStrategy without rewiring everything else.
   private cacheStrategy!: CacheOnlyStrategy
   private wahaStrategy!: WahaCheckStrategy
-  private scanner: PrecheckScanner | null = null
   private defaultDeviceSerial: string | undefined
   private defaultWahaSession: string | undefined
   private hmacSecret: string | undefined
@@ -135,6 +145,13 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
   private pastaLockReapTimer: NodeJS.Timeout | null = null
   private snapshotWriter: ProbeSnapshotWriter
   private tenantRegistry: TenantRegistry | undefined
+  // Stashed for late-bound client construction in init(). The adb tenant
+  // still honours the legacy unsuffixed env vars via these fields; raw
+  // tenants pull their own credentials from TenantRegistry.
+  private readonly adbBackend: PipeboardBackend
+  private readonly adbRestTimeoutMs: number | undefined
+  private readonly adbPgConnectionString: string | undefined
+  private readonly adbPgMaxConnections: number
 
   constructor(
     opts: {
@@ -217,20 +234,21 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     this.hmacSecret = opts.hmacSecret
     this.onInvalidPhoneCb = opts.onInvalidPhone
     const backend: PipeboardBackend = opts.backend ?? 'sql'
+    // Validate adb-tenant credentials up-front (back-compat: existing
+    // deployments throw at boot exactly when they did before T22). The
+    // raw-tenant credentials are validated by TenantRegistry.fromEnv()
+    // when init() builds them.
     if (backend === 'rest') {
       if (!opts.restBaseUrl || !opts.restApiKey) {
         throw new Error(
           'adb-precheck: backend=rest requires restBaseUrl and restApiKey',
         )
       }
-      this.pg = new PipeboardRest({
-        baseUrl: opts.restBaseUrl,
-        apiKey: opts.restApiKey,
-        timeoutMs: opts.restTimeoutMs,
-      })
-    } else {
-      this.pg = new PipeboardPg(opts.pgConnectionString, opts.pgMaxConnections ?? 4)
     }
+    this.adbBackend = backend
+    this.adbRestTimeoutMs = opts.restTimeoutMs
+    this.adbPgConnectionString = opts.pgConnectionString
+    this.adbPgMaxConnections = opts.pgMaxConnections ?? 4
     this.pipeboardBackend = backend
     this.store = new PrecheckJobStore(db)
     const snapshotBaseDir = join(process.env.DATA_DIR ?? 'data', 'probe-snapshots')
@@ -340,70 +358,138 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
         companyDomain: this.pipedriveCompanyDomain ?? '(unset — links disabled)',
       })
     }
+    // T22: build one IPipeboardClient + one PrecheckScanner per configured
+    // tenant. The legacy 'adb' path still routes through PipeboardRest /
+    // PipeboardPg using the unsuffixed env vars (TenantRegistry.fromEnv()
+    // already reads them); raw tenants get PipeboardRawRest. The shared
+    // pendingWritebacks / pipedrivePublisher are wired to every scanner —
+    // raw scanners ignore the writeback path (T21) so a single buffer
+    // pointed at the adb client is sufficient for the production scope.
+    const tenantRegistry = this.tenantRegistry ?? TenantRegistry.fromEnv()
+    for (const tc of tenantRegistry.list()) {
+      let client: IPipeboardClient
+      if (tc.mode === 'prov') {
+        // adb tenant — legacy backend selection preserved byte-for-byte.
+        if (this.adbBackend === 'rest') {
+          client = new PipeboardRest({
+            baseUrl: tc.restBaseUrl,
+            apiKey: tc.restApiKey,
+            timeoutMs: tc.restTimeoutMs ?? this.adbRestTimeoutMs,
+          })
+        } else {
+          // Postgres backend is supported only for the legacy adb tenant.
+          if (tc.id !== 'adb') {
+            throw new Error(
+              `tenant ${tc.id}: postgres backend not supported for non-adb tenants — set BACKEND=rest`,
+            )
+          }
+          if (!this.adbPgConnectionString) {
+            throw new Error(
+              'adb-precheck: BACKEND=sql requires pgConnectionString for the adb tenant',
+            )
+          }
+          client = new PipeboardPg(this.adbPgConnectionString, this.adbPgMaxConnections)
+        }
+      } else {
+        // Raw mode (sicoob / oralsin) — Pipeboard exposes /precheck-raw.
+        if (!tc.defaultPipelineId) {
+          throw new Error(`tenant ${tc.id}: missing PIPELINE_ID for raw mode`)
+        }
+        client = new PipeboardRawRest({
+          baseUrl: tc.restBaseUrl,
+          apiKey: tc.restApiKey,
+          pipelineId: tc.defaultPipelineId,
+          stageId: tc.defaultStageId,
+          timeoutMs: tc.restTimeoutMs,
+        })
+      }
+      this.pgByTenant.set(tc.id, client)
+    }
+
     // Fail-closed buffer for retryable Pipeboard failures. Always
     // wired — the SQL backend rarely fails in a retryable way, but
     // when it does (network blip on the SSH tunnel, transient PG)
     // queueing locally is the safe choice. For BACKEND=rest this is
     // the *only* safe path: a SQL fallback would be silently zeroed
     // by Pipeboard's blocklist trigger.
+    //
+    // T22 transitional: pointed at the adb client. Raw-mode scanners
+    // short-circuit before touching this buffer (scanner.ts checks
+    // tenantMode === 'raw'), so a single instance suffices.
+    const adbClient = this.pgByTenant.get('adb')
+    if (!adbClient) {
+      throw new Error('adb-precheck: tenant registry must include adb')
+    }
     this.pendingWritebacks = new PendingWritebacks(this.db, {
-      client: this.pg,
+      client: adbClient,
       logger: ctx.logger,
     })
     this.pendingWritebacks.initialize()
     this.pendingWritebacks.startDrain()
 
-    this.scanner = new PrecheckScanner({
-      pg: this.pg,
-      store: this.store,
-      validator: this.validator,
-      logger: ctx.logger,
-      shouldCancel: (jobId) => this.store.isCancelRequested(jobId),
-      deviceSerial: this.defaultDeviceSerial,
-      wahaSession: this.defaultWahaSession,
-      // Resolve which Android user owns the chosen sender on the
-      // chosen device, so the L3 ADB probe targets the right WA.
-      // Falls back to whatsapp_accounts (truth from the device) and
-      // tolerates the BR 9-prefix gap by digit-suffix matching.
-      resolveProfileForSender: (device, phone) => {
-        const digits = phone.replace(/\D/g, '')
-        if (!digits) return null
-        const row = this.db
-          .prepare(
-            `SELECT profile_id FROM whatsapp_accounts
-              WHERE device_serial = ?
-                AND package_name = 'com.whatsapp'
-                AND phone_number IS NOT NULL
-                AND (phone_number = ? OR phone_number LIKE ? OR ? LIKE '%' || phone_number)
-              ORDER BY profile_id ASC LIMIT 1`,
-          )
-          .get(device, digits, `%${digits}`, digits) as { profile_id: number } | undefined
-        return row?.profile_id ?? null
-      },
-      onJobFinished: (jobId) => this.deliverJobCompletedCallback(jobId),
-      onInvalidPhone: this.onInvalidPhoneCb,
-      pipedrive: this.pipedrivePublisher ?? undefined,
-      pipedriveCacheTtlDays: this.pipedriveCacheTtlDays,
-      // Pipeboard generates deal-level Pipedrive activities server-side
-      // when running on the REST backend, so skip the Dispatch-side
-      // `deal_all_fail` to avoid duplicates. `pasta_summary` is still
-      // emitted from Dispatch — Pipeboard does not aggregate it.
-      skipPipedriveDealActivity: this.pipeboardBackend === 'rest',
-      pendingWritebacks: this.pendingWritebacks,
-      // Hygienization mode wiring — DispatchPauseState satisfies ScannerPauseState
-      // structurally so we can pass it directly. When omitted, the scanner
-      // logs a warning and runs without pausing global sends.
-      pauseState: this.pauseState,
-      hygienizationOperator: this.hygienizationOperator,
-      locks: this.pastaLocks ?? undefined,
-      // Reactive device-failure recovery: scanner runs `checkDeviceReady`
-      // after 3 consecutive probe throws and waits up to 30min (exp
-      // backoff capped at 2min) for the device to come back. The shell
-      // adapter is the same one the L3 probe uses so the check shares
-      // its timeout and connection behaviour.
-      adbShell: this.adb,
-      appPackage: 'com.whatsapp',
-    })
+    for (const tc of tenantRegistry.list()) {
+      const client = this.pgByTenant.get(tc.id)!
+      const scanner = new PrecheckScanner({
+        pg: client,
+        store: this.store,
+        validator: this.validator,
+        logger: ctx.logger,
+        shouldCancel: (jobId) => this.store.isCancelRequested(jobId),
+        deviceSerial: this.defaultDeviceSerial,
+        wahaSession: this.defaultWahaSession,
+        // Resolve which Android user owns the chosen sender on the
+        // chosen device, so the L3 ADB probe targets the right WA.
+        // Falls back to whatsapp_accounts (truth from the device) and
+        // tolerates the BR 9-prefix gap by digit-suffix matching.
+        resolveProfileForSender: (device, phone) => {
+          const digits = phone.replace(/\D/g, '')
+          if (!digits) return null
+          const row = this.db
+            .prepare(
+              `SELECT profile_id FROM whatsapp_accounts
+                WHERE device_serial = ?
+                  AND package_name = 'com.whatsapp'
+                  AND phone_number IS NOT NULL
+                  AND (phone_number = ? OR phone_number LIKE ? OR ? LIKE '%' || phone_number)
+                ORDER BY profile_id ASC LIMIT 1`,
+            )
+            .get(device, digits, `%${digits}`, digits) as { profile_id: number } | undefined
+          return row?.profile_id ?? null
+        },
+        onJobFinished: (jobId) => this.deliverJobCompletedCallback(jobId),
+        onInvalidPhone: this.onInvalidPhoneCb,
+        // T22 transitional: shared pipedrivePublisher. T23 swaps for a
+        // per-tenant map so raw tenants can target their own Pipedrive
+        // company. For now, all scanners publish through the same
+        // publisher (the only configured token belongs to adb's
+        // Pipedrive account).
+        pipedrive: this.pipedrivePublisher ?? undefined,
+        pipedriveCacheTtlDays: this.pipedriveCacheTtlDays,
+        // Pipeboard generates deal-level Pipedrive activities server-side
+        // when running on the REST backend, so skip the Dispatch-side
+        // `deal_all_fail` to avoid duplicates. `pasta_summary` is still
+        // emitted from Dispatch — Pipeboard does not aggregate it.
+        skipPipedriveDealActivity: this.pipeboardBackend === 'rest',
+        pendingWritebacks: this.pendingWritebacks,
+        // Hygienization mode pauses global ADB sends. Only meaningful
+        // for the adb tenant — raw tenants don't share a device with
+        // production sends, so we leave pauseState undefined for them
+        // to avoid unrelated tenants flipping the global breaker.
+        pauseState: tc.mode === 'prov' ? this.pauseState : undefined,
+        hygienizationOperator: this.hygienizationOperator,
+        locks: this.pastaLocks ?? undefined,
+        // Reactive device-failure recovery: scanner runs `checkDeviceReady`
+        // after 3 consecutive probe throws and waits up to 30min (exp
+        // backoff capped at 2min) for the device to come back. The shell
+        // adapter is the same one the L3 probe uses so the check shares
+        // its timeout and connection behaviour.
+        adbShell: this.adb,
+        appPackage: 'com.whatsapp',
+        tenant: tc.id,
+        tenantMode: tc.mode,
+      })
+      this.scannerByTenant.set(tc.id, scanner)
+    }
 
     ctx.registerRoute('GET',  '/health',     this.handleHealth.bind(this))
     ctx.registerRoute('GET',  '/stats',         this.handleStats.bind(this))
@@ -427,14 +513,19 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     //  - no-match: WA checks that returned 'not_exists' (distinct phones)
     //  - valid:    WA checks that confirmed existence (distinct phones)
     //  - pipedrive-mapped: every phone in the Pipeboard pool (upstream)
-    for (const view of buildAdbPrecheckGeoViews(this.db, this.pg)) {
+    // T22: geo views are still scoped to the adb tenant. Per-tenant geo
+    // (sicoob / oralsin) is out of scope here and lives in a later task.
+    // adbClient was already validated above, but the type-narrowed local
+    // is asserted again for the geo-view closure.
+    const adbPgForGeo = adbClient
+    for (const view of buildAdbPrecheckGeoViews(this.db, adbPgForGeo)) {
       ctx.registerGeoView(view)
     }
     // Pre-warm the Pipeboard DDD aggregation cache so the first geo-tab
     // load doesn't block waiting for the full pool to iterate. Fire-and-
     // forget — failures degrade gracefully (view falls back to local).
-    if (typeof this.pg.aggregatePhoneDddDistribution === 'function') {
-      void this.pg.aggregatePhoneDddDistribution().catch((err) => {
+    if (typeof adbPgForGeo.aggregatePhoneDddDistribution === 'function') {
+      void adbPgForGeo.aggregatePhoneDddDistribution().catch((err) => {
         ctx.logger.warn('Geo: Pipeboard DDD prewarm failed', {
           error: err instanceof Error ? err.message : String(err),
         })
@@ -471,7 +562,18 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       }
     }
     this.pendingWritebacks?.stopDrain()
-    await this.pg.close()
+    for (const [tenantId, pg] of this.pgByTenant.entries()) {
+      try {
+        await pg.close()
+      } catch (e) {
+        this.ctx?.logger.warn('pg close failed', {
+          tenant: tenantId,
+          error: e instanceof Error ? e.message : String(e),
+        })
+      }
+    }
+    this.pgByTenant.clear()
+    this.scannerByTenant.clear()
     this.ctx?.logger.info('ADB pre-check plugin destroyed')
     this.ctx = null
   }
@@ -530,9 +632,22 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
 
   // ── Route Handlers (typed loosely; Fastify injects the real shape) ──
 
-  private async handleHealth(_req: unknown, reply: unknown): Promise<unknown> {
-    const r = await this.pg.healthcheck()
+  private async handleHealth(req: unknown, reply: unknown): Promise<unknown> {
+    const pg = this.resolvePgFromQuery(req)
+    const r = await pg.healthcheck()
     return (reply as { send: (x: unknown) => unknown }).send(r)
+  }
+
+  /**
+   * T22: per-tenant resolver helper used by read-only route handlers. Reads
+   * `?tenant=` from the query, falls back to 'adb' so unsuffixed callers
+   * preserve the legacy single-tenant behaviour byte-for-byte.
+   */
+  private resolvePgFromQuery(req: unknown): IPipeboardClient {
+    const q = (req as { query?: { tenant?: string } } | undefined)?.query
+    const raw = q?.tenant?.toLowerCase()
+    const id: TenantId = raw === 'sicoob' || raw === 'oralsin' ? raw : 'adb'
+    return this.pgByTenant.get(id) ?? this.pgByTenant.get('adb')!
   }
 
   private async handleListTenants(_req: unknown, reply: unknown): Promise<unknown> {
@@ -600,11 +715,12 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       return r.status(400).send({ error: 'invalid_recheck_after_days' })
     }
 
+    const pg = this.resolvePgFromQuery(req)
     let poolTotal: number | null
     let poolError: string | null = null
     let poolUnsupported = false
     try {
-      const v = await this.pg.countPool({})
+      const v = await pg.countPool({})
       if (v < 0) {
         poolTotal = null
         poolUnsupported = true
@@ -728,11 +844,12 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       return r.status(400).send({ error: 'invalid_recheck_after_days' })
     }
 
+    const pg = this.resolvePgFromQuery(req)
     let poolTotal: number | null
     let poolError: string | null = null
     let poolUnsupported = false
     try {
-      const v = await this.pg.countPool({})
+      const v = await pg.countPool({})
       // PipeboardRest returns -1 when COUNT is not exposed by the
       // backend (the REST contract intentionally omits it for
       // performance — see ADR 0002). Treat that as "unknown" exactly
@@ -849,10 +966,24 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       }
     }
 
-    const job = this.store.createJob(params, external_ref, { pipedriveEnabled, hygienizationMode })
+    // T22: resolve the per-tenant scanner. Default to 'adb' for back-compat;
+    // unknown tenants short-circuit with a 400 so misconfigured clients get
+    // an actionable error instead of running against the wrong Pipeboard
+    // schema.
+    const tenantId: TenantId = (rawParams.tenant ?? 'adb') as TenantId
+    if (!this.scannerByTenant.has(tenantId)) {
+      return r.status(400).send({ error: 'tenant_not_configured', tenant: tenantId })
+    }
+    const scanner = this.scannerByTenant.get(tenantId)!
+
+    const job = this.store.createJob(params, external_ref, {
+      pipedriveEnabled,
+      hygienizationMode,
+      tenant: tenantId,
+    })
     if (job.status === 'queued') {
       // Fire-and-forget; progress visible via GET /scan/:id
-      void this.scanner!.runJob(job.id, params).catch(() => {
+      void scanner.runJob(job.id, params).catch(() => {
         // scanner already logged + marked failed
       })
     }
@@ -994,12 +1125,24 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
       since_iso?: string
       max_deals?: number
       dry_run?: boolean
+      tenant?: string
     }
-    if (!this.scanner) {
+    // T22: tenant resolution mirrors handleStartScan — default 'adb',
+    // 400 on unknown.
+    const rawTenant = body.tenant?.toLowerCase()
+    const tenantId: TenantId =
+      rawTenant === 'sicoob' || rawTenant === 'oralsin' || rawTenant === 'adb'
+        ? (rawTenant as TenantId)
+        : 'adb'
+    if (body.tenant !== undefined && !this.scannerByTenant.has(tenantId)) {
+      return r.code(400).send({ error: 'tenant_not_configured', tenant: body.tenant })
+    }
+    const scanner = this.scannerByTenant.get(tenantId)
+    if (!scanner) {
       return r.code(503).send({ error: 'scanner_not_ready' })
     }
     try {
-      const result = await this.scanner.runRetryErrorsJob({
+      const result = await scanner.runRetryErrorsJob({
         pasta: body.pasta ?? null,
         since_iso: body.since_iso,
         max_deals: body.max_deals,
