@@ -735,11 +735,15 @@ export class MessageQueue {
       tenantClause = ''
       tenantBinds = []
     } else if (assignment) {
-      // Device is claimed: only same-tenant messages are visible.
-      tenantClause = 'AND tenant_hint = ?'
+      // Device claimed by a tenant: serves same-tenant messages AND legacy
+      // (null tenant_hint) traffic from non-SDR plugins. This was tightened
+      // in 2026-05-15 — the original "strict" filter blocked oralsin/adb-
+      // precheck the moment SDR activated, breaking unrelated workloads.
+      // Cross-tenant (different non-null tenant_hint) stays blocked.
+      tenantClause = 'AND (tenant_hint = ? OR tenant_hint IS NULL)'
       tenantBinds = [assignment.tenant_name]
     } else {
-      // Device is unclaimed: only legacy (null tenant_hint) messages.
+      // Device unclaimed: only legacy (null tenant_hint) messages.
       tenantClause = 'AND tenant_hint IS NULL'
       tenantBinds = []
     }

@@ -561,7 +561,12 @@ describe('MessageQueue', () => {
       expect(batch[0]!.tenantHint).toBeNull()
     })
 
-    it('rejects legacy (null-hint) messages when device is claimed', () => {
+    it('legacy (null-hint) messages co-exist with claim — claimed device serves both tenant + legacy', () => {
+      // Design intent (2026-05-15 revisão): DTA partitions tenants from each
+      // other, NOT plugins from devices. A device claimed by tenant X must
+      // still serve legacy (null tenant_hint) traffic from non-SDR plugins
+      // like oralsin/adb-precheck so they don't suddenly stop sending the
+      // moment SDR is activated.
       dta.claim('devA', 'oralsin-sdr', 'debt-sdr')
       tenantQueue.enqueue({
         to: '554399999992',
@@ -569,7 +574,9 @@ describe('MessageQueue', () => {
         idempotencyKey: 'g23-B',
         senderNumber: '554399000100',
       })
-      expect(tenantQueue.dequeueBySender('devA')).toHaveLength(0)
+      const batch = tenantQueue.dequeueBySender('devA')
+      expect(batch).toHaveLength(1)
+      expect(batch[0]!.tenantHint).toBeNull()
     })
 
     it('returns same-tenant messages on claimed device', () => {
@@ -611,8 +618,9 @@ describe('MessageQueue', () => {
       expect(tenantQueue.dequeueBySender('devA')).toHaveLength(0)
     })
 
-    it('fallback path (no sender_number) respects tenant filter', () => {
+    it('fallback path: cross-tenant rejected, same-tenant or legacy accepted', () => {
       dta.claim('devA', 'oralsin-sdr', 'debt-sdr')
+      // cross-tenant: rejected
       tenantQueue.enqueue({
         to: '554399999996',
         body: 'x',
@@ -621,6 +629,7 @@ describe('MessageQueue', () => {
       })
       expect(tenantQueue.dequeueBySender('devA')).toHaveLength(0)
 
+      // same-tenant: accepted
       tenantQueue.enqueue({
         to: '554399999997',
         body: 'y',
@@ -630,6 +639,35 @@ describe('MessageQueue', () => {
       const batch = tenantQueue.dequeueBySender('devA')
       expect(batch).toHaveLength(1)
       expect(batch[0]!.tenantHint).toBe('oralsin-sdr')
+    })
+
+    it('legacy (null) message dequeues alongside same-tenant on claimed device', () => {
+      // Co-existence proof: two messages enqueued — one legacy (null) and
+      // one same-tenant. dequeueBySender pulls both eventually.
+      dta.claim('devA', 'oralsin-sdr', 'debt-sdr')
+      tenantQueue.enqueue({
+        to: '554399999991',
+        body: 'legacy-from-oralsin',
+        idempotencyKey: 'g23-coex-1',
+        senderNumber: '554399000100',
+      })
+      tenantQueue.enqueue({
+        to: '554399999992',
+        body: 'sdr-cold',
+        idempotencyKey: 'g23-coex-2',
+        senderNumber: '554399000100',
+        tenantHint: 'oralsin-sdr',
+      })
+
+      const first = tenantQueue.dequeueBySender('devA')
+      // Re-queue (don't lock permanently for this assertion)
+      first.forEach((m) => tenantQueue.updateStatus(m.id, 'locked', 'queued'))
+      const second = tenantQueue.dequeueBySender('devA')
+      const seenHints = new Set(
+        [...first, ...second].map((m) => m.tenantHint),
+      )
+      expect(seenHints.has(null)).toBe(true)
+      expect(seenHints.has('oralsin-sdr')).toBe(true)
     })
 
     it('increments blockedByTenantFilter when filter rejects a non-empty queue', () => {
