@@ -74,3 +74,11 @@ export type {
   PipedriveDealAllFailIntent,
   PipedrivePastaSummaryIntent,
 } from './types.js'
+export {
+  TenantRegistry,
+  TenantConfigError,
+  type TenantId,
+  type TenantMode,
+  type TenantConfig,
+  type TenantWriteback,
+} from './tenant-registry.js'
