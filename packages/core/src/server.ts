@@ -11,6 +11,7 @@ import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, 
 import { DispatchPauseState, type PauseScope } from './engine/dispatch-pause-state.js'
 import { DispatchEmitter } from './events/index.js'
 import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes, registerMessageTimelineRoutes, registerAdminMessageRoutes, registerAdminPluginRoutes, registerInsightsHeatmapRoutes, registerAckRateRoutes, registerQualityRoutes, registerFleetRoutes, registerSetupWizardRoutes } from './api/index.js'
+import { routeResponse } from './api/response-router.js'
 import { ChipRegistry } from './fleet/index.js'
 import { HygieneLog, AutoHygiene, SetupWizardStore } from './devices/index.js'
 import { registerAnomalyRoutes, registerChanged24hRoutes } from './insights/index.js'
@@ -1119,11 +1120,35 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
         direction: 'outgoing',
         limit: 1,
       })
-      if (history.length === 0 || !history[0].messageId) return
 
-      const dispatchMsgId = history[0].messageId
-      const msg = queue.getById(dispatchMsgId)
-      if (!msg?.pluginName) return
+      const dispatchMsgId = history[0]?.messageId ?? null
+      const msg = dispatchMsgId ? queue.getById(dispatchMsgId) : null
+      const senderRec = senderMapping.getByPhone(data.toNumber)
+
+      // G5: tenant tightening (Task 7). Reversible via
+      // DISPATCH_RESPONSE_STRICT_TENANT=false (Task 10 rollback).
+      const decision = routeResponse({
+        outgoingMessageId: dispatchMsgId,
+        message: msg ? { pluginName: msg.pluginName, tenantHint: msg.tenantHint } : null,
+        senderTenant: senderRec?.tenant ?? null,
+        strictTenantFlag: process.env.DISPATCH_RESPONSE_STRICT_TENANT,
+      })
+
+      if (!decision.deliver) {
+        if (decision.reason === 'tenant_mismatch') {
+          server.log.warn(
+            {
+              msg_id: msg!.id,
+              sender_tenant: decision.sender_tenant,
+              msg_tenant: decision.msg_tenant,
+              from: data.fromNumber,
+              via: data.toNumber,
+            },
+            'response routing dropped — sender/msg tenant mismatch (G5)',
+          )
+        }
+        return
+      }
 
       const incomingHistory = messageHistory.query({
         fromNumber: data.fromNumber,
@@ -1131,9 +1156,9 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
       })
       const replyText = incomingHistory.length > 0 ? (incomingHistory[0].text ?? '') : ''
 
-      void callbackDelivery.sendResponseCallback(msg.pluginName, msg.id, {
-        idempotency_key: msg.idempotencyKey,
-        message_id: msg.id,
+      void callbackDelivery.sendResponseCallback(msg!.pluginName!, msg!.id, {
+        idempotency_key: msg!.idempotencyKey,
+        message_id: msg!.id,
         event: 'patient_response',
         response: {
           body: replyText,
