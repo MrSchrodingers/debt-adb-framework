@@ -35,8 +35,17 @@ describe('PipeboardRawRest', () => {
     await expect(c.applyDealLocalization({ pasta: 'x', deal_id: 1, contato_tipo: 'p', contato_id: 1 }, { telefone: '1', source: 'cache', jobId: null, fonte: 'dispatch_adb_precheck' })).rejects.toThrow(NotSupportedByRawBackendError)
   })
 
-  it('countPool returns -1 (unsupported)', async () => {
-    const c = new PipeboardRawRest({ baseUrl: 'x', apiKey: 'k', pipelineId: 14, fetchImpl: mkFetch({}) })
+  it('countPool returns server count when endpoint reachable', async () => {
+    const fetchImpl = mkFetch({ _body: { count: 1234, tenant: 'sicoob' } } as never)
+    const c = new PipeboardRawRest({ baseUrl: 'http://r/api/v1/sicoob', apiKey: 'k', pipelineId: 14, fetchImpl })
+    expect(await c.countPool({})).toBe(1234)
+    const call = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]
+    expect(String(call[0])).toMatch(/precheck-raw\/deals\/count\?.*pipeline_id=14/)
+  })
+
+  it('countPool returns -1 when endpoint unreachable (graceful degrade)', async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new Error('network'))
+    const c = new PipeboardRawRest({ baseUrl: 'http://r/api/v1/sicoob', apiKey: 'k', pipelineId: 14, fetchImpl: fetchImpl as unknown as typeof fetch })
     expect(await c.countPool({})).toBe(-1)
   })
 

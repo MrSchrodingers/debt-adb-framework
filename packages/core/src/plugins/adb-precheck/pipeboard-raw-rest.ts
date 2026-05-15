@@ -68,8 +68,22 @@ export class PipeboardRawRest implements IPipeboardClient {
     }
   }
 
-  async countPool(_params: PrecheckScanParams): Promise<number> {
-    return -1
+  async countPool(params: PrecheckScanParams): Promise<number> {
+    try {
+      const qp = new URLSearchParams()
+      qp.set('pipeline_id', String(this.pipelineId))
+      if (this.stageId !== undefined) qp.set('stage_id', String(this.stageId))
+      if (params.recheck_after_days != null) {
+        const since = new Date(Date.now() - params.recheck_after_days * 86_400_000)
+        qp.set('exclude_after', since.toISOString())
+      }
+      const res = await this.request('GET', `/precheck-raw/deals/count?${qp.toString()}`, null)
+      const json = (await res.json()) as { count: number }
+      return typeof json.count === 'number' ? json.count : -1
+    } catch {
+      // graceful degrade: surface "pool desconhecido" if router not yet updated
+      return -1
+    }
   }
 
   async *iterateDeals(
