@@ -921,9 +921,13 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
           const agg = await maybeAgg.aggregatePoolStats({ recheck_after_days: recheckAfterDays })
           if (agg && agg.dealsTotal > 0) {
             phonesPerDealAvg = agg.phonesTotal / agg.dealsTotal
-            phonesEstimatedInPool = agg.phonesTotal
+            // Project per-deal avg over the FULL pool so the UI's
+            // `pool.deals_total × per_deal_avg ≈ estimated_in_pool` invariant
+            // holds. Using agg.phonesTotal raw would only show phones inside
+            // the exclude_after window, contradicting the pool total label.
+            phonesEstimatedInPool = Math.round(poolTotal * phonesPerDealAvg)
             // Nothing scanned yet → remaining equals the full pool estimate.
-            phonesEstimatedRemaining = agg.phonesTotal
+            phonesEstimatedRemaining = phonesEstimatedInPool
           }
         } catch {
           // graceful — keep null values (router may not have the endpoint yet)
