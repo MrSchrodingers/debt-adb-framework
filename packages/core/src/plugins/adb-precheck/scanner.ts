@@ -597,7 +597,7 @@ export class PrecheckScanner {
                     valid_count: validCount,
                     invalid_count: invalidCount,
                     primary_valid_phone: primaryValid,
-                  })
+                  }, this.deps.tenant)
                   store.bumpProgress(jobId, {
                     scanned_deals: 1,
                     total_phones: phoneResults.length,
@@ -632,7 +632,7 @@ export class PrecheckScanner {
             invalid_count: invalidCount,
             primary_valid_phone: primaryValid,
           }
-          store.upsertDeal(jobId, result)
+          store.upsertDeal(jobId, result, this.deps.tenant)
 
           if (params.writeback_invalid) {
             // Dedupe by normalized phone — first occurrence wins for
@@ -1086,7 +1086,7 @@ export class PrecheckScanner {
               valid_count: validCount,
               invalid_count: invalidCount,
               primary_valid_phone: primaryValid,
-            })
+            }, this.deps.tenant)
             touchedPastas.add(pasta)
             // Closes the propagation gap discovered in case 99386 (2026-05-07):
             // sweep mutations now flow back to the Pipeboard blocklist.
@@ -1412,7 +1412,7 @@ export class PrecheckScanner {
         valid_count: validCount,
         invalid_count: invalidCount,
         primary_valid_phone: primaryValid,
-      })
+      }, this.deps.tenant)
 
       // Closes the propagation gap discovered in case 99386: end-of-scan retry
       // mutations now flow back to the Pipeboard blocklist (same call shape as

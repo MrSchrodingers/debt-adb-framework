@@ -362,14 +362,19 @@ export class PrecheckJobStore {
     return { fresh, total }
   }
 
-  upsertDeal(jobId: string, result: DealResult): void {
+  upsertDeal(jobId: string, result: DealResult, tenant?: 'adb' | 'sicoob' | 'oralsin'): void {
+    // Tenant defaults to 'adb' for back-compat (legacy callers and pre-T3
+    // call sites). The PK is still (pasta, deal_id, contato_tipo, contato_id);
+    // tenant flows through to the row and gets updated on conflict so a
+    // re-scan from a different tenant claims ownership of the row.
+    const t = tenant ?? 'adb'
     this.db
       .prepare(
         `INSERT INTO adb_precheck_deals (
            pasta, deal_id, contato_tipo, contato_id,
            last_job_id, valid_count, invalid_count, primary_valid_phone,
-           phones_json, scanned_at
-         ) VALUES (?,?,?,?,?,?,?,?,?,?)
+           phones_json, scanned_at, tenant
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT (pasta, deal_id, contato_tipo, contato_id) DO UPDATE SET
            last_job_id = excluded.last_job_id,
            valid_count = excluded.valid_count,
@@ -377,6 +382,7 @@ export class PrecheckJobStore {
            primary_valid_phone = excluded.primary_valid_phone,
            phones_json = excluded.phones_json,
            scanned_at = excluded.scanned_at,
+           tenant = excluded.tenant,
            deleted_at = NULL`,
       )
       .run(
@@ -390,6 +396,7 @@ export class PrecheckJobStore {
         result.primary_valid_phone,
         JSON.stringify(result.phones),
         new Date().toISOString(),
+        t,
       )
   }
 
