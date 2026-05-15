@@ -1,8 +1,22 @@
 # Development Progress — DEBT ADB Framework
 
-> **Last updated**: 2026-05-15T11:53:00-03:00
-> **Current phase**: DEBT-SDR PLUGIN — Phase A+B+C+D+E COMPLETE (50/50 tasks, 100%) — production deploy done, plugin OFF
+> **Last updated**: 2026-05-15T13:30:00-03:00
+> **Current phase**: ADB-PRECHECK MULTI-TENANT — Phase A APPROVED (10/40 tasks), Phase B.1 STARTING
 >
+> ## ADB-PRECHECK MULTI-TENANT STATUS
+>
+> - **Spec**: `docs/superpowers/specs/2026-05-14-adb-precheck-multi-tenant-design.md`
+> - **Plan**: `docs/superpowers/plans/2026-05-14-adb-precheck-multi-tenant-plan.md` (40 tasks, 5 sub-phases)
+> - **Branch**: `phase/precheck-multi-tenant` (HEAD `abe03ed7`)
+> - **Tests**: 1959/1959 passing, 0 regressions (Phase A gate)
+> - **Phase A APPROVED 2026-05-15**: T1 TenantRegistry, T2 barrel, T3 SQLite migration (tenant column on 4 tables; UNIQUE pipedrive_activities deferred to T23 — dedup_key not yet a column), T4 DeviceMutex describeHolder, T5 scanner+probe ctx propagation, T6 GET /tenants, T7 GET /devices/availability, T8 handleStartScan 409, T9 server.ts wires TenantRegistry, T10 gate
+> - **Next**: Phase B.1 (router Go) — T11 spike → T12 whitelist split → T13-T16 /precheck-raw projection+handler+test → T17 API key → T18 router build
+>
+> ## DEBT-SDR PLUGIN STATUS (paused, OFF in prod)
+>
+> - **Spec**: `docs/superpowers/specs/2026-05-14-debt-sdr-plugin-design.md`
+> - **Plan**: `docs/superpowers/plans/2026-05-14-debt-sdr-plugin-plan.md` (50 tasks, 5 phases)
+> - **Branch**: `main` (HEAD `9c651666`)
 > ## DEBT-SDR PLUGIN STATUS
 >
 > - **Spec**: `docs/superpowers/specs/2026-05-14-debt-sdr-plugin-design.md`
