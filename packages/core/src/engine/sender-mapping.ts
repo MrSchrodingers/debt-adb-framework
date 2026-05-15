@@ -221,29 +221,50 @@ export class SenderMapping {
    * G1 (debt-sdr): set tenant ownership for a sender phone.
    *
    * Idempotent for the same tenant. Rejects a different tenant on a phone
-   * already owned by another tenant (caller must release first). Phones
-   * with no tenant become tenant-owned; the row is identified by
-   * normalized phone_number (UNIQUE), not active flag, so deactivated
-   * rows still carry their tenant claim.
+   * already owned by another tenant. Phones with no tenant become
+   * tenant-owned; the row is identified by normalized phone_number (UNIQUE).
+   *
+   * Atomicity: the read-then-write is wrapped in a single CAS UPDATE
+   * (`WHERE tenant IS NULL OR tenant = ?`) so two concurrent claims for
+   * the same phone but different tenants cannot both succeed — last
+   * writer can only succeed if the row is still uncontested. We then
+   * re-read to determine which case fired.
    */
   setSenderTenant(phone: string, tenant: string): SetSenderTenantResult {
     const normalized = this.normalizePhone(phone)
-    const row = this.db
+
+    // Confirm existence up front so we can distinguish phone_not_found
+    // from conflicting_tenant without an extra round-trip on the hot path.
+    const existing = this.db
       .prepare('SELECT tenant FROM sender_mapping WHERE phone_number = ?')
       .get(normalized) as { tenant: string | null } | undefined
-    if (!row) return { ok: false, reason: 'phone_not_found' }
-    if (row.tenant !== null && row.tenant !== tenant) {
-      return { ok: false, reason: 'conflicting_tenant', current_tenant: row.tenant }
-    }
-    if (row.tenant === tenant) return { ok: true }
-    this.db
+    if (!existing) return { ok: false, reason: 'phone_not_found' }
+
+    // Single-statement CAS: only sets tenant when the slot is still ours
+    // (null) or already ours (idempotent). better-sqlite3's single-writer
+    // guarantee makes this atomic across concurrent processes — no two
+    // tenants can both win.
+    const result = this.db
       .prepare(
         `UPDATE sender_mapping
             SET tenant = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-          WHERE phone_number = ?`,
+          WHERE phone_number = ?
+            AND (tenant IS NULL OR tenant = ?)`,
       )
-      .run(tenant, normalized)
-    return { ok: true }
+      .run(tenant, normalized, tenant)
+
+    if (result.changes > 0) return { ok: true }
+
+    // Zero changes means the CAS missed — another writer claimed the
+    // slot. Re-read for the winning tenant.
+    const after = this.db
+      .prepare('SELECT tenant FROM sender_mapping WHERE phone_number = ?')
+      .get(normalized) as { tenant: string | null } | undefined
+    if (!after) return { ok: false, reason: 'phone_not_found' }
+    // after.tenant must be non-null here (CAS only fails when tenant is
+    // a different non-null value). Treat null as a defensive no-op success.
+    if (after.tenant === null || after.tenant === tenant) return { ok: true }
+    return { ok: false, reason: 'conflicting_tenant', current_tenant: after.tenant }
   }
 
   /** G1: list all active senders owned by a tenant. */

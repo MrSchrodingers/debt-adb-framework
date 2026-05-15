@@ -824,10 +824,10 @@ export class MessageQueue {
 
     const result = txn.immediate()
 
-    // G2.3 metric: any non-empty queue blocked by tenant filter?
-    // Cheap heuristic — count when filter was active and we returned 0
-    // but a non-filtered count would have been > 0.
-    if (result.length === 0 && (tenantClause !== '' || (this.dta && !tenantFilterDisabled))) {
+    // G2.3 metric: only meaningful when a CLAIMED device returned 0
+    // results while the queue has work. Unclaimed devices on quiet
+    // queues are normal idle ticks, not blocked-by-tenant events.
+    if (result.length === 0 && assignment !== null) {
       const total = this.db
         .prepare("SELECT COUNT(*) AS n FROM messages WHERE status = 'queued'")
         .get() as { n: number }

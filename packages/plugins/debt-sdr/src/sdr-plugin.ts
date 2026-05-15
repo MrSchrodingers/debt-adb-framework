@@ -181,7 +181,18 @@ export class DebtSdrPlugin implements DispatchPlugin {
       return
     }
     for (const claim of this.claimedDevices) {
-      this.ctx.releaseDeviceAssignment(claim.serial)
+      const r = this.ctx.releaseDeviceAssignment(claim.serial)
+      if (!r.ok) {
+        // Log so a ghost claim in DTA does not silently outlive the
+        // plugin's local bookkeeping. Loader's releaseByPlugin runs
+        // next and should clean up — but we want operator-visible
+        // evidence if it doesn't.
+        this.ctx.logger.warn('debt-sdr release returned non-ok', {
+          device: claim.serial,
+          tenant: claim.tenant,
+          reason: r.reason,
+        })
+      }
     }
     this.claimedDevices = []
   }
