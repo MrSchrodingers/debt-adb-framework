@@ -16,3 +16,27 @@ export { AckRateThresholds } from './research/ack-rate-thresholds.js'
 export type { AckRateThresholdRecord, ApplyThresholdParams } from './research/ack-rate-thresholds.js'
 export { AckPersistFailures } from './waha/ack-persist-failures.js'
 export type { AckPersistFailureRecord } from './waha/ack-persist-failures.js'
+
+// Plugin SDK surface — types only. External plugins (packages/plugins/*)
+// import these to implement DispatchPlugin without reaching into core internals.
+export type {
+  DispatchPlugin,
+  PluginContext,
+  PluginEnqueueParams,
+  PluginMessage,
+  PluginLogger,
+  QueueStats,
+  HttpMethod,
+  RouteHandler,
+  CallbackType,
+  ResultCallback,
+  AckCallback,
+  ResponseCallback,
+  InterimFailureCallback,
+  ExpiredCallback,
+  NumberInvalidCallback,
+  HygieneItemCallback,
+  HygieneCompletedCallback,
+  AssignmentResult,
+  AssertTenantResult,
+} from './plugins/types.js'
