@@ -189,6 +189,10 @@ function AdbPrecheckTabInner() {
   const [status, setStatus] = useState<PluginStatus>('checking')
   const [activeJobs, setActiveJobs] = useState(0)
   const [totalDeals, setTotalDeals] = useState(0)
+  // Refresh signal: each click on "Atualizar" bumps this; child panels
+  // include it in their useEffect deps so they re-fetch on demand instead
+  // of waiting for their next poll tick.
+  const [refreshSignal, setRefreshSignal] = useState(0)
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -226,7 +230,15 @@ function AdbPrecheckTabInner() {
         actions={
           <div className="flex items-center gap-2">
             <TenantSelector />
-            <AccentButton accent={ACCENT} variant="ghost" onClick={fetchStatus} icon={RefreshCw}>
+            <AccentButton
+              accent={ACCENT}
+              variant="ghost"
+              onClick={() => {
+                void fetchStatus()
+                setRefreshSignal((s) => s + 1)
+              }}
+              icon={RefreshCw}
+            >
               Atualizar
             </AccentButton>
           </div>
@@ -250,10 +262,10 @@ function AdbPrecheckTabInner() {
         <InlineError message="Plugin indisponivel (404). Verifique se adb-precheck esta em DISPATCH_PLUGINS e se PLUGIN_ADB_PRECHECK_BACKEND esta configurado (sql exige PLUGIN_ADB_PRECHECK_PG_URL; rest exige PLUGIN_ADB_PRECHECK_REST_BASE_URL + PLUGIN_ADB_PRECHECK_REST_API_KEY)." />
       ) : null}
 
-      {activeSubTab === 'overview' ? <OverviewPanel onStartScan={() => setActiveSubTab('scan')} />
+      {activeSubTab === 'overview' ? <OverviewPanel onStartScan={() => setActiveSubTab('scan')} refreshSignal={refreshSignal} />
       : activeSubTab === 'scan' ? <NewScanPanel onDone={() => setActiveSubTab('jobs')} />
-      : activeSubTab === 'deals' ? <DealsPanel />
-      : activeSubTab === 'jobs' ? <JobsPanel />
+      : activeSubTab === 'deals' ? <DealsPanel refreshSignal={refreshSignal} />
+      : activeSubTab === 'jobs' ? <JobsPanel refreshSignal={refreshSignal} />
       : <PipedriveView />}
     </div>
   )
@@ -261,7 +273,7 @@ function AdbPrecheckTabInner() {
 
 // ── Overview ───────────────────────────────────────────────────────────────
 
-function OverviewPanel({ onStartScan }: { onStartScan: () => void }) {
+function OverviewPanel({ onStartScan, refreshSignal }: { onStartScan: () => void; refreshSignal?: number }) {
   const { tenant } = useTenant()
   const [stats, setStats] = useState<AggregateStats | null>(null)
   const [global, setGlobal] = useState<GlobalStats | null>(null)
@@ -290,7 +302,7 @@ function OverviewPanel({ onStartScan }: { onStartScan: () => void }) {
     load()
     const t = setInterval(load, 10_000)
     return () => clearInterval(t)
-  }, [load])
+  }, [load, refreshSignal])
 
   const handleSweep = async () => {
     setSweepSubmitting(true); setSweepError(null)
@@ -1230,7 +1242,7 @@ function ConfirmModal({
 
 // ── Jobs ───────────────────────────────────────────────────────────────────
 
-function JobsPanel() {
+function JobsPanel({ refreshSignal }: { refreshSignal?: number } = {}) {
   const { tenant } = useTenant()
   const [jobs, setJobs] = useState<PrecheckJob[] | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -1246,7 +1258,7 @@ function JobsPanel() {
     refresh()
     const t = setInterval(refresh, 3_000)
     return () => clearInterval(t)
-  }, [refresh])
+  }, [refresh, refreshSignal])
 
   if (err) return <InlineError message={err} />
   if (jobs === null) return <div className="h-40 animate-pulse rounded-lg border border-zinc-800 bg-zinc-900/40" />
@@ -1439,7 +1451,7 @@ function JobStatusPill({ status }: { status: PrecheckJob['status'] }) {
 
 // ── Deals ──────────────────────────────────────────────────────────────────
 
-function DealsPanel() {
+function DealsPanel({ refreshSignal }: { refreshSignal?: number } = {}) {
   const { tenant } = useTenant()
   const [filter, setFilter] = useState<'all' | 'valid' | 'invalid' | 'tombstoned'>('all')
   const [search, setSearch] = useState('')
@@ -1454,7 +1466,7 @@ function DealsPanel() {
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d) => { setDeals(d.data ?? []); setTotal(d.total ?? 0) })
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
-  }, [filter, tenant])
+  }, [filter, tenant, refreshSignal])
 
   const visibleDeals = useMemo(() => {
     if (!deals) return []
