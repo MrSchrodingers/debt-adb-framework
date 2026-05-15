@@ -30,10 +30,12 @@ export function DevicesGridMirror() {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // Fetch device list once and refresh every 30s in the background
+  // Fetch device list once and refresh every 30s in the background.
+  // /api/v1/monitor/devices carrega `status` + `lastSeenAt` (era /api/v1/devices
+  // que retorna o registry adb cru SEM status → tile fallback 'offline').
   const fetchDevices = useCallback(async () => {
     try {
-      const res = await fetch(`${CORE_URL}/api/v1/devices`, { headers: authHeaders() })
+      const res = await fetch(`${CORE_URL}/api/v1/monitor/devices`, { headers: authHeaders() })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = (await res.json()) as { devices?: Device[] } | Device[]
       const list = Array.isArray(data) ? data : (data.devices ?? [])
