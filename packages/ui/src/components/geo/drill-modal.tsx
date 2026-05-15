@@ -7,11 +7,13 @@ export interface DrillModalProps {
   viewId: string | null
   ddd: string | null
   state: GeoFilterState
+  /** Optional tenant id forwarded as `?tenant=` on every drill request. */
+  tenantId?: string | null
   onClose: () => void
 }
 
 export function DrillModal(props: DrillModalProps) {
-  const { open, viewId, ddd, state, onClose } = props
+  const { open, viewId, ddd, state, tenantId, onClose } = props
   const [data, setData] = useState<GeoDrillResult | null>(null)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(false)
@@ -24,12 +26,13 @@ export function DrillModal(props: DrillModalProps) {
     url.searchParams.set('window', state.window)
     url.searchParams.set('page', String(page))
     for (const [k, v] of Object.entries(state.filters)) url.searchParams.set(k, v)
+    if (tenantId) url.searchParams.set('tenant', tenantId)
     fetch(url.toString(), { headers: authHeaders() })
       .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
       .then(setData)
       .catch(() => setData(null))
       .finally(() => setLoading(false))
-  }, [open, viewId, ddd, state, page])
+  }, [open, viewId, ddd, state, page, tenantId])
 
   useEffect(() => { setPage(1) }, [open, viewId, ddd])
 

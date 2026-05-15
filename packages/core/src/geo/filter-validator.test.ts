@@ -9,6 +9,10 @@ const statusSpec: GeoFilterSpec = {
   type: 'select', id: 'status', label: 'Status', defaultValue: 'sent',
   options: [{ value: 'sent', label: 'Enviadas' }, { value: 'failed', label: 'Falhadas' }],
 }
+const tenantSpec: GeoFilterSpec = {
+  type: 'enum', id: 'tenant', defaultValue: 'adb',
+  options: ['adb', 'sicoob', 'oralsin'] as const,
+}
 
 describe('validateGeoQuery', () => {
   it('parses valid query', () => {
@@ -51,5 +55,23 @@ describe('validateGeoQuery', () => {
     const r = validateGeoQuery({ query: { window: '7d', page: '0' }, filterSpecs: [windowSpec] })
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.field).toBe('page')
+  })
+
+  it('parses enum filter with valid value', () => {
+    const r = validateGeoQuery({ query: { tenant: 'sicoob' }, filterSpecs: [windowSpec, tenantSpec] })
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.params.filters.tenant).toBe('sicoob')
+  })
+
+  it('applies enum filter default when missing', () => {
+    const r = validateGeoQuery({ query: {}, filterSpecs: [windowSpec, tenantSpec] })
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.params.filters.tenant).toBe('adb')
+  })
+
+  it('rejects enum filter value not in options', () => {
+    const r = validateGeoQuery({ query: { tenant: 'unknown' }, filterSpecs: [windowSpec, tenantSpec] })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.field).toBe('tenant')
   })
 })

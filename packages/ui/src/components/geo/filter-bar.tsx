@@ -28,6 +28,25 @@ export function FilterBar({ specs, state, onChange }: FilterBarProps) {
             </div>
           )
         }
+        // The global TenantSelector in GeoPage controls the tenant filter,
+        // so we hide it from the per-view FilterBar to avoid two competing
+        // controls. Every other enum filter renders as a plain select.
+        if (spec.id === 'tenant') return null
+        if (spec.type === 'enum') {
+          return (
+            <label key={spec.id} className="flex items-center gap-2 text-xs text-zinc-400">
+              {spec.label && <span>{spec.label}:</span>}
+              <select
+                aria-label={spec.label ?? spec.id}
+                className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-zinc-100 text-xs"
+                value={state.filters[spec.id] ?? spec.defaultValue}
+                onChange={(e) => onChange({ ...state, filters: { ...state.filters, [spec.id]: e.target.value } })}
+              >
+                {spec.options.map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+            </label>
+          )
+        }
         return (
           <label key={spec.id} className="flex items-center gap-2 text-xs text-zinc-400">
             <span>{spec.label}:</span>

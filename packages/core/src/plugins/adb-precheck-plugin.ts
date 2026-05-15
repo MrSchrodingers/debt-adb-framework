@@ -594,23 +594,29 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     //  - no-match: WA checks that returned 'not_exists' (distinct phones)
     //  - valid:    WA checks that confirmed existence (distinct phones)
     //  - pipedrive-mapped: every phone in the Pipeboard pool (upstream)
-    // T22: geo views are still scoped to the adb tenant. Per-tenant geo
-    // (sicoob / oralsin) is out of scope here and lives in a later task.
-    // adbClient was already validated above, but the type-narrowed local
-    // is asserted again for the geo-view closure.
-    const adbPgForGeo = adbClient
-    for (const view of buildAdbPrecheckGeoViews(this.db, adbPgForGeo)) {
+    // T40p: each view now declares a `tenant` enum filter (adb/sicoob/
+    // oralsin, default adb). cohort SQL EXISTS-joins adb_precheck_deals
+    // by tenant; pipedrive-mapped picks the pgByTenant client matching
+    // the filter. Back-compat: callers that bypass the validator
+    // (params.filters.tenant === undefined) get the historical global
+    // result with no JOIN cost.
+    const pipeboardClientsByTenant = new Map(this.pgByTenant)
+    for (const view of buildAdbPrecheckGeoViews(this.db, pipeboardClientsByTenant)) {
       ctx.registerGeoView(view)
     }
-    // Pre-warm the Pipeboard DDD aggregation cache so the first geo-tab
-    // load doesn't block waiting for the full pool to iterate. Fire-and-
-    // forget — failures degrade gracefully (view falls back to local).
-    if (typeof adbPgForGeo.aggregatePhoneDddDistribution === 'function') {
-      void adbPgForGeo.aggregatePhoneDddDistribution().catch((err) => {
-        ctx.logger.warn('Geo: Pipeboard DDD prewarm failed', {
-          error: err instanceof Error ? err.message : String(err),
+    // Pre-warm the Pipeboard DDD aggregation cache for every tenant so the
+    // first geo-tab load doesn't block waiting for the full pool to
+    // iterate. Fire-and-forget — failures degrade gracefully (view falls
+    // back to local) and run in parallel so a slow tenant doesn't gate
+    // the others.
+    for (const [tenantId, client] of pipeboardClientsByTenant) {
+      if (typeof client.aggregatePhoneDddDistribution === 'function') {
+        void client.aggregatePhoneDddDistribution().catch((err) => {
+          ctx.logger.warn(`Geo: ${tenantId} DDD prewarm failed`, {
+            error: err instanceof Error ? err.message : String(err),
+          })
         })
-      })
+      }
     }
 
     // Plugin-scoped Pipedrive operator API. Routes mount under
@@ -1470,20 +1476,48 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
  * Views 1-2 use phone_normalized (12 digits, with 55) so DDD = chars 3-4.
  * View 3 uses primary_valid_phone (11 digits, no 55) so DDD = chars 1-2.
  */
+/**
+ * Minimal Pipeboard surface the geo aggregation needs. Accepted both as
+ * a single legacy client (back-compat) and as a per-tenant Map.
+ */
+type GeoPipeboardClient = { aggregatePhoneDddDistribution?(): Promise<Record<string, number>> }
+
 export function buildAdbPrecheckGeoViews(
   db: Database.Database,
-  pipeboardClient?: { aggregatePhoneDddDistribution?(): Promise<Record<string, number>> },
+  pipeboardClients?: GeoPipeboardClient | Map<TenantId, GeoPipeboardClient>,
 ): GeoViewDefinition[] {
+  // Normalize input: legacy single-client form is treated as the 'adb' tenant.
+  // This preserves byte-for-byte compatibility with existing tests + callers.
+  const clientsByTenant: Map<TenantId, GeoPipeboardClient> =
+    pipeboardClients instanceof Map
+      ? pipeboardClients
+      : pipeboardClients !== undefined
+        ? new Map<TenantId, GeoPipeboardClient>([['adb', pipeboardClients]])
+        : new Map<TenantId, GeoPipeboardClient>()
+
   const windowFilter = {
     type: 'window' as const,
     id: 'window',
     defaultValue: '7d' as const,
     options: ['24h', '7d', '30d', 'all'] as const,
   }
+  const tenantFilter = {
+    type: 'enum' as const,
+    id: 'tenant',
+    defaultValue: 'adb' as const,
+    options: ['adb', 'sicoob', 'oralsin'] as const,
+  }
 
   // Helper: build a wa_contact_checks-based cohort view. `result` is the
   // outcome value to filter by. Counts are DISTINCT phone_normalized so
   // re-checks of the same number don't inflate the heatmap.
+  //
+  // Tenant scoping: wa_contact_checks is a shared global cache cross-tenant
+  // by design (one phone may belong to deals in multiple tenants — the WA
+  // existence answer is the same). To scope by owner tenant we JOIN with
+  // adb_precheck_deals where tenant lives. JOIN is only applied when the
+  // caller explicitly provides a tenant filter — direct callers (tests,
+  // legacy paths) skip the JOIN and get the global view.
   const cohortView = (
     id: string,
     label: string,
@@ -1494,46 +1528,100 @@ export function buildAdbPrecheckGeoViews(
     id, label, description,
     group: 'adb-precheck',
     palette: 'sequential',
-    filters: [{ ...windowFilter, options: [...windowFilter.options] }],
+    filters: [
+      { ...windowFilter, options: [...windowFilter.options] },
+      { ...tenantFilter, options: [...tenantFilter.options] },
+    ],
     aggregate: async (params) => {
       const since = windowToIso(params.window)
-      const rows = db.prepare(`
-        SELECT substr(phone_normalized, 3, 2) AS ddd,
-               COUNT(DISTINCT phone_normalized) AS count
-        FROM wa_contact_checks
-        WHERE result = ? AND checked_at >= ?
-        GROUP BY ddd
-      `).all(resultValue, since) as Array<{ ddd: string; count: number }>
+      const tenant = params.filters?.tenant
+      let rows: Array<{ ddd: string; count: number }>
+      if (tenant) {
+        rows = db.prepare(`
+          SELECT substr(c.phone_normalized, 3, 2) AS ddd,
+                 COUNT(DISTINCT c.phone_normalized) AS count
+          FROM wa_contact_checks c
+          WHERE c.result = ? AND c.checked_at >= ?
+            AND EXISTS (
+              SELECT 1 FROM adb_precheck_deals d, json_each(d.phones_json) p
+              WHERE d.tenant = ?
+                AND d.deleted_at IS NULL
+                AND json_extract(p.value, '$.normalized') = c.phone_normalized
+            )
+          GROUP BY ddd
+        `).all(resultValue, since, tenant) as Array<{ ddd: string; count: number }>
+      } else {
+        rows = db.prepare(`
+          SELECT substr(phone_normalized, 3, 2) AS ddd,
+                 COUNT(DISTINCT phone_normalized) AS count
+          FROM wa_contact_checks
+          WHERE result = ? AND checked_at >= ?
+          GROUP BY ddd
+        `).all(resultValue, since) as Array<{ ddd: string; count: number }>
+      }
       const buckets: Record<string, number> = {}
       for (const r of rows) if (r.ddd) buckets[r.ddd] = r.count
       return { buckets, total: rows.reduce((s, r) => s + r.count, 0), generatedAt: new Date().toISOString() }
     },
     drill: async (ddd, params) => {
       const since = windowToIso(params.window)
+      const tenant = params.filters?.tenant
       const pageSize = params.pageSize ?? 50
       const offset = ((params.page ?? 1) - 1) * pageSize
-      // DISTINCT phone with latest check timestamp — so a phone re-checked
-      // 5 times appears once with the most recent date.
-      const rows = db.prepare(`
-        SELECT phone_normalized AS phone, MAX(checked_at) AS last_check
-        FROM wa_contact_checks
-        WHERE result = ? AND checked_at >= ?
-          AND substr(phone_normalized, 3, 2) = ?
-        GROUP BY phone_normalized
-        ORDER BY last_check DESC
-        LIMIT ? OFFSET ?
-      `).all(resultValue, since, ddd, pageSize, offset)
-      const total = (db.prepare(`
-        SELECT COUNT(DISTINCT phone_normalized) AS c FROM wa_contact_checks
-        WHERE result = ? AND checked_at >= ?
-          AND substr(phone_normalized, 3, 2) = ?
-      `).get(resultValue, since, ddd) as { c: number }).c
+      let rows: Array<Record<string, unknown>>
+      let total: number
+      if (tenant) {
+        rows = db.prepare(`
+          SELECT c.phone_normalized AS phone, MAX(c.checked_at) AS last_check
+          FROM wa_contact_checks c
+          WHERE c.result = ? AND c.checked_at >= ?
+            AND substr(c.phone_normalized, 3, 2) = ?
+            AND EXISTS (
+              SELECT 1 FROM adb_precheck_deals d, json_each(d.phones_json) p
+              WHERE d.tenant = ?
+                AND d.deleted_at IS NULL
+                AND json_extract(p.value, '$.normalized') = c.phone_normalized
+            )
+          GROUP BY c.phone_normalized
+          ORDER BY last_check DESC
+          LIMIT ? OFFSET ?
+        `).all(resultValue, since, ddd, tenant, pageSize, offset) as Array<Record<string, unknown>>
+        total = (db.prepare(`
+          SELECT COUNT(DISTINCT c.phone_normalized) AS c
+          FROM wa_contact_checks c
+          WHERE c.result = ? AND c.checked_at >= ?
+            AND substr(c.phone_normalized, 3, 2) = ?
+            AND EXISTS (
+              SELECT 1 FROM adb_precheck_deals d, json_each(d.phones_json) p
+              WHERE d.tenant = ?
+                AND d.deleted_at IS NULL
+                AND json_extract(p.value, '$.normalized') = c.phone_normalized
+            )
+        `).get(resultValue, since, ddd, tenant) as { c: number }).c
+      } else {
+        // DISTINCT phone with latest check timestamp — so a phone re-checked
+        // 5 times appears once with the most recent date.
+        rows = db.prepare(`
+          SELECT phone_normalized AS phone, MAX(checked_at) AS last_check
+          FROM wa_contact_checks
+          WHERE result = ? AND checked_at >= ?
+            AND substr(phone_normalized, 3, 2) = ?
+          GROUP BY phone_normalized
+          ORDER BY last_check DESC
+          LIMIT ? OFFSET ?
+        `).all(resultValue, since, ddd, pageSize, offset) as Array<Record<string, unknown>>
+        total = (db.prepare(`
+          SELECT COUNT(DISTINCT phone_normalized) AS c FROM wa_contact_checks
+          WHERE result = ? AND checked_at >= ?
+            AND substr(phone_normalized, 3, 2) = ?
+        `).get(resultValue, since, ddd) as { c: number }).c
+      }
       return {
         columns: [
           { key: 'phone', label: 'Telefone', type: 'phone' },
           { key: 'last_check', label: dateLabel, type: 'date' },
         ],
-        rows: rows as Array<Record<string, unknown>>,
+        rows,
         total, page: params.page ?? 1, pageSize,
       }
     },
@@ -1574,14 +1662,18 @@ export function buildAdbPrecheckGeoViews(
     description: 'Todos os telefones do pool Pipeboard upstream (5.689 deals × ~4.6 phones cada) — estado global',
     group: 'adb-precheck',
     palette: 'sequential',
-    filters: [],
-    aggregate: async () => {
+    filters: [
+      { ...tenantFilter, options: [...tenantFilter.options] },
+    ],
+    aggregate: async (params) => {
+      const tenant = (params.filters?.tenant ?? 'adb') as TenantId
+      const client = clientsByTenant.get(tenant)
       // Preferred: query Pipeboard upstream directly so the heatmap
       // reflects the ENTIRE pool, including pending deals not yet
       // scanned by Dispatch.
-      if (pipeboardClient?.aggregatePhoneDddDistribution) {
+      if (client?.aggregatePhoneDddDistribution) {
         try {
-          const buckets = await pipeboardClient.aggregatePhoneDddDistribution()
+          const buckets = await client.aggregatePhoneDddDistribution()
           const total = Object.values(buckets).reduce((s, v) => s + v, 0)
           return { buckets, total, generatedAt: new Date().toISOString() }
         } catch (err) {
@@ -1590,43 +1682,81 @@ export function buildAdbPrecheckGeoViews(
           console.warn('[geo] Pipeboard pool aggregate failed, falling back to local:', err)
         }
       }
-      // Fallback: phones inside locally-scanned deals only. Best-effort
-      // when Pipeboard upstream is unreachable or the backend doesn't
-      // support the aggregation primitive (REST).
-      const rows = db.prepare(`
-        SELECT ${dddFromJsonPhone} AS ddd, COUNT(*) AS count
-        FROM adb_precheck_deals d, json_each(d.phones_json) p
-        WHERE d.deleted_at IS NULL
-          AND json_extract(p.value, '$.normalized') IS NOT NULL
-        GROUP BY ddd
-      `).all() as Array<{ ddd: string; count: number }>
+      // Fallback: phones inside locally-scanned deals for this tenant.
+      // Best-effort when Pipeboard upstream is unreachable or the backend
+      // doesn't support the aggregation primitive (REST). When tenant is
+      // omitted (legacy callers + tests bypassing the validator) we
+      // aggregate across every tenant to match historical behavior.
+      const hasTenantFilter = params.filters?.tenant !== undefined
+      const rows = hasTenantFilter
+        ? db.prepare(`
+            SELECT ${dddFromJsonPhone} AS ddd, COUNT(*) AS count
+            FROM adb_precheck_deals d, json_each(d.phones_json) p
+            WHERE d.deleted_at IS NULL
+              AND d.tenant = ?
+              AND json_extract(p.value, '$.normalized') IS NOT NULL
+            GROUP BY ddd
+          `).all(tenant) as Array<{ ddd: string; count: number }>
+        : db.prepare(`
+            SELECT ${dddFromJsonPhone} AS ddd, COUNT(*) AS count
+            FROM adb_precheck_deals d, json_each(d.phones_json) p
+            WHERE d.deleted_at IS NULL
+              AND json_extract(p.value, '$.normalized') IS NOT NULL
+            GROUP BY ddd
+          `).all() as Array<{ ddd: string; count: number }>
       const buckets: Record<string, number> = {}
       for (const r of rows) if (r.ddd) buckets[r.ddd] = r.count
       return { buckets, total: rows.reduce((s, r) => s + r.count, 0), generatedAt: new Date().toISOString() }
     },
     drill: async (ddd, params) => {
+      const tenant = (params.filters?.tenant ?? 'adb') as TenantId
+      const hasTenantFilter = params.filters?.tenant !== undefined
       const pageSize = params.pageSize ?? 50
       const offset = ((params.page ?? 1) - 1) * pageSize
-      const rows = db.prepare(`
-        SELECT d.pasta, d.deal_id, d.contato_tipo, d.contato_id,
-               json_extract(p.value, '$.normalized') AS phone,
-               json_extract(p.value, '$.column')     AS phone_column,
-               json_extract(p.value, '$.outcome')    AS outcome,
-               d.scanned_at
-        FROM adb_precheck_deals d, json_each(d.phones_json) p
-        WHERE d.deleted_at IS NULL
-          AND json_extract(p.value, '$.normalized') IS NOT NULL
-          AND ${dddFromJsonPhone} = ?
-        ORDER BY d.scanned_at DESC
-        LIMIT ? OFFSET ?
-      `).all(ddd, pageSize, offset)
-      const total = (db.prepare(`
-        SELECT COUNT(*) AS c
-        FROM adb_precheck_deals d, json_each(d.phones_json) p
-        WHERE d.deleted_at IS NULL
-          AND json_extract(p.value, '$.normalized') IS NOT NULL
-          AND ${dddFromJsonPhone} = ?
-      `).get(ddd) as { c: number }).c
+      const rows = hasTenantFilter
+        ? db.prepare(`
+            SELECT d.pasta, d.deal_id, d.contato_tipo, d.contato_id,
+                   json_extract(p.value, '$.normalized') AS phone,
+                   json_extract(p.value, '$.column')     AS phone_column,
+                   json_extract(p.value, '$.outcome')    AS outcome,
+                   d.scanned_at
+            FROM adb_precheck_deals d, json_each(d.phones_json) p
+            WHERE d.deleted_at IS NULL
+              AND d.tenant = ?
+              AND json_extract(p.value, '$.normalized') IS NOT NULL
+              AND ${dddFromJsonPhone} = ?
+            ORDER BY d.scanned_at DESC
+            LIMIT ? OFFSET ?
+          `).all(tenant, ddd, pageSize, offset)
+        : db.prepare(`
+            SELECT d.pasta, d.deal_id, d.contato_tipo, d.contato_id,
+                   json_extract(p.value, '$.normalized') AS phone,
+                   json_extract(p.value, '$.column')     AS phone_column,
+                   json_extract(p.value, '$.outcome')    AS outcome,
+                   d.scanned_at
+            FROM adb_precheck_deals d, json_each(d.phones_json) p
+            WHERE d.deleted_at IS NULL
+              AND json_extract(p.value, '$.normalized') IS NOT NULL
+              AND ${dddFromJsonPhone} = ?
+            ORDER BY d.scanned_at DESC
+            LIMIT ? OFFSET ?
+          `).all(ddd, pageSize, offset)
+      const total = hasTenantFilter
+        ? (db.prepare(`
+            SELECT COUNT(*) AS c
+            FROM adb_precheck_deals d, json_each(d.phones_json) p
+            WHERE d.deleted_at IS NULL
+              AND d.tenant = ?
+              AND json_extract(p.value, '$.normalized') IS NOT NULL
+              AND ${dddFromJsonPhone} = ?
+          `).get(tenant, ddd) as { c: number }).c
+        : (db.prepare(`
+            SELECT COUNT(*) AS c
+            FROM adb_precheck_deals d, json_each(d.phones_json) p
+            WHERE d.deleted_at IS NULL
+              AND json_extract(p.value, '$.normalized') IS NOT NULL
+              AND ${dddFromJsonPhone} = ?
+          `).get(ddd) as { c: number }).c
       return {
         columns: [
           { key: 'deal_id', label: 'Deal ID', type: 'number' },

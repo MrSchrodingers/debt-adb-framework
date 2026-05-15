@@ -28,17 +28,28 @@ export function validateGeoQuery(opts: {
 
   const filters: Record<string, string> = {}
   for (const spec of filterSpecs) {
-    if (spec.type !== 'select') continue
-    const provided = query[spec.id]
-    if (provided === undefined) {
-      filters[spec.id] = spec.defaultValue
-      continue
+    if (spec.type === 'select') {
+      const provided = query[spec.id]
+      if (provided === undefined) {
+        filters[spec.id] = spec.defaultValue
+        continue
+      }
+      const allowed = spec.options.some(o => o.value === provided)
+      if (!allowed) {
+        return { ok: false, field: spec.id, reason: `value "${provided}" not in options` }
+      }
+      filters[spec.id] = provided
+    } else if (spec.type === 'enum') {
+      const provided = query[spec.id]
+      if (provided === undefined) {
+        filters[spec.id] = spec.defaultValue
+        continue
+      }
+      if (!spec.options.includes(provided)) {
+        return { ok: false, field: spec.id, reason: `value "${provided}" not in options` }
+      }
+      filters[spec.id] = provided
     }
-    const allowed = spec.options.some(o => o.value === provided)
-    if (!allowed) {
-      return { ok: false, field: spec.id, reason: `value "${provided}" not in options` }
-    }
-    filters[spec.id] = provided
   }
 
   let page = 1

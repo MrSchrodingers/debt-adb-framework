@@ -5,9 +5,10 @@ import { GeoViewPanel } from './geo-view-panel.js'
 export interface GeoTabsProps {
   data: GeoViewsResponse
   topology: DddTopology
+  tenantId?: string | null
 }
 
-export function GeoTabs({ data, topology }: GeoTabsProps) {
+export function GeoTabs({ data, topology, tenantId }: GeoTabsProps) {
   const firstGroup = data.groups[0]?.name ?? ''
   const firstView = data.groups[0]?.viewIds[0] ?? ''
   const [groupName, setGroupName] = useState(firstGroup)
@@ -58,7 +59,7 @@ export function GeoTabs({ data, topology }: GeoTabsProps) {
         </nav>
       )}
 
-      <GeoViewPanel view={view} topology={topology} />
+      <GeoViewPanel view={view} topology={topology} tenantId={tenantId} />
     </div>
   )
 }

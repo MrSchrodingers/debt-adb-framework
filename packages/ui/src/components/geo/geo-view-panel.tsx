@@ -10,15 +10,29 @@ import type { DddTopology, GeoAggregation, GeoFilterState, GeoViewSummary } from
 export interface GeoViewPanelProps {
   view: GeoViewSummary
   topology: DddTopology
+  /**
+   * Tenant id from the global TenantSelector. When set, it's forwarded
+   * as `?tenant=<id>` on every aggregate/drill fetch so cohort SQL +
+   * Pipeboard pool aggregations stay scoped to the selected tenant.
+   */
+  tenantId?: string | null
 }
 
-export function GeoViewPanel({ view, topology }: GeoViewPanelProps) {
+export function GeoViewPanel({ view, topology, tenantId }: GeoViewPanelProps) {
   const initialState: GeoFilterState = useMemo(() => {
     const filters: Record<string, string> = {}
     let window: GeoFilterState['window'] = '7d'
     for (const spec of view.filters) {
-      if (spec.type === 'window') window = spec.defaultValue
-      else filters[spec.id] = spec.defaultValue
+      if (spec.type === 'window') {
+        window = spec.defaultValue
+      } else if (spec.id === 'tenant') {
+        // Tenant is injected from the global TenantSelector at fetch time;
+        // skip seeding it into local filter state so it doesn't override
+        // the global selection when the user switches views.
+        continue
+      } else {
+        filters[spec.id] = spec.defaultValue
+      }
     }
     return { window, filters }
   }, [view.filters])
@@ -33,18 +47,23 @@ export function GeoViewPanel({ view, topology }: GeoViewPanelProps) {
   // Re-init filter state when view changes
   useEffect(() => { setState(initialState) }, [initialState])
 
+  // Reset aggregation when tenant changes so the user sees a skeleton
+  // during the refetch instead of stale numbers from the previous tenant.
+  useEffect(() => { setAggregation(null) }, [tenantId])
+
   useEffect(() => {
     setLoading(true)
     setError(null)
     const url = new URL(`${CORE_URL}/api/v1/geo/views/${view.id}/aggregate`)
     url.searchParams.set('window', state.window)
     for (const [k, v] of Object.entries(state.filters)) url.searchParams.set(k, v)
+    if (tenantId) url.searchParams.set('tenant', tenantId)
     fetch(url.toString(), { headers: authHeaders() })
       .then(r => r.ok ? r.json() : r.json().then(b => Promise.reject(b)))
       .then(setAggregation)
       .catch((b) => setError((b && b.error) ?? 'fetch_failed'))
       .finally(() => setLoading(false))
-  }, [view.id, state])
+  }, [view.id, state, tenantId])
 
   const max = aggregation ? Math.max(0, ...Object.values(aggregation.buckets)) : 0
   const median = useMemo(() => {
@@ -174,6 +193,7 @@ export function GeoViewPanel({ view, topology }: GeoViewPanelProps) {
         viewId={view.id}
         ddd={drillDdd}
         state={state}
+        tenantId={tenantId}
         onClose={() => setDrillDdd(null)}
       />
     </div>

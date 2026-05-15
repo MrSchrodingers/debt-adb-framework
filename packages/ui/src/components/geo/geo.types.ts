@@ -16,7 +16,15 @@ export interface GeoSelectFilterSpec {
   options: Array<{ value: string; label: string }>
 }
 
-export type GeoFilterSpec = GeoWindowFilterSpec | GeoSelectFilterSpec
+export interface GeoEnumFilterSpec {
+  type: 'enum'
+  id: string
+  label?: string
+  defaultValue: string
+  options: readonly string[]
+}
+
+export type GeoFilterSpec = GeoWindowFilterSpec | GeoSelectFilterSpec | GeoEnumFilterSpec
 
 export interface GeoViewSummary {
   id: string

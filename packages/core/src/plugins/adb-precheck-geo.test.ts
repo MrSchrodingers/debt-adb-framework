@@ -168,3 +168,84 @@ describe('adb-precheck.pipedrive-mapped geo view', () => {
     expect(r.total).toBe(4)
   })
 })
+
+describe('adb-precheck geo views — per-tenant filter (T40p)', () => {
+  let db: Database.Database
+  let registry: GeoViewRegistry
+
+  beforeEach(() => {
+    db = new Database(':memory:')
+    db.prepare(`
+      CREATE TABLE wa_contact_checks (
+        id TEXT PRIMARY KEY, phone_normalized TEXT NOT NULL,
+        result TEXT NOT NULL, checked_at TEXT NOT NULL
+      )
+    `).run()
+    db.prepare(`
+      CREATE TABLE adb_precheck_deals (
+        pasta TEXT NOT NULL, deal_id INTEGER NOT NULL,
+        contato_tipo TEXT NOT NULL, contato_id INTEGER NOT NULL,
+        primary_valid_phone TEXT, phones_json TEXT NOT NULL,
+        scanned_at TEXT NOT NULL, deleted_at TEXT,
+        tenant TEXT NOT NULL DEFAULT 'adb',
+        PRIMARY KEY (pasta, deal_id, contato_tipo, contato_id, tenant)
+      )
+    `).run()
+    const now = new Date().toISOString()
+    // Two cohorts of WA checks — both 'not_exists'. Only one phone (DDD 11)
+    // belongs to an adb deal; the other (DDD 21) belongs to a sicoob deal.
+    const insChk = db.prepare(`INSERT INTO wa_contact_checks VALUES (?, ?, ?, ?)`)
+    insChk.run('c1', '5511987654321', 'not_exists', now)
+    insChk.run('c2', '5521987654322', 'not_exists', now)
+    const insDeal = db.prepare(`
+      INSERT INTO adb_precheck_deals
+        (pasta, deal_id, contato_tipo, contato_id, primary_valid_phone, phones_json, scanned_at, deleted_at, tenant)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    insDeal.run('p', 1, 'cli', 1, '5511987654321',
+      JSON.stringify([{ column: 't1', normalized: '5511987654321', outcome: 'invalid' }]), now, null, 'adb')
+    insDeal.run('p', 2, 'cli', 1, '5521987654322',
+      JSON.stringify([{ column: 't1', normalized: '5521987654322', outcome: 'invalid' }]), now, null, 'sicoob')
+    registry = new GeoViewRegistry()
+    const clients = new Map<'adb' | 'sicoob' | 'oralsin', { aggregatePhoneDddDistribution?: () => Promise<Record<string, number>> }>([
+      ['adb', { aggregatePhoneDddDistribution: async () => ({ '11': 100 }) }],
+      ['sicoob', { aggregatePhoneDddDistribution: async () => ({ '21': 200 }) }],
+      ['oralsin', { aggregatePhoneDddDistribution: async () => ({ '41': 300 }) }],
+    ])
+    for (const v of buildAdbPrecheckGeoViews(db, clients)) registry.register('adb-precheck', v)
+  })
+
+  it('cohort no-match scopes by tenant via EXISTS join', async () => {
+    const view = registry.get('adb-precheck.no-match')!
+    const adb = await view.aggregate({ window: '7d', filters: { tenant: 'adb' } })
+    expect(adb.buckets).toEqual({ '11': 1 })
+    const sicoob = await view.aggregate({ window: '7d', filters: { tenant: 'sicoob' } })
+    expect(sicoob.buckets).toEqual({ '21': 1 })
+  })
+
+  it('cohort no-match returns global when no tenant filter (back-compat)', async () => {
+    const view = registry.get('adb-precheck.no-match')!
+    const r = await view.aggregate({ window: '7d', filters: {} })
+    expect(r.buckets).toEqual({ '11': 1, '21': 1 })
+  })
+
+  it('pipedrive-mapped picks the per-tenant Pipeboard client', async () => {
+    const view = registry.get('adb-precheck.pipedrive-mapped')!
+    const adb = await view.aggregate({ window: '7d', filters: { tenant: 'adb' } })
+    expect(adb.buckets).toEqual({ '11': 100 })
+    const oralsin = await view.aggregate({ window: '7d', filters: { tenant: 'oralsin' } })
+    expect(oralsin.buckets).toEqual({ '41': 300 })
+  })
+
+  it('declares tenant enum filter on all three views', () => {
+    for (const id of ['adb-precheck.no-match', 'adb-precheck.valid', 'adb-precheck.pipedrive-mapped']) {
+      const view = registry.get(id)!
+      const tf = view.filters.find((f) => f.id === 'tenant')
+      expect(tf?.type).toBe('enum')
+      if (tf?.type === 'enum') {
+        expect(tf.defaultValue).toBe('adb')
+        expect([...tf.options]).toEqual(['adb', 'sicoob', 'oralsin'])
+      }
+    }
+  })
+})
