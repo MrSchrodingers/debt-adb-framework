@@ -34,6 +34,7 @@ import {
   resolvePipeboardBackend,
   type IPipeboardClient,
   type PipeboardBackend,
+  type PrecheckScanParams,
 } from './adb-precheck/index.js'
 import { TenantRegistry, type TenantId } from './adb-precheck/tenant-registry.js'
 
@@ -881,18 +882,54 @@ export class AdbPrecheckPlugin implements DispatchPlugin {
     // Used by the UI to extrapolate `phones_estimated_in_pool` so the
     // operator can plan batches without manual math. Marked
     // `_estimated` because the source is sampling, not authoritative.
-    const phonesPerDealAvg =
+    let phonesPerDealAvg: number | null =
       dealAgg.deals_scanned > 0
         ? phoneAgg.phones_checked / dealAgg.deals_scanned
         : null
-    const phonesEstimatedInPool =
+    let phonesEstimatedInPool: number | null =
       poolTotal !== null && phonesPerDealAvg !== null
         ? Math.round(poolTotal * phonesPerDealAvg)
         : null
-    const phonesEstimatedRemaining =
+    let phonesEstimatedRemaining: number | null =
       dealsPending !== null && phonesPerDealAvg !== null
         ? Math.round(dealsPending * phonesPerDealAvg)
         : null
+
+    // T40g: raw tenants (sicoob/oralsin) have no SQLite scan data yet
+    // (phones.checked === 0 until the first scan finishes), so the
+    // sampling-based per_deal_avg above collapses to null. Fall back to
+    // a single pool-level aggregate (1 SQL query in router) so the
+    // Stats panel can show real numbers immediately after env enable.
+    // Gates on raw-mode + zero-checked to avoid clobbering real scan
+    // data on prov tenants.
+    const tcForStats = this.tenantRegistry?.has(tenant) ? this.tenantRegistry.get(tenant) : null
+    if (
+      tcForStats &&
+      tcForStats.mode === 'raw' &&
+      phoneAgg.phones_checked === 0 &&
+      poolTotal !== null &&
+      poolTotal > 0
+    ) {
+      const pgForStats = this.pgByTenant.get(tenant)
+      const maybeAgg = pgForStats as unknown as {
+        aggregatePoolStats?: (
+          p: PrecheckScanParams,
+        ) => Promise<{ dealsTotal: number; phonesTotal: number } | null>
+      }
+      if (pgForStats && typeof maybeAgg.aggregatePoolStats === 'function') {
+        try {
+          const agg = await maybeAgg.aggregatePoolStats({ recheck_after_days: recheckAfterDays })
+          if (agg && agg.dealsTotal > 0) {
+            phonesPerDealAvg = agg.phonesTotal / agg.dealsTotal
+            phonesEstimatedInPool = agg.phonesTotal
+            // Nothing scanned yet → remaining equals the full pool estimate.
+            phonesEstimatedRemaining = agg.phonesTotal
+          }
+        } catch {
+          // graceful — keep null values (router may not have the endpoint yet)
+        }
+      }
+    }
 
     return r.status(200).send({
       recheck_after_days: recheckAfterDays,

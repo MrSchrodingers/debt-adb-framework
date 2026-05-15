@@ -86,6 +86,33 @@ export class PipeboardRawRest implements IPipeboardClient {
     }
   }
 
+  /**
+   * Pool-level aggregate (deals + phones in one SQL roundtrip). Used by
+   * the Stats panel so per_deal_avg + estimated_in_pool show real numbers
+   * for raw tenants even when no scan has populated phones_checked yet.
+   *
+   * Returns null on network failure (graceful degrade to legacy "—" UI).
+   */
+  async aggregatePoolStats(
+    params: PrecheckScanParams,
+  ): Promise<{ dealsTotal: number; phonesTotal: number } | null> {
+    try {
+      const qp = new URLSearchParams()
+      qp.set('pipeline_id', String(this.pipelineId))
+      if (this.stageId !== undefined) qp.set('stage_id', String(this.stageId))
+      if (params.recheck_after_days != null) {
+        const since = new Date(Date.now() - params.recheck_after_days * 86_400_000)
+        qp.set('exclude_after', since.toISOString())
+      }
+      const res = await this.request('GET', `/precheck-raw/deals/aggregate?${qp.toString()}`, null)
+      const json = (await res.json()) as { deals_total: number; phones_total: number }
+      if (typeof json.deals_total !== 'number' || typeof json.phones_total !== 'number') return null
+      return { dealsTotal: json.deals_total, phonesTotal: json.phones_total }
+    } catch {
+      return null
+    }
+  }
+
   async *iterateDeals(
     params: PrecheckScanParams,
     pageSize = 200,

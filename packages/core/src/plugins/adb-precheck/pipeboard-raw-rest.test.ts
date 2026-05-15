@@ -56,4 +56,21 @@ describe('PipeboardRawRest', () => {
     expect(h.ok).toBe(true)
     expect(String((fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][0])).toContain('/precheck-raw/healthz')
   })
+
+  it('aggregatePoolStats returns deals + phones from /deals/aggregate', async () => {
+    const fetchImpl = mkFetch({ _body: { deals_total: 4681, phones_total: 9876, tenant: 'sicoob' } } as never)
+    const c = new PipeboardRawRest({ baseUrl: 'http://r/api/v1/sicoob', apiKey: 'k', pipelineId: 14, stageId: 110, fetchImpl })
+    const stats = await c.aggregatePoolStats({})
+    expect(stats).toEqual({ dealsTotal: 4681, phonesTotal: 9876 })
+    const callUrl = String((fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][0])
+    expect(callUrl).toContain('/precheck-raw/deals/aggregate?')
+    expect(callUrl).toContain('pipeline_id=14')
+    expect(callUrl).toContain('stage_id=110')
+  })
+
+  it('aggregatePoolStats returns null on network failure (graceful)', async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new Error('network')) as unknown as typeof fetch
+    const c = new PipeboardRawRest({ baseUrl: 'http://r/api/v1/sicoob', apiKey: 'k', pipelineId: 14, fetchImpl })
+    expect(await c.aggregatePoolStats({})).toBeNull()
+  })
 })
