@@ -266,6 +266,7 @@ export class DebtSdrPlugin implements DispatchPlugin {
       },
       operatorAlerts,
       pendingWritebacks,
+      llmProviderName: this.llmClient.name,
       logger: ctx.logger,
     })
 

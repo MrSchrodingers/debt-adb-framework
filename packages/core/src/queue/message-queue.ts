@@ -5,6 +5,7 @@ import { VALID_TRANSITIONS } from './types.js'
 import { getTracer } from '../telemetry/tracer.js'
 import { SpanStatusCode } from '@opentelemetry/api'
 import type { DeviceTenantAssignment } from '../engine/device-tenant-assignment.js'
+import { sdrQueueBlockedByTenant } from '../config/metrics.js'
 
 export interface MessageQueueOptions {
   /** G2.3 (debt-sdr): when provided, dequeueBySender filters by device claim. */
@@ -831,7 +832,10 @@ export class MessageQueue {
       const total = this.db
         .prepare("SELECT COUNT(*) AS n FROM messages WHERE status = 'queued'")
         .get() as { n: number }
-      if (total.n > 0) this.blockedByTenantFilter++
+      if (total.n > 0) {
+        this.blockedByTenantFilter++
+        sdrQueueBlockedByTenant.inc({ tenant: assignment.tenant_name, device_serial: deviceSerial })
+      }
     }
 
     return result

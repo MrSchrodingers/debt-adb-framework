@@ -208,6 +208,64 @@ export const precheckPipeboardPendingWritebacks = new Gauge({
   registers: [metricsRegistry],
 })
 
+// ── debt-sdr Phase E (Task 40) ──────────────────────────────────────────
+//
+// SDR-specific metrics live on the SAME registry as core so a single
+// /metrics scrape surfaces both. Names use the `sdr_*` prefix when the
+// metric is plugin-owned (classifier, sequence FSM) and `dispatch_*`
+// when the metric is owned by core but instrumented because of the
+// plugin (queue tenant filter, response routing G5).
+
+export const sdrInvariantViolations = new Counter({
+  name: 'sdr_invariant_violation_total',
+  help: 'Count of safety invariant violations (I1-I8); ANY increment pages on-call',
+  labelNames: ['invariant'] as const,
+  registers: [metricsRegistry],
+})
+
+export const sdrQueueBlockedByTenant = new Counter({
+  name: 'dispatch_queue_blocked_by_tenant_filter_total',
+  help: 'Messages skipped at dequeue due to tenant mismatch (G2 working as designed)',
+  labelNames: ['tenant', 'device_serial'] as const,
+  registers: [metricsRegistry],
+})
+
+export const sdrResponseDroppedMismatch = new Counter({
+  name: 'dispatch_response_dropped_tenant_mismatch_total',
+  help: 'Responses dropped at webhook handler due to tenant mismatch (G5 working as designed)',
+  labelNames: ['sender_tenant', 'msg_tenant'] as const,
+  registers: [metricsRegistry],
+})
+
+export const sdrClassifierCalls = new Counter({
+  name: 'sdr_classifier_total',
+  help: 'Classifier calls by source (regex/llm/llm_low_conf/llm_error) and outcome category',
+  labelNames: ['source', 'category', 'tenant'] as const,
+  registers: [metricsRegistry],
+})
+
+export const sdrClassifierLatency = new Histogram({
+  name: 'sdr_classifier_latency_ms',
+  help: 'Classifier latency in milliseconds',
+  labelNames: ['source'] as const,
+  buckets: [10, 50, 100, 500, 1000, 2000, 5000],
+  registers: [metricsRegistry],
+})
+
+export const sdrSequenceLeads = new Gauge({
+  name: 'sdr_sequence_leads',
+  help: 'Count of leads in each sequence status (refreshed on sequencer tick)',
+  labelNames: ['tenant', 'status'] as const,
+  registers: [metricsRegistry],
+})
+
+export const sdrLlmCostUsdTotal = new Counter({
+  name: 'sdr_classifier_llm_cost_usd_total',
+  help: 'Cumulative LLM cost in USD (estimated per call)',
+  labelNames: ['tenant', 'provider'] as const,
+  registers: [metricsRegistry],
+})
+
 export async function getMetricsText(): Promise<string> {
   return metricsRegistry.metrics()
 }

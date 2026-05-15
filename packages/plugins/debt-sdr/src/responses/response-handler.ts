@@ -9,6 +9,7 @@ import type { TenantPipedriveClient } from '../pipedrive/tenant-pipedrive-client
 import type { OperatorAlerts } from '../operator-alerts.js'
 import type { PendingWritebacks } from './pending-writebacks.js'
 import type { SdrTenantConfig } from '../config/tenant-config.js'
+import { recordClassification } from '../metrics.js'
 
 export interface ResponsePayload {
   leadId: string
@@ -32,6 +33,8 @@ export interface ResponseHandlerDeps {
   pipedrive: (tenantName: string) => TenantPipedriveClient
   operatorAlerts: OperatorAlerts
   pendingWritebacks: PendingWritebacks
+  /** Provider tag for cost attribution metrics (e.g. 'stub', 'anthropic', 'gemini'). */
+  llmProviderName?: string
   logger?: { info(msg: string, data?: Record<string, unknown>): void; warn(msg: string, data?: Record<string, unknown>): void }
 }
 
@@ -73,6 +76,7 @@ export class ResponseHandler {
       response_text: payload.responseText,
       classification,
     })
+    recordClassification(tenant.name, this.deps.llmProviderName ?? 'unknown', classification)
 
     // Identity phase routes through the gate (already implemented).
     if (phase === 'identity_gate') {

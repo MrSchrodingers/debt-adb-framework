@@ -17,6 +17,20 @@ export type { AckRateThresholdRecord, ApplyThresholdParams } from './research/ac
 export { AckPersistFailures } from './waha/ack-persist-failures.js'
 export type { AckPersistFailureRecord } from './waha/ack-persist-failures.js'
 
+// Prometheus registry + SDR metric instruments (Task 40). Plugins can
+// import these to attach to the same /metrics endpoint exposed by the
+// dispatch core server. Other dispatch metrics stay internal.
+export {
+  metricsRegistry,
+  sdrInvariantViolations,
+  sdrQueueBlockedByTenant,
+  sdrResponseDroppedMismatch,
+  sdrClassifierCalls,
+  sdrClassifierLatency,
+  sdrSequenceLeads,
+  sdrLlmCostUsdTotal,
+} from './config/metrics.js'
+
 // Plugin SDK surface — types only. External plugins (packages/plugins/*)
 // import these to implement DispatchPlugin without reaching into core internals.
 export type {

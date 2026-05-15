@@ -33,7 +33,7 @@ import { RateLimitGuard } from './config/rate-limits.js'
 import { parseConfig } from './config/config-schema.js'
 import { AuditLogger } from './config/audit-logger.js'
 import { ScreenshotPolicy } from './config/screenshot-policy.js'
-import { metricsRegistry, messagesSentTotal, messagesFailedTotal, messagesQueuedTotal, sendDurationSeconds, interMessageDelaySeconds, queueDepth, devicesOnline, senderDailyCount, quarantineEventsTotal, senderQuarantined, callbacksTotal, pluginErrorsTotal, queueDepthByPlugin, wahaAckTotal, wahaAckPersistFailedTotal } from './config/metrics.js'
+import { metricsRegistry, messagesSentTotal, messagesFailedTotal, messagesQueuedTotal, sendDurationSeconds, interMessageDelaySeconds, queueDepth, devicesOnline, senderDailyCount, quarantineEventsTotal, senderQuarantined, callbacksTotal, pluginErrorsTotal, queueDepthByPlugin, wahaAckTotal, wahaAckPersistFailedTotal, sdrResponseDroppedMismatch } from './config/metrics.js'
 import {
   sendCriticalAlert,
   alertCircuitOpened,
@@ -1174,6 +1174,10 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
 
       if (!decision.deliver) {
         if (decision.reason === 'tenant_mismatch') {
+          sdrResponseDroppedMismatch.inc({
+            sender_tenant: decision.sender_tenant,
+            msg_tenant: decision.msg_tenant,
+          })
           server.log.warn(
             {
               msg_id: msg!.id,

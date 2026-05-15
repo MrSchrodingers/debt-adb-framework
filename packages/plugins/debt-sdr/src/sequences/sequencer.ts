@@ -5,6 +5,7 @@ import { selectTemplate, renderTemplate } from '../identity-gate/template-select
 import { ThrottleGate, type ThrottleConfig } from '../throttle/throttle-gate.js'
 import type { SdrTenantConfig } from '../config/tenant-config.js'
 import type { IdentityGate } from '../identity-gate/identity-gate.js'
+import { refreshSequenceGauge } from '../metrics.js'
 
 export type SequenceStatus =
   | 'pending_identity'
@@ -193,6 +194,10 @@ export class Sequencer {
         this.releaseLock(lead.id, lockId)
       }
     }
+
+    // Refresh Prometheus gauge once per tick — relatively cheap (one
+    // grouped query per tenant) and keeps the dashboard near-realtime.
+    refreshSequenceGauge(this.db, tenant.name)
 
     return result
   }
