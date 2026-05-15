@@ -41,6 +41,8 @@ export type { OptOutResult, OptOutMatch, OptOutNoMatch } from './opt-out-detecto
 export { ScreenshotValidator } from './screenshot-validator.js'
 export type { ValidationResult } from './screenshot-validator.js'
 export { escapeForAdbContent } from './contact-utils.js'
+export { DeviceTenantAssignment } from './device-tenant-assignment.js'
+export type { DeviceAssignment, ClaimResult, ReleaseResult } from './device-tenant-assignment.js'
 export type {
   RateLimitConfig,
   RetryConfig,

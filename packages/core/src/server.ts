@@ -7,7 +7,7 @@ import Database from 'better-sqlite3'
 import { Server as SocketIOServer } from 'socket.io'
 import { MessageQueue, IdempotencyCache } from './queue/index.js'
 import { AdbBridge } from './adb/index.js'
-import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, DeviceMutex, WahaFallback, SenderHealth, SenderScoring, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender } from './engine/index.js'
+import { SendEngine, SendStrategy, SenderMapping, ReceiptTracker, AccountMutex, DeviceMutex, WahaFallback, SenderHealth, SenderScoring, WorkerOrchestrator, EventRecorder, SendWindow, SenderWarmup, DeviceCircuitBreaker, ContactCache, OptOutDetector, MediaSender, DeviceTenantAssignment } from './engine/index.js'
 import { DispatchPauseState, type PauseScope } from './engine/dispatch-pause-state.js'
 import { DispatchEmitter } from './events/index.js'
 import { buildCorsOrigins, registerApiAuth, registerAuthLogin, registerAuthRefresh, RefreshTokenStore, registerMessageRoutes, registerDeviceRoutes, registerMonitorRoutes, registerWahaRoutes, registerSessionRoutes, registerMetricsRoutes, registerAuditRoutes, registerBulkActionRoutes, registerSenderMappingRoutes, registerPluginOralsinRoutes, registerScreenshotRoutes, registerTraceRoutes, registerSenderRoutes, registerBlacklistRoutes, registerContactRoutes, registerHygieneRoutes, registerMessageTimelineRoutes, registerAdminMessageRoutes, registerAdminPluginRoutes, registerInsightsHeatmapRoutes, registerAckRateRoutes, registerQualityRoutes, registerFleetRoutes, registerSetupWizardRoutes } from './api/index.js'
@@ -150,7 +150,12 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
     })
   }
 
-  const queue = new MessageQueue(db)
+  // G2.1 (debt-sdr): device-tenant assignment store. Created BEFORE the
+  // queue so it can be injected for tenant-aware dequeue (G2.3). Plugins
+  // claim devices via PluginContext.requestDeviceAssignment (G3).
+  const deviceTenantAssignment = new DeviceTenantAssignment(db)
+
+  const queue = new MessageQueue(db, { dta: deviceTenantAssignment })
   queue.initialize()
 
   // Task 4.3: Idempotency cache — time-bounded dedupe window for plugin enqueue
@@ -749,7 +754,7 @@ export async function createServer(port = Number(process.env.PORT) || 7890): Pro
   // register views via `ctx.registerGeoView(...)`; core hosts the map
   // framework + delegation endpoints; loader unregisters on plugin destroy.
   const geoRegistry = new GeoViewRegistry({ cacheTtlMs: 60_000 })
-  const pluginLoader = new PluginLoader(pluginRegistry, pluginEventBus, queue, db, pinoLogger, senderMapping, engine, idempotencyCache, deviceMutex, undefined, geoRegistry)
+  const pluginLoader = new PluginLoader(pluginRegistry, pluginEventBus, queue, db, pinoLogger, senderMapping, engine, idempotencyCache, deviceMutex, undefined, geoRegistry, deviceTenantAssignment)
 
   // Admin routes for plugin introspection + control (B4, Sprint 2 v2 roadmap).
   // Registered after pluginLoader so the GET endpoint can surface loaded
